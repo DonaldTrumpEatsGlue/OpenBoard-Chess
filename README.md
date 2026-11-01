@@ -10,6 +10,8 @@ On Windows, double-click `start-openboard.bat`. It locates Node.js and npm even 
 
 The prepared `Openboard-GitHub-Pages` folder is a separate, ready-to-publish copy of the source project. With GitHub Desktop, choose **File → Add Local Repository**, select that folder, then click **Publish repository**. After publishing, open the repository's **Settings → Pages** and set the build and deployment source to **GitHub Actions**. The included workflow builds and deploys automatically whenever you push to `main`; GitHub displays the website URL under **Settings → Pages**.
 
+The installed root and server `node_modules` folders are included in this repository as requested. GitHub Actions still runs `npm ci` to install the platform-appropriate dependencies before building and testing.
+
 Gameplay, saved settings, custom pieces, and the computer opponent run in each visitor's browser. GitHub Pages is static hosting, so friend-online rooms also need the separately hosted WebSocket service described below.
 
 For a standalone Windows x64 desktop installer, double-click `build-openboard-desktop.bat`. The installer is written to `release/Openboard Chess Setup 1.0.0.exe`; the installed game does not require Node.js. The first installer is about 350 MB because it includes Electron and the full Stockfish engine. It is not code-signed, so Windows may show its standard unknown-publisher warning. Building it requires internet access to download packaging tools.
