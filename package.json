@@ -23,7 +23,8 @@
   },
   "dependencies": {
     "chess.js": "^0.10.3",
-    "stockfish": "^19.0.1"
+    "stockfish": "^19.0.1",
+    "ws": "^8.22.1"
   },
   "build": {
     "appId": "com.openboard.chess",
