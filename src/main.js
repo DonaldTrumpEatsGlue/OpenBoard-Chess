@@ -129,14 +129,27 @@ let audioSettings = JSON.parse(JSON.stringify(defaultAudioSettings));
 let audioUnlocked = false;
 let activeSound = null;
 let onlineSocket = null;
+let onlinePendingRequest = null;
 let onlineMode = false;
 let onlineReady = false;
+let onlineIdentityVerified = false;
 let onlineRoomCode = null;
-let onlinePlayerName = 'Player';
+let onlinePlayerName = '';
 let onlinePreviousClock = null;
 let onlinePreviousColor = null;
 let publicRooms = [];
 let publicRoomsTimer = null;
+const configuredOnlineServerUrl = document.querySelector('meta[name="openboard-server-url"]')?.content.trim() || '';
+const onlineServerUrl = configuredOnlineServerUrl
+  || (['localhost', '127.0.0.1', '::1'].includes(location.hostname)
+    ? `ws://${location.hostname || 'localhost'}:3001/ws`
+    : '');
+const supabaseUrl = document.querySelector('meta[name="openboard-supabase-url"]')?.content.trim().replace(/\/+$/, '') || '';
+const supabaseAnonKey = document.querySelector('meta[name="openboard-supabase-anon-key"]')?.content.trim() || '';
+const authSessionStorageKey = 'openboard-auth-session';
+let authSession = null;
+let authUsername = '';
+let authMode = 'signup';
 const defaultCustomRules = {
   noDraws: false,
   pieceMovements: {
@@ -1272,6 +1285,205 @@ function updateOnlineStatus(message) {
   document.querySelector('#online-status').textContent = message;
 }
 
+function saveAuthSession(session) {
+  authSession = {
+    ...session,
+    expires_at: session.expires_at || Math.floor(Date.now() / 1000) + Number(session.expires_in || 3600),
+  };
+  try {
+    localStorage.setItem(authSessionStorageKey, JSON.stringify(authSession));
+  } catch (error) {
+    console.error('Could not save your online sign-in:', error);
+    document.querySelector('#online-auth-status').textContent = 'Signed in for this tab, but browser storage is unavailable.';
+  }
+  updateAccountUI();
+}
+
+function clearAuthSession() {
+  authSession = null;
+  authUsername = '';
+  onlineIdentityVerified = false;
+  localStorage.removeItem(authSessionStorageKey);
+  updateAccountUI();
+}
+
+function initializeAuthSession() {
+  const fragment = new URLSearchParams(location.hash.replace(/^#/, ''));
+  const accessToken = fragment.get('access_token');
+  if (accessToken && fragment.get('refresh_token')) {
+    saveAuthSession({
+      access_token: accessToken,
+      refresh_token: fragment.get('refresh_token'),
+      expires_in: fragment.get('expires_in') || '3600',
+      token_type: fragment.get('token_type') || 'bearer',
+    });
+    history.replaceState(null, '', `${location.pathname}${location.search}`);
+    document.querySelector('#online-auth-status').textContent = 'Email confirmed. You can now join or create a lobby.';
+    return;
+  }
+
+  if (fragment.has('error_description')) {
+    document.querySelector('#online-auth-status').textContent = fragment.get('error_description').replace(/\+/g, ' ');
+    history.replaceState(null, '', `${location.pathname}${location.search}`);
+  }
+  try {
+    const savedSession = JSON.parse(localStorage.getItem(authSessionStorageKey) || 'null');
+    if (savedSession?.access_token && savedSession?.refresh_token) authSession = savedSession;
+  } catch (error) {
+    console.error('Could not read the saved online sign-in:', error);
+    localStorage.removeItem(authSessionStorageKey);
+  }
+  updateAccountUI();
+}
+
+function updateAccountUI(message = '') {
+  const isSignedIn = Boolean(authSession?.access_token);
+  const usernameField = document.querySelector('#online-username-field');
+  document.querySelector('#online-account-state').textContent = isSignedIn
+    ? `Signed in · ${authSession.user?.email || 'verified account'}`
+    : 'Sign in or create an account';
+  document.querySelector('#online-username').disabled = authMode !== 'signup' || isSignedIn;
+  usernameField.hidden = authMode !== 'signup' || isSignedIn;
+  document.querySelector('#online-email').disabled = isSignedIn;
+  document.querySelector('#online-account-password').disabled = isSignedIn;
+  document.querySelector('#online-auth-submit').hidden = isSignedIn;
+  document.querySelector('#online-auth-mode').hidden = isSignedIn;
+  document.querySelector('#online-auth-signout').hidden = !isSignedIn;
+  document.querySelector('#online-auth-submit').textContent = authMode === 'signup' ? 'Create account' : 'Sign in';
+  document.querySelector('#online-auth-mode').textContent = authMode === 'signup'
+    ? 'Already registered? Sign in'
+    : 'Need an account? Create one';
+  if (message) document.querySelector('#online-auth-status').textContent = message;
+}
+
+async function requestSupabaseAuth(path, body, accessToken = '') {
+  if (!supabaseUrl || !supabaseAnonKey) {
+    throw new Error('Online accounts are not configured yet. The site owner must finish the free account-service setup.');
+  }
+  const response = await fetch(`${supabaseUrl}/auth/v1/${path}`, {
+    method: 'POST',
+    headers: {
+      apikey: supabaseAnonKey,
+      'Content-Type': 'application/json',
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  let result;
+  try {
+    result = await response.json();
+  } catch (error) {
+    throw new Error(`Account service returned an unreadable response (${response.status}).`);
+  }
+  if (!response.ok) {
+    const detail = result.msg || result.message || result.error_description || result.error;
+    if (typeof detail === 'string' && /username_taken|duplicate key/i.test(detail)) {
+      throw new Error('That username is already taken. Choose a different one.');
+    }
+    if (typeof detail === 'string' && /email not confirmed/i.test(detail)) {
+      throw new Error('Confirm your email from the message we sent, then sign in.');
+    }
+    throw new Error(typeof detail === 'string' ? detail : 'The account service rejected that request.');
+  }
+  return result;
+}
+
+async function checkUsernameAvailable(username) {
+  const profileUrl = new URL(`${supabaseUrl}/rest/v1/profiles`);
+  profileUrl.searchParams.set('username_key', `eq.${username.toLowerCase()}`);
+  profileUrl.searchParams.set('select', 'id');
+  const response = await fetch(profileUrl, {
+    headers: { apikey: supabaseAnonKey },
+  });
+  if (!response.ok) throw new Error('Could not check username availability. Try again.');
+  const profiles = await response.json();
+  return Array.isArray(profiles) && profiles.length === 0;
+}
+
+async function getValidAuthSession() {
+  if (!authSession?.refresh_token) return null;
+  if (Number(authSession.expires_at) > Math.floor(Date.now() / 1000) + 60) return authSession;
+  try {
+    const refreshed = await requestSupabaseAuth('token?grant_type=refresh_token', {
+      refresh_token: authSession.refresh_token,
+    });
+    saveAuthSession(refreshed);
+    return authSession;
+  } catch (error) {
+    clearAuthSession();
+    document.querySelector('#online-auth-status').textContent = 'Your sign-in expired. Sign in again to continue.';
+    throw error;
+  }
+}
+
+async function submitOnlineAuth() {
+  const email = document.querySelector('#online-email').value.trim().toLowerCase();
+  const emailInput = document.querySelector('#online-email');
+  const password = document.querySelector('#online-account-password').value;
+  const username = document.querySelector('#online-username').value.trim();
+  const status = document.querySelector('#online-auth-status');
+  const submit = document.querySelector('#online-auth-submit');
+  if (!supabaseUrl || !supabaseAnonKey) {
+    status.textContent = 'Online accounts are not configured yet. The owner needs to finish the free hosting setup.';
+    return;
+  }
+  if (!emailInput.checkValidity() || !password) {
+    status.textContent = 'Enter a valid email address and password.';
+    return;
+  }
+  if (authMode === 'signup' && !/^[A-Za-z0-9_]{3,20}$/.test(username)) {
+    status.textContent = 'Usernames must be 3–20 letters, numbers, or underscores.';
+    return;
+  }
+  if (password.length < 8 || password.length > 72) {
+    status.textContent = 'Passwords must be between 8 and 72 characters.';
+    return;
+  }
+
+  submit.disabled = true;
+  status.textContent = authMode === 'signup' ? 'Creating your account…' : 'Signing in…';
+  try {
+    if (authMode === 'signup') {
+      if (!await checkUsernameAvailable(username)) {
+        throw new Error('That username is already taken. Choose a different one.');
+      }
+      await requestSupabaseAuth(`signup?redirect_to=${encodeURIComponent(`${location.origin}${location.pathname}`)}`, {
+        email,
+        password,
+        data: { username },
+      });
+      document.querySelector('#online-account-password').value = '';
+      status.textContent = `Username @${username} is reserved. Check ${email} for the verification link, then sign in.`;
+    } else {
+      const session = await requestSupabaseAuth('token?grant_type=password', { email, password });
+      if (!session.access_token || !session.refresh_token) {
+        throw new Error('Email verification is required. Check your email before signing in.');
+      }
+      saveAuthSession(session);
+      document.querySelector('#online-account-password').value = '';
+      status.textContent = 'Signed in. Your verified username will be confirmed when you connect.';
+    }
+  } catch (error) {
+    console.error('Online account request failed:', error);
+    status.textContent = error.message || 'The account request failed. Please try again.';
+  } finally {
+    submit.disabled = false;
+  }
+}
+
+async function signOutOnlineAccount() {
+  try {
+    const session = await getValidAuthSession();
+    if (session?.access_token) await requestSupabaseAuth('logout', {}, session.access_token);
+    clearAuthSession();
+    document.querySelector('#online-auth-status').textContent = 'You have signed out.';
+  } catch (error) {
+    console.error('Could not sign out from the account service:', error);
+    clearAuthSession();
+    document.querySelector('#online-auth-status').textContent = 'Signed out on this device. The account service could not revoke the remote session.';
+  }
+}
+
 function renderPublicRooms() {
   const list = document.querySelector('#public-room-list');
   list.replaceChildren();
@@ -1300,14 +1512,30 @@ function renderPublicRooms() {
     join.className = 'primary-button';
     join.type = 'button';
     join.textContent = 'Join';
-    join.addEventListener('click', () => connectToOnlineRoom('join-public', room.code));
+    join.addEventListener('click', () => {
+      const password = room.locked ? window.prompt(`Password for “${room.name}”`) : '';
+      if (room.locked && password === null) return;
+      connectToOnlineRoom('join-public', room.code, password || '');
+    });
     copy.append(name, details);
+    if (room.host) {
+      details.textContent = `Hosted by @${room.host} · ${room.locked ? 'Password required · ' : ''}${room.code}`;
+    }
     card.append(copy, join);
     list.append(card);
   }
 }
 
 function requestPublicRooms() {
+  if (!authSession?.access_token) {
+    document.querySelector('#public-room-list').replaceChildren();
+    const empty = document.createElement('p');
+    empty.className = 'public-room-empty';
+    empty.textContent = 'Create an account and sign in to browse public lobbies.';
+    document.querySelector('#public-room-list').append(empty);
+    updateOnlineStatus('Sign in to a verified account to browse public lobbies.');
+    return;
+  }
   if (onlineSocket?.readyState === WebSocket.OPEN) {
     updateOnlineStatus('Refreshing public games…');
     onlineSocket.send(JSON.stringify({ type: 'list-public-rooms' }));
@@ -1365,6 +1593,8 @@ function setOnlineGameState(active) {
   }
   onlineMode = active;
   onlineReady = false;
+  onlineIdentityVerified = false;
+  onlinePendingRequest = null;
   if (active) {
     timeControlSelect.value = '0';
     configureOnlineControls(true);
@@ -1420,12 +1650,32 @@ function applyOnlineMove(message) {
 function handleOnlineMessage(socket, message) {
   if (socket !== onlineSocket || !message || typeof message.type !== 'string') return;
   if (message.type === 'error') {
+    if (!onlineIdentityVerified) {
+      onlinePendingRequest = null;
+      updateOnlineStatus(message.message || 'Sign in to a verified account before using online play.');
+      onlineSocket = null;
+      socket.close();
+      return;
+    }
+    if (/sign-in expired/i.test(message.message || '')) clearAuthSession();
     updateOnlineStatus(message.message || 'The room server rejected that action.');
+    return;
+  }
+  if (message.type === 'authenticated') {
+    onlineIdentityVerified = true;
+    onlinePlayerName = message.username;
+    document.querySelector('#online-account-state').textContent = `Signed in as @${onlinePlayerName}`;
+    document.querySelector('#online-auth-status').textContent = 'Verified account ready for online play.';
+    if (onlinePendingRequest) {
+      socket.send(JSON.stringify(onlinePendingRequest));
+      onlinePendingRequest = null;
+    }
     return;
   }
   if (message.type === 'public-rooms') {
     publicRooms = Array.isArray(message.rooms)
       ? message.rooms.filter((room) => typeof room?.code === 'string' && typeof room?.name === 'string')
+        .map((room) => ({ ...room, locked: Boolean(room.locked) }))
       : [];
     renderPublicRooms();
     const count = publicRooms.filter((room) => room.code !== onlineRoomCode).length;
@@ -1440,12 +1690,17 @@ function handleOnlineMessage(socket, message) {
     document.querySelector('#online-invite-code').textContent = onlineRoomCode;
     document.querySelector('#online-invite').hidden = false;
     if (message.isPublic) {
-      publicRooms = [{ code: onlineRoomCode, name: onlinePlayerName }, ...publicRooms.filter((room) => room.code !== onlineRoomCode)];
+      publicRooms = [{
+        code: onlineRoomCode,
+        name: message.lobbyName,
+        host: onlinePlayerName,
+        locked: Boolean(message.locked),
+      }, ...publicRooms.filter((room) => room.code !== onlineRoomCode)];
     }
     startNewGame();
     updateOnlineStatus(message.isPublic
-      ? 'Public game created. It is listed for anyone using this room server.'
-      : 'Room created. Share the server URL and invite code with your friend.');
+      ? 'Public lobby created. It is listed for signed-in players.'
+      : 'Private lobby created. Share the invite code with your friend.');
     renderPublicRooms();
     renderBoard();
     return;
@@ -1502,7 +1757,7 @@ function handleOnlineMessage(socket, message) {
   }
 }
 
-function connectToOnlineRoom(action, roomCode = null) {
+async function connectToOnlineRoom(action, roomCode = null, roomPassword = '') {
   if (action === 'browse' && onlineSocket?.readyState === WebSocket.OPEN) {
     requestPublicRooms();
     return;
@@ -1513,33 +1768,62 @@ function connectToOnlineRoom(action, roomCode = null) {
   }
   let endpoint;
   try {
-    endpoint = new URL(document.querySelector('#online-server-url').value.trim());
+    const session = await getValidAuthSession();
+    if (!session?.access_token) {
+      updateOnlineStatus('Create an account and verify your email before using online play.');
+      document.querySelector('#online-email').focus();
+      return;
+    }
+    if (!onlineServerUrl) throw new Error('The owner has not connected the online server yet.');
+    endpoint = new URL(onlineServerUrl);
     if (!['ws:', 'wss:'].includes(endpoint.protocol)) throw new Error('Use a ws:// or wss:// server URL.');
     if (!endpoint.pathname || endpoint.pathname === '/') endpoint.pathname = '/ws';
   } catch (error) {
     updateOnlineStatus(error.message || 'Enter a valid online room server URL.');
     return;
   }
+  if (action === 'create' || action === 'create-public') {
+    const lobbyName = document.querySelector('#online-lobby-name').value.trim();
+    if (!lobbyName) {
+      updateOnlineStatus('Enter a lobby name before creating it.');
+      document.querySelector('#online-lobby-name').focus();
+      return;
+    }
+    if (document.querySelector('#online-password-enabled').checked
+      && !document.querySelector('#online-lobby-password').value) {
+      updateOnlineStatus('Enter a lobby password or turn off password protection.');
+      document.querySelector('#online-lobby-password').focus();
+      return;
+    }
+    onlinePendingRequest = {
+      type: action === 'create-public' ? 'create-public-room' : 'create-room',
+      lobbyName,
+      password: document.querySelector('#online-password-enabled').checked
+        ? document.querySelector('#online-lobby-password').value
+        : '',
+    };
+  } else if (action === 'join' || action === 'join-public') {
+    onlinePendingRequest = {
+      type: action === 'join-public' ? 'join-public-room' : 'join-room',
+      code: roomCode ?? document.querySelector('#online-room-code').value.trim(),
+      password: roomPassword || (
+        document.querySelector('#online-password-enabled').checked
+          ? document.querySelector('#online-lobby-password').value
+          : ''
+      ),
+    };
+  } else {
+    onlinePendingRequest = { type: 'list-public-rooms' };
+  }
   if (action !== 'browse' && !setOnlineGameState(true)) return;
-  onlinePlayerName = document.querySelector('#online-player-name').value.trim().slice(0, 24) || 'Player';
   updateOnlineStatus(action === 'browse' ? 'Connecting to the room server…' : 'Connecting to room server…');
   const socket = new WebSocket(endpoint);
   onlineSocket = socket;
+  onlineIdentityVerified = false;
   let connectionFailed = false;
   socket.addEventListener('open', () => {
     if (socket !== onlineSocket) return;
-    const request = action === 'browse'
-      ? { type: 'list-public-rooms' }
-      : action === 'create'
-        ? { type: 'create-room', name: onlinePlayerName }
-        : action === 'create-public'
-          ? { type: 'create-public-room', name: onlinePlayerName }
-          : {
-            type: action === 'join-public' ? 'join-public-room' : 'join-room',
-            code: roomCode ?? document.querySelector('#online-room-code').value.trim(),
-            name: onlinePlayerName,
-          };
-    socket.send(JSON.stringify(request));
+    socket.send(JSON.stringify({ type: 'authenticate', accessToken: authSession.access_token }));
   });
   socket.addEventListener('message', (event) => {
     try {
@@ -1551,7 +1835,7 @@ function connectToOnlineRoom(action, roomCode = null) {
   });
   socket.addEventListener('error', () => {
     connectionFailed = true;
-    updateOnlineStatus('Could not reach that room server. On this PC, run start-openboard-online-server.bat; for a hosted site, enter your separately hosted WebSocket server URL.');
+    updateOnlineStatus('Could not reach the online room server. It may be waking from its free hosting sleep period; try again in a minute.');
   });
   socket.addEventListener('close', () => {
     if (socket !== onlineSocket) return;
@@ -1567,6 +1851,8 @@ function disconnectOnlineGame() {
   onlineSocket = null;
   onlineRoomCode = null;
   onlineReady = false;
+  onlineIdentityVerified = false;
+  onlinePendingRequest = null;
   if (socket?.readyState === WebSocket.OPEN) socket.close();
   setOnlineGameState(false);
   document.querySelector('#online-invite').hidden = true;
@@ -2006,6 +2292,28 @@ document.querySelector('#online-create-public').addEventListener('click', () => 
 document.querySelector('#online-refresh-rooms').addEventListener('click', requestPublicRooms);
 document.querySelector('#online-join').addEventListener('click', () => connectToOnlineRoom('join'));
 document.querySelector('#online-disconnect').addEventListener('click', disconnectOnlineGame);
+document.querySelector('#online-auth-submit').addEventListener('click', submitOnlineAuth);
+document.querySelector('#online-auth-mode').addEventListener('click', () => {
+  authMode = authMode === 'signup' ? 'signin' : 'signup';
+  document.querySelector('#online-account-password').setAttribute(
+    'autocomplete',
+    authMode === 'signup' ? 'new-password' : 'current-password',
+  );
+  updateAccountUI(authMode === 'signup'
+    ? 'Create a username and verify your email to claim it.'
+    : 'Sign in with your verified email and password.');
+});
+document.querySelector('#online-auth-signout').addEventListener('click', signOutOnlineAccount);
+for (const field of ['#online-username', '#online-email', '#online-account-password']) {
+  document.querySelector(field).addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && !document.querySelector('#online-auth-submit').hidden) submitOnlineAuth();
+  });
+}
+document.querySelector('#online-password-enabled').addEventListener('change', (event) => {
+  const passwordField = document.querySelector('#online-lobby-password-field');
+  passwordField.hidden = !event.currentTarget.checked;
+  document.querySelector('#online-lobby-password').required = event.currentTarget.checked;
+});
 onlineDialog.addEventListener('close', () => {
   if (publicRoomsTimer) clearInterval(publicRoomsTimer);
   publicRoomsTimer = null;
@@ -2020,26 +2328,16 @@ document.querySelector('#online-copy-code').addEventListener('click', async () =
   if (!onlineRoomCode) return;
   try {
     await navigator.clipboard.writeText(onlineRoomCode);
-    updateOnlineStatus('Invite code copied. Send it along with the room server URL.');
+    updateOnlineStatus('Invite code copied. Send it to your opponent.');
   } catch (error) {
     console.error('Could not copy the online invite code:', error);
     updateOnlineStatus(`Invite code: ${onlineRoomCode}. Select and copy it manually.`);
   }
 });
-const localOnlineHost = ['localhost', '127.0.0.1', '::1'].includes(location.hostname);
-const onlineServerUrl = document.querySelector('#online-server-url');
-const configuredOnlineServerUrl = document.querySelector('meta[name="openboard-server-url"]')?.content.trim() || '';
-if (localOnlineHost) {
-  onlineServerUrl.value = `ws://${location.hostname || 'localhost'}:3001/ws`;
-} else {
-  onlineServerUrl.value = configuredOnlineServerUrl
-    || localStorage.getItem('openboard-online-server-url')
-    || '';
-  onlineServerUrl.placeholder = 'wss://your-hosted-room-server.example/ws';
+if (!onlineServerUrl && !['localhost', '127.0.0.1', '::1'].includes(location.hostname)) {
+  updateOnlineStatus('The owner has not connected the online server yet.');
 }
-onlineServerUrl.addEventListener('change', () => {
-  if (!localOnlineHost) localStorage.setItem('openboard-online-server-url', onlineServerUrl.value.trim());
-});
+initializeAuthSession();
 window.addEventListener('beforeunload', () => onlineSocket?.close());
 
 document.querySelector('#resign').addEventListener('click', () => {

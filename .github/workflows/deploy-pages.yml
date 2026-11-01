@@ -27,10 +27,17 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
+      - name: Test chess and online features
+        run: |
+          npm run test:custom-chess
+          npm run test:game-insights
+          npm run test:online
       - name: Build site
         run: npm run build
         env:
-          VITE_OPENBOARD_SERVER_URL: ${{ vars.OPENBOARD_SERVER_URL }}
+          VITE_OPENBOARD_SERVER_URL: ${{ vars.OPENBOARD_SERVER_URL || 'wss://openboard-online.onrender.com/ws' }}
+          VITE_SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY }}
       - name: Add Pages marker
         run: touch dist/.nojekyll
       - name: Upload Pages artifact

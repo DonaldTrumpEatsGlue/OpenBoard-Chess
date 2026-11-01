@@ -6,6 +6,8 @@ const { WebSocketServer, WebSocket } = require('ws');
 const port = Number(process.env.OPENBOARD_PORT || process.env.PORT || 3001);
 const rooms = new Map();
 const roomLifetimeMs = 30 * 60 * 1000;
+const supabaseUrl = (process.env.SUPABASE_URL || '').replace(/\/+$/, '');
+const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || '';
 const allowedOrigins = (process.env.OPENBOARD_ALLOWED_ORIGINS || '')
   .split(',')
   .map((origin) => origin.trim())
@@ -26,10 +28,55 @@ function send(socket, payload) {
   if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(payload));
 }
 
-function normalizeName(value, fallback) {
-  if (typeof value !== 'string') return fallback;
-  const name = value.trim().replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 24);
-  return name || fallback;
+function normalizeLobbyName(value) {
+  if (typeof value !== 'string') return '';
+  return value.trim().replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 40);
+}
+
+async function authenticateAccessToken(accessToken) {
+  if (!supabaseUrl || !supabaseAnonKey) {
+    throw new Error('Online accounts are not configured on this server yet.');
+  }
+  if (typeof accessToken !== 'string' || accessToken.length < 20 || accessToken.length > 4096) {
+    throw new Error('Sign in to a verified account before using online play.');
+  }
+
+  const headers = {
+    apikey: supabaseAnonKey,
+    Authorization: `Bearer ${accessToken}`,
+  };
+  const userResponse = await fetch(`${supabaseUrl}/auth/v1/user`, {
+    headers,
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!userResponse.ok) throw new Error('Your sign-in expired. Sign in again to continue.');
+  const user = await userResponse.json();
+  if (!user?.id || !(user.email_confirmed_at || user.confirmed_at)) {
+    throw new Error('Verify your email address before using online play.');
+  }
+
+  const profileUrl = new URL(`${supabaseUrl}/rest/v1/profiles`);
+  profileUrl.searchParams.set('id', `eq.${user.id}`);
+  profileUrl.searchParams.set('select', 'username');
+  const profileResponse = await fetch(profileUrl, {
+    headers,
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!profileResponse.ok) throw new Error('Could not load your reserved username.');
+  const [profile] = await profileResponse.json();
+  if (!profile?.username) throw new Error('Your verified account does not have a reserved username.');
+  return { id: user.id, username: profile.username };
+}
+
+function hashRoomPassword(password, salt) {
+  return crypto.scryptSync(password, salt, 32);
+}
+
+function roomPasswordMatches(room, password) {
+  if (!room.passwordHash) return true;
+  if (typeof password !== 'string' || password.length > 128) return false;
+  const candidate = hashRoomPassword(password, room.passwordSalt);
+  return crypto.timingSafeEqual(candidate, room.passwordHash);
 }
 
 function generateRoomCode() {
@@ -47,7 +94,12 @@ function getPublicRooms() {
     .filter((room) => room.isPublic && room.expiresAt > now
       && room.players.w.socket?.readyState === WebSocket.OPEN
       && (!room.players.b.socket || room.players.b.socket.readyState !== WebSocket.OPEN))
-    .map((room) => ({ code: room.code, name: room.players.w.name }));
+    .map((room) => ({
+      code: room.code,
+      name: room.lobbyName,
+      host: room.players.w.name,
+      locked: Boolean(room.passwordHash),
+    }));
 }
 
 function broadcast(room, payload) {
@@ -67,7 +119,7 @@ function leaveRoom(player) {
   }
 }
 
-function handleMessage(socket, player, rawMessage) {
+async function handleMessage(socket, player, rawMessage) {
   if (typeof rawMessage !== 'string' || rawMessage.length > 2048) {
     send(socket, { type: 'error', message: 'Message was too large.' });
     return;
@@ -85,20 +137,61 @@ function handleMessage(socket, player, rawMessage) {
     return;
   }
 
+  if (message.type === 'authenticate') {
+    if (player.identity || player.authenticating) {
+      send(socket, { type: 'error', message: 'This connection is already authenticated.' });
+      return;
+    }
+    player.authenticating = true;
+    try {
+      player.identity = await authenticateAccessToken(message.accessToken);
+      send(socket, { type: 'authenticated', username: player.identity.username });
+    } catch (error) {
+      send(socket, { type: 'error', message: error.message || 'Account authentication failed.' });
+    } finally {
+      player.authenticating = false;
+    }
+    return;
+  }
+
+  if (!player.identity) {
+    send(socket, {
+      type: 'error',
+      message: player.authenticating
+        ? 'Account sign-in is still being verified.'
+        : 'Sign in to a verified account before using online play.',
+    });
+    return;
+  }
+
   if (message.type === 'list-public-rooms') {
     send(socket, { type: 'public-rooms', rooms: getPublicRooms() });
     return;
   }
 
   if (message.type === 'create-room' || message.type === 'create-public-room') {
+    const lobbyName = normalizeLobbyName(message.lobbyName);
+    const roomPassword = message.password === undefined ? '' : message.password;
+    if (!lobbyName) {
+      send(socket, { type: 'error', message: 'Enter a lobby name.' });
+      return;
+    }
+    if (typeof roomPassword !== 'string' || roomPassword.length > 128) {
+      send(socket, { type: 'error', message: 'Lobby passwords must be 128 characters or fewer.' });
+      return;
+    }
     if (player.room) leaveRoom(player);
     const code = generateRoomCode();
+    const passwordSalt = roomPassword ? crypto.randomBytes(16) : null;
     const room = {
       code,
+      lobbyName,
       isPublic: message.type === 'create-public-room',
+      passwordSalt,
+      passwordHash: passwordSalt ? hashRoomPassword(roomPassword, passwordSalt) : null,
       chess: new Chess(),
       players: {
-        w: { socket, name: normalizeName(message.name, 'White') },
+        w: { socket, name: player.identity.username },
         b: { socket: null, name: 'Black' },
       },
       expiresAt: Date.now() + roomLifetimeMs,
@@ -112,6 +205,8 @@ function handleMessage(socket, player, rawMessage) {
       color: 'w',
       name: room.players.b.name,
       isPublic: room.isPublic,
+      lobbyName: room.lobbyName,
+      locked: Boolean(room.passwordHash),
     });
     return;
   }
@@ -127,6 +222,10 @@ function handleMessage(socket, player, rawMessage) {
       send(socket, { type: 'error', message: 'That room is not listed as a public game.' });
       return;
     }
+    if (!roomPasswordMatches(room, message.password)) {
+      send(socket, { type: 'error', message: 'That lobby password is incorrect.' });
+      return;
+    }
     if (!room.players.w.socket || room.players.w.socket.readyState !== WebSocket.OPEN) {
       send(socket, { type: 'error', message: 'The room host is no longer connected.' });
       return;
@@ -137,7 +236,7 @@ function handleMessage(socket, player, rawMessage) {
     }
     if (player.room) leaveRoom(player);
     room.players.b.socket = socket;
-    room.players.b.name = normalizeName(message.name, 'Black');
+    room.players.b.name = player.identity.username;
     room.expiresAt = Date.now() + roomLifetimeMs;
     player.room = room;
     player.color = 'b';
@@ -231,8 +330,13 @@ const websocketServer = new WebSocketServer({
 });
 
 websocketServer.on('connection', (socket) => {
-  const player = { socket, room: null, color: null };
-  socket.on('message', (rawMessage) => handleMessage(socket, player, rawMessage.toString()));
+  const player = { socket, room: null, color: null, identity: null, authenticating: false };
+  socket.on('message', (rawMessage) => {
+    handleMessage(socket, player, rawMessage.toString()).catch((error) => {
+      console.error('Online game request failed:', error);
+      send(socket, { type: 'error', message: 'The server could not process that request.' });
+    });
+  });
   socket.on('close', () => leaveRoom(player));
   socket.on('error', (error) => console.error('Online game socket error:', error.message));
 });

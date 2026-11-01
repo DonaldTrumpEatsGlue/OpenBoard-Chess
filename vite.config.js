@@ -18,7 +18,10 @@ function stockfishFiles() {
   return {
     name: 'openboard-stockfish-files',
     transformIndexHtml(html) {
-      return html.replace('__OPENBOARD_SERVER_URL__', process.env.VITE_OPENBOARD_SERVER_URL || '');
+      return html
+        .replace('__OPENBOARD_SERVER_URL__', process.env.VITE_OPENBOARD_SERVER_URL || '')
+        .replace('__OPENBOARD_SUPABASE_URL__', process.env.VITE_SUPABASE_URL || '')
+        .replace('__OPENBOARD_SUPABASE_ANON_KEY__', process.env.VITE_SUPABASE_ANON_KEY || '');
     },
     configureServer(server) {
       server.middlewares.use('/stockfish', (request, response, next) => {

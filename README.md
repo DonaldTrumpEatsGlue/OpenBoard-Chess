@@ -10,7 +10,7 @@ On Windows, double-click `start-openboard.bat`. It locates Node.js and npm even 
 
 The prepared `Openboard-GitHub-Pages` folder is a separate, ready-to-publish copy of the source project. With GitHub Desktop, choose **File → Add Local Repository**, select that folder, then click **Publish repository**. After publishing, open the repository's **Settings → Pages** and set the build and deployment source to **GitHub Actions**. The included workflow builds and deploys automatically whenever you push to `main`; GitHub displays the website URL under **Settings → Pages**.
 
-The installed root and server `node_modules` folders are included in this repository as requested. GitHub Actions still runs `npm ci` to install the platform-appropriate dependencies before building and testing.
+The installed root and server `node_modules` folders are included in this repository as requested. GitHub Actions still runs `npm ci` to install platform-appropriate dependencies before building and testing.
 
 Gameplay, saved settings, custom pieces, and the computer opponent run in each visitor's browser. GitHub Pages is static hosting, so friend-online rooms also need the separately hosted WebSocket service described below.
 
@@ -22,23 +22,25 @@ The page also opens directly from `index.html`, but browser security can prevent
 
 ## Friend games
 
-The Windows app launcher starts the room server automatically. Otherwise start it with `start-openboard-online-server.bat` or `npm run online-server`; it listens on port 3001. Use the **Online** tab to browse open public rooms, create a public game, or switch to **Friend invite** to create/join a private room by code. Everyone must use the same reachable room-server URL. The server applies and validates every move using chess.js before relaying it; room state is in memory and rooms expire after 30 minutes. To play over the public internet, host the Node server on an internet-accessible machine and enter its secure `wss://` URL (configure `OPENBOARD_PORT` and optionally `OPENBOARD_ALLOWED_ORIGINS`); the bat launcher is for local testing. GitHub Pages does not host this server: the Online URL field intentionally starts blank on non-local websites until you enter your hosted server URL.
+The Windows app launcher starts the room server automatically. Otherwise start it with `start-openboard-online-server.bat` or `npm run online-server`; it listens on port 3001. Online play requires an Openboard account with a verified email. Usernames are claimed uniquely when email is confirmed and cannot be changed through the game client. The website connects to its configured room server automatically; players never need to paste a server URL. Create a lobby with a name, optionally enable a lobby password, or join by invite code. Public lobbies show their name, host username, and whether a password is required. The server checks every access token with Supabase Auth, loads the reserved username, and validates every chess move before relaying it.
 
-Online rooms currently support two players in standard chess only. The public browser lists rooms on the selected server; it is not a global directory across unrelated servers. Clocks, draw offers, account login, friends lists, ranked matchmaking, persistent game history, and automatic reconnect are not implemented.
+Online rooms currently support two players in standard chess only. The public browser lists rooms on this server; it is not a global directory across unrelated servers. Room state is held in server memory and rooms expire after 30 minutes. Clocks, draw offers, friends lists, ranked matchmaking, persistent game history, and automatic reconnect are not implemented.
 
 ### Deploy online rooms for GitHub Pages
 
-The repository includes a Render Blueprint in `render.yaml`. After publishing this folder to GitHub:
+The repository includes a free Render web-service Blueprint in `render.yaml`. A free Supabase project provides email verification and durable username claims; visitors do not need Render or Supabase accounts. The owner does need to connect this GitHub repository to Render and configure one Supabase project. Free hosts have availability limits, but Supabase pauses inactive free projects rather than deleting accounts at 30 days.
 
-1. In Render, create a **Blueprint** and connect the GitHub repository. Render reads `render.yaml` and deploys the Node room server from `server/`.
-2. Wait for the service to become live. Open `https://YOUR-SERVICE.onrender.com/health`; it should return JSON with `"ok": true`.
-3. In the GitHub repository, open **Settings → Secrets and variables → Actions → Variables**, add the repository variable `OPENBOARD_SERVER_URL`, and set it to `wss://YOUR-SERVICE.onrender.com/ws` (use the actual hostname Render assigned).
-4. Push a commit to `main`, or run **Actions → Deploy Openboard to GitHub Pages → Run workflow**. The build embeds the URL, and the Online tab will use it automatically. Visitors can still override the URL in that field; their choice is saved in their browser.
-5. In **Settings → Pages**, choose **GitHub Actions** as the deployment source if it is not already selected.
+1. Create a free Supabase project. In its SQL Editor, run [`supabase/schema.sql`](./supabase/schema.sql). A username becomes reserved atomically when its email is confirmed, so unverified signups cannot lock names. Do not disable email confirmations in Supabase Auth.
+2. Set the Supabase Site URL and allowed redirect URL to `https://donaldtrumpeatsglue.github.io/OpenBoardChess/`.
+3. Configure a custom SMTP sender under Supabase **Authentication → SMTP Settings**. Supabase's built-in sender only sends to members of your Supabase organization, so public users cannot verify accounts until a custom sender is configured. A free Gmail account with a Google app password is one possible low-volume sender; email providers impose their own sending limits.
+4. Copy the Supabase Project URL and the browser-safe **anon/publishable** key (never the `service_role` or secret key).
+5. In Render, create a **Blueprint** for this GitHub repository. Render reads `render.yaml` and deploys the Node room server. Set its `SUPABASE_URL` and `SUPABASE_ANON_KEY` environment variables to the values from step 4. The service name in the Blueprint configures the website's default room-server address.
+6. In GitHub **Settings → Secrets and variables → Actions → Variables**, add `SUPABASE_URL` and `SUPABASE_ANON_KEY` with those same public values. `OPENBOARD_SERVER_URL` is optional; the workflow defaults it to `wss://openboard-online.onrender.com/ws`.
+7. Push a commit to `main`, or run **Actions → Deploy Openboard to GitHub Pages → Run workflow**. The Online panel then connects automatically with no server-URL field. In **Settings → Pages**, use **GitHub Actions** as the source.
 
-The Blueprint permits WebSocket connections from `*.github.io` origins. For a custom Pages domain, add its exact origin (for example `https://chess.example.com`) to the Render service's `OPENBOARD_ALLOWED_ORIGINS` environment variable, separated from other entries with commas. The server supports exact origins and `*` wildcards in origin patterns.
+Your visitors only need an Openboard account: username, email, password, and email verification. Their account reserves the username, and the game server ignores client-supplied display names. To create a lobby, a signed-in player enters a **Lobby name** and optionally enables a **Lobby password**. Password-protected public lobbies remain listed, but joining requires their password.
 
-The Blueprint uses Render's free instance. It may sleep when idle, so the first connection after inactivity can take a while; online rooms are held in memory and disappear when the server restarts or sleeps. Use an always-on host if you need reliable persistent availability. GitHub Pages cannot run the WebSocket server itself.
+The free Render room server sleeps after inactivity; its first wake can take about a minute, and open games are lost if it sleeps or restarts. Free Supabase projects pause after one week without activity, but their account data is retained and can be resumed by the owner. Free hosting cannot guarantee uninterrupted, always-on service. The Render Blueprint permits `*.github.io` origins; for a custom Pages domain, add its exact origin to `OPENBOARD_ALLOWED_ORIGINS`.
 
 Run `npm run test:online` to test public room listing, private-room exclusion, and joining a listed game.
 
