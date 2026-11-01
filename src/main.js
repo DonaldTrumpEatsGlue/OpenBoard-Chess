@@ -1123,7 +1123,7 @@ function updateGameState() {
       : game.turn() === 'w' ? 'Check! Find a safe move.' : 'The engine is in check.';
   } else if (onlineMode) {
     gameMessage.textContent = !onlineReady && onlineSocket?.readyState === WebSocket.OPEN
-      ? 'Waiting for your friend to join.'
+      ? 'Waiting for another player to join.'
       : game.turn() === playerColor ? 'Your move.' : 'Your opponent is thinking.';
   } else {
     gameMessage.textContent = game.turn() === 'w' ? 'Your move.' : 'The engine is ready.';
