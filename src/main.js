@@ -1456,7 +1456,10 @@ async function submitOnlineAuth() {
         data: { username },
       });
       if (!session.access_token || !session.refresh_token) {
-        throw new Error('Supabase still requires email confirmation, so this signup did not sign you in. You do not need a new account to play: switch to Sign in and use your existing account. To finish this signup, turn off “Confirm email” in Authentication → Sign In / Providers → Email, then sign in with this account.');
+        document.querySelector('#online-account-password').value = '';
+        authMode = 'signin';
+        updateAccountUI(`Confirmation email sent to ${email}. Open its link to verify your account, then sign in here. You do not need to create another account.`);
+        return;
       }
       saveAuthSession(session);
       document.querySelector('#online-account-password').value = '';
