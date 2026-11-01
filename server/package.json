@@ -1,0 +1,13 @@
+{
+  "name": "openboard-online-server",
+  "private": true,
+  "version": "1.0.0",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "chess.js": "^0.10.3",
+    "ws": "^8.22.1"
+  }
+}
