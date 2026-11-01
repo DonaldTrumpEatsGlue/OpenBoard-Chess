@@ -37,8 +37,8 @@ async function waitForServer(port) {
   throw new Error('Online room server did not start in time.');
 }
 
-async function connect() {
-  const socket = new WebSocket(endpoint);
+async function connect(origin) {
+  const socket = new WebSocket(endpoint, origin ? { origin } : {});
   await once(socket, 'open');
   return socket;
 }
@@ -54,7 +54,11 @@ before(async () => {
   endpoint = `ws://127.0.0.1:${port}/ws`;
   serverProcess = spawn(process.execPath, ['server.js'], {
     cwd: path.resolve(__dirname, '..'),
-    env: { ...process.env, OPENBOARD_PORT: String(port) },
+    env: {
+      ...process.env,
+      OPENBOARD_PORT: String(port),
+      OPENBOARD_ALLOWED_ORIGINS: 'https://*.github.io',
+    },
     stdio: 'ignore',
   });
   await waitForServer(port);
@@ -64,6 +68,15 @@ after(async () => {
   if (!serverProcess || serverProcess.exitCode !== null) return;
   serverProcess.kill('SIGTERM');
   await once(serverProcess, 'exit');
+});
+
+test('origin allowlist supports GitHub Pages subdomains and rejects unrelated websites', async () => {
+  const pagesSocket = await connect('https://sample-user.github.io');
+  pagesSocket.close();
+
+  const rejectedSocket = new WebSocket(endpoint, { origin: 'https://example.com' });
+  const [error] = await once(rejectedSocket, 'error');
+  assert.match(error.message, /Unexpected server response: 403/);
 });
 
 test('public room browser lists joinable games but not private invites or full games', async () => {

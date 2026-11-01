@@ -109,6 +109,7 @@ const botAvatarColors = ['#d3a771', '#9dbea4', '#91a5d5', '#81ad91', '#d2bd75', 
 let selectedSquare = null;
 let legalTargets = [];
 let suggestedMove = null;
+let moveInsights = [];
 let flipped = false;
 let aiThinking = false;
 let gameToken = 0;
@@ -792,7 +793,9 @@ function renderBoard() {
 
 function renderMoves() {
   const history = game.history();
+  const verboseHistory = game.history({ verbose: true });
   document.querySelector('#move-count').textContent = `${history.length} ${history.length === 1 ? 'move' : 'moves'}`;
+  updateGameInsights(history);
   if (!history.length) {
     moveListElement.innerHTML = '<div class="empty-moves">Moves will appear here as you play.</div>';
     return;
@@ -804,16 +807,107 @@ function renderMoves() {
     const number = document.createElement('span');
     number.className = 'move-number';
     number.textContent = `${Math.floor(index / 2) + 1}.`;
-    const white = document.createElement('span');
-    white.textContent = history[index];
-    const black = document.createElement('span');
-    black.textContent = history[index + 1] ?? '';
+    const white = renderMoveCell(history, verboseHistory, index);
+    const black = renderMoveCell(history, verboseHistory, index + 1);
     if (index === history.length - 1) white.classList.add('latest-move');
     if (index + 1 === history.length - 1) black.classList.add('latest-move');
     row.append(number, white, black);
     moveListElement.append(row);
   }
   moveListElement.scrollTop = moveListElement.scrollHeight;
+}
+
+function renderMoveCell(history, verboseHistory, ply) {
+  const cell = document.createElement('span');
+  if (!history[ply]) return cell;
+  const san = document.createElement('span');
+  san.textContent = history[ply];
+  cell.append(san);
+  const context = window.OpenboardGameInsights.getMoveContext(history, ply, verboseHistory[ply]);
+  const annotation = moveInsights[ply];
+  const grade = context.book
+    ? { label: 'Book', icon: '📖', description: context.bookTheme ?? 'A recognized move in a standard opening line.' }
+    : annotation?.grade;
+  if (!grade) return cell;
+  const badge = document.createElement('span');
+  badge.className = `move-grade move-grade-${grade.label.toLowerCase().replaceAll(' ', '-')}`;
+  badge.textContent = `${grade.icon} ${grade.label}`;
+  badge.title = annotation?.detail ?? grade.description;
+  cell.append(badge);
+  return cell;
+}
+
+function updateGameInsights(history = game.history()) {
+  const opening = window.OpenboardGameInsights.openingForHistory(history);
+  document.querySelector('#opening-name').textContent = opening?.name ?? 'Opening not identified';
+  document.querySelector('#opening-theme').textContent = opening?.theme
+    ?? 'Play a few moves to identify the opening and explain each side’s plan.';
+  const latest = moveInsights[history.length - 1];
+  const latestElement = document.querySelector('#latest-move-insight');
+  if (!latest) {
+    latestElement.textContent = history.length
+      ? 'This position came from a loaded game; make a move to see quick feedback.'
+      : 'Move feedback appears here after each move.';
+    return;
+  }
+  latestElement.textContent = `${latest.color === 'w' ? 'White' : 'Black'} · ${latest.san}: ${latest.grade?.icon ?? ''} ${latest.grade?.label ?? 'Move'}${latest.detail ? ` — ${latest.detail}` : ''}`;
+}
+
+function analyzeMoveQuality(move) {
+  if (isCustomVariantActive()) return null;
+  const mover = game.turn();
+  const candidates = getLegalMoves();
+  const scores = candidates.map((candidate) => {
+    let moved = false;
+    try {
+      makeGameMove(candidate);
+      moved = true;
+      const attackedSacrifice = !candidate.captured
+        && (pieceValues[candidate.piece] ?? 0) >= pieceValues.n
+        && getLegalMoves().some((reply) => reply.to === candidate.to && reply.captured);
+      const whiteScore = search(1, -Infinity, Infinity);
+      return {
+        candidate,
+        score: mover === 'w' ? whiteScore : -whiteScore,
+        attackedSacrifice,
+      };
+    } catch (error) {
+      console.error('Could not evaluate a move for feedback:', error);
+      return null;
+    } finally {
+      if (moved) undoGameMove();
+    }
+  }).filter(Boolean);
+  if (!scores.length) return null;
+  scores.sort((left, right) => right.score - left.score);
+  const chosen = scores.find(({ candidate }) => candidate.from === move.from
+    && candidate.to === move.to
+    && (candidate.promotion ?? 'q') === (move.promotion ?? 'q'));
+  if (!chosen) return null;
+  const bestScore = scores[0]?.score ?? chosen.score;
+  const nextBestScore = scores[1]?.score ?? bestScore;
+  const loss = Math.max(0, bestScore - chosen.score);
+  return {
+    grade: window.OpenboardGameInsights.classifyMove({
+      loss,
+      bestGap: bestScore - nextBestScore,
+      soundSacrifice: chosen.attackedSacrifice && loss <= 25,
+    }),
+    loss,
+  };
+}
+
+function recordMoveInsight(move, quality) {
+  const history = game.history();
+  const ply = history.length - 1;
+  const context = window.OpenboardGameInsights.getMoveContext(history, ply, move);
+  const grade = context.book
+    ? { label: 'Book', icon: '📖', description: context.bookTheme ?? 'A recognized move in a standard opening line.' }
+    : quality?.grade ?? null;
+  const detail = context.book
+    ? `${context.bookName}: ${context.bookTheme}`
+    : `${context.theme.replace(/[.!?]+$/, '')}. ${grade?.description ?? 'Move grades are unavailable for custom movement variants.'}`;
+  moveInsights[ply] = { color: move.color, san: move.san, grade, detail };
 }
 
 function onSquareClick(square) {
@@ -854,6 +948,7 @@ function askPromotion(from, to) {
 
 function playMove(from, to, promotion = 'q') {
   if (onlineMode && (!onlineReady || onlineSocket?.readyState !== WebSocket.OPEN || game.turn() !== playerColor)) return;
+  const quality = analyzeMoveQuality({ from, to, promotion });
   let appliedMove;
   try {
     appliedMove = makeGameMove({ from, to, promotion });
@@ -884,6 +979,7 @@ function playMove(from, to, promotion = 'q') {
     renderBoard();
     return;
   }
+  recordMoveInsight(appliedMove, quality);
   registerClockMove();
   redoMoves = [];
   if (onlineMode) {
@@ -1000,11 +1096,16 @@ function reportStockfishFailure(error, bot, token) {
     return;
   }
   try {
+    const quality = analyzeMoveQuality(move);
     const appliedMove = makeGameMove(move);
+    recordMoveInsight(appliedMove, quality);
     playMoveSound(appliedMove, 'opponent');
     registerClockMove();
     finishBotTurn();
-    gameMessage.textContent = `Stockfish couldn't load; the local fallback played ${move.san}.`;
+    const fallbackNote = `Stockfish couldn't load; the local fallback played ${appliedMove.san}.`;
+    gameMessage.textContent = gameResult
+      ? `${gameMessage.textContent} ${fallbackNote}`
+      : fallbackNote;
   } catch (fallbackError) {
     console.error('The local fallback move could not be applied:', fallbackError);
     aiThinking = false;
@@ -1045,7 +1146,9 @@ function requestBotMove(bot, token) {
       const move = { from: uciMove.slice(0, 2), to: uciMove.slice(2, 4) };
       if (uciMove.length > 4) move.promotion = uciMove[4];
       try {
+        const quality = analyzeMoveQuality(move);
         const appliedMove = makeGameMove(move);
+        recordMoveInsight(appliedMove, quality);
         playMoveSound(appliedMove, 'opponent');
       } catch (error) {
         reportStockfishFailure(new Error(`The engine returned an illegal move: ${error.message}`), bot, token);
@@ -1110,7 +1213,9 @@ function applyFallbackMove(bot, token) {
   const fallbackDepth = Math.max(1, Math.min(bot.depth, 3));
   const move = findBestMove({ ...bot, depth: fallbackDepth });
   if (move) {
+    const quality = analyzeMoveQuality(move);
     const appliedMove = makeGameMove(move);
+    recordMoveInsight(appliedMove, quality);
     playMoveSound(appliedMove, 'opponent');
   }
   registerClockMove();
@@ -1130,7 +1235,9 @@ function updateGameState() {
   if (isCheckmate()) {
     gameMessage.textContent = onlineMode
       ? game.turn() === playerColor ? 'Checkmate. Your opponent wins.' : 'Checkmate! You win!'
-      : game.turn() === 'w' ? 'Checkmate. The engine wins this game.' : 'Checkmate! You win!';
+      : analysisMode
+        ? `Checkmate. ${game.turn() === 'w' ? 'White' : 'Black'} is checkmated.`
+        : game.turn() === 'w' ? 'Checkmate. The engine wins this game.' : 'Checkmate! You win!';
     markGameResult(game.turn() === playerColor ? 'defeat' : 'victory');
   } else if (isStalemate()) {
     gameMessage.textContent = customRules.noDraws
@@ -1284,6 +1391,7 @@ function applyOnlineMove(message) {
     updateOnlineStatus('The server sent a move out of turn. Rejoin this room to resynchronize.');
     return;
   }
+  const quality = analyzeMoveQuality({ from: message.from, to: message.to, promotion: message.promotion ?? 'q' });
   let appliedMove;
   try {
     appliedMove = makeGameMove({
@@ -1301,6 +1409,7 @@ function applyOnlineMove(message) {
     updateOnlineStatus('Board state mismatch. Disconnect and create a new room.');
     return;
   }
+  recordMoveInsight(appliedMove, quality);
   registerClockMove();
   playMoveSound(appliedMove, 'opponent');
   updateGameState();
@@ -1416,6 +1525,7 @@ function connectToOnlineRoom(action, roomCode = null) {
   updateOnlineStatus(action === 'browse' ? 'Connecting to the room server…' : 'Connecting to room server…');
   const socket = new WebSocket(endpoint);
   onlineSocket = socket;
+  let connectionFailed = false;
   socket.addEventListener('open', () => {
     if (socket !== onlineSocket) return;
     const request = action === 'browse'
@@ -1440,12 +1550,13 @@ function connectToOnlineRoom(action, roomCode = null) {
     }
   });
   socket.addEventListener('error', () => {
-    updateOnlineStatus('Could not connect. Check the server URL and make sure its room server is running.');
+    connectionFailed = true;
+    updateOnlineStatus('Could not reach that room server. On this PC, run start-openboard-online-server.bat; for a hosted site, enter your separately hosted WebSocket server URL.');
   });
   socket.addEventListener('close', () => {
     if (socket !== onlineSocket) return;
     onlineReady = false;
-    updateOnlineStatus('Connection to the online room server closed.');
+    if (!connectionFailed) updateOnlineStatus('The room server closed the connection. Check that the server is running and that the URL is correct.');
     renderBoard();
   });
 }
@@ -1475,6 +1586,7 @@ function startNewGame() {
     game.reset();
     configureStartingPosition();
     gameResult = false;
+    moveInsights = [];
     suggestedMove = null;
     selectedSquare = null;
     legalTargets = [];
@@ -1495,6 +1607,7 @@ function startNewGame() {
   gameResult = false;
   analysisMode = false;
   puzzleMode = false;
+  moveInsights = [];
   suggestedMove = null;
   selectedSquare = null;
   legalTargets = [];
@@ -1705,6 +1818,7 @@ document.querySelector('#undo').addEventListener('click', () => {
   if (botMove) redoMoves.push(botMove);
   const humanMove = undoGameMove();
   if (humanMove) redoMoves.push(humanMove);
+  moveInsights.length = game.history().length;
   gameResult = false;
   suggestedMove = null;
   selectedSquare = null;
@@ -1715,9 +1829,17 @@ document.querySelector('#undo').addEventListener('click', () => {
 document.querySelector('#redo').addEventListener('click', () => {
   if (aiThinking || gameResult || redoMoves.length === 0) return;
   const humanMove = redoMoves.pop();
-  if (humanMove) makeGameMove({ from: humanMove.from, to: humanMove.to, promotion: humanMove.promotion });
+  if (humanMove) {
+    const quality = analyzeMoveQuality(humanMove);
+    const appliedMove = makeGameMove({ from: humanMove.from, to: humanMove.to, promotion: humanMove.promotion });
+    recordMoveInsight(appliedMove, quality);
+  }
   const botMove = redoMoves.pop();
-  if (botMove) makeGameMove({ from: botMove.from, to: botMove.to, promotion: botMove.promotion });
+  if (botMove) {
+    const quality = analyzeMoveQuality(botMove);
+    const appliedMove = makeGameMove({ from: botMove.from, to: botMove.to, promotion: botMove.promotion });
+    recordMoveInsight(appliedMove, quality);
+  }
   suggestedMove = null;
   updateGameState();
   renderBoard();
@@ -1904,7 +2026,20 @@ document.querySelector('#online-copy-code').addEventListener('click', async () =
     updateOnlineStatus(`Invite code: ${onlineRoomCode}. Select and copy it manually.`);
   }
 });
-document.querySelector('#online-server-url').value = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.hostname || 'localhost'}:3001/ws`;
+const localOnlineHost = ['localhost', '127.0.0.1', '::1'].includes(location.hostname);
+const onlineServerUrl = document.querySelector('#online-server-url');
+const configuredOnlineServerUrl = document.querySelector('meta[name="openboard-server-url"]')?.content.trim() || '';
+if (localOnlineHost) {
+  onlineServerUrl.value = `ws://${location.hostname || 'localhost'}:3001/ws`;
+} else {
+  onlineServerUrl.value = configuredOnlineServerUrl
+    || localStorage.getItem('openboard-online-server-url')
+    || '';
+  onlineServerUrl.placeholder = 'wss://your-hosted-room-server.example/ws';
+}
+onlineServerUrl.addEventListener('change', () => {
+  if (!localOnlineHost) localStorage.setItem('openboard-online-server-url', onlineServerUrl.value.trim());
+});
 window.addEventListener('beforeunload', () => onlineSocket?.close());
 
 document.querySelector('#resign').addEventListener('click', () => {
@@ -2069,6 +2204,7 @@ document.querySelector('#puzzle-start').addEventListener('click', () => {
   }
   game.load('7k/8/5KQ1/8/8/8/8/8 w - - 0 1');
   game.clearCustomMovements();
+  moveInsights = [];
   customMovementBySquare = new Map();
   customPieceBySquare = new Map();
   customIdentityHistory = [];
@@ -2128,12 +2264,14 @@ document.querySelector('#load-position').addEventListener('click', () => {
   configureStartingPosition();
   analysisMode = true;
   gameResult = false;
+  moveInsights = [];
   suggestedMove = null;
   selectedSquare = null;
   legalTargets = [];
   renderBoard();
   document.querySelector('#analysis-dialog').close();
-  gameMessage.textContent = 'Analysis mode · play either side or request a suggestion.';
+  if (isGameOver()) updateGameState();
+  else gameMessage.textContent = 'Analysis mode · play either side or request a suggestion.';
 });
 
 document.querySelector('#copy-fen').addEventListener('click', async () => {

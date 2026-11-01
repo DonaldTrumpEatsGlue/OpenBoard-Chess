@@ -11,6 +11,17 @@ const allowedOrigins = (process.env.OPENBOARD_ALLOWED_ORIGINS || '')
   .map((origin) => origin.trim())
   .filter(Boolean);
 
+function isAllowedOrigin(origin) {
+  if (!origin || !allowedOrigins.length) return true;
+  return allowedOrigins.some((allowedOrigin) => {
+    if (!allowedOrigin.includes('*')) return origin === allowedOrigin;
+    const [prefix, suffix] = allowedOrigin.split('*');
+    return origin.startsWith(prefix)
+      && origin.endsWith(suffix)
+      && origin.length > prefix.length + suffix.length;
+  });
+}
+
 function send(socket, payload) {
   if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(payload));
 }
@@ -211,7 +222,7 @@ const websocketServer = new WebSocketServer({
   path: '/ws',
   maxPayload: 2048,
   verifyClient: ({ origin }, done) => {
-    if (allowedOrigins.length && origin && !allowedOrigins.includes(origin)) {
+    if (!isAllowedOrigin(origin)) {
       done(false, 403, 'Origin not allowed');
       return;
     }

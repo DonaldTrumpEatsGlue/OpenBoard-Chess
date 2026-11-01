@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="en">
   <head>
+    <meta name="openboard-server-url" content="__OPENBOARD_SERVER_URL__" />
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#17231f" />
@@ -105,6 +106,13 @@
           </div>
 
           <section class="moves-section">
+            <section class="game-insights" aria-label="Opening and move insights">
+              <p class="eyebrow">OPENING &amp; MOVE NOTES</p>
+              <strong id="opening-name">Opening not identified</strong>
+              <p id="opening-theme">The opening name and plans will appear as the game develops.</p>
+              <p id="latest-move-insight" role="status">Move feedback appears here after each move.</p>
+              <small>Quick local evaluation · not a tournament-grade engine review</small>
+            </section>
             <div class="section-title"><h3>Moves</h3><span id="move-count">0 moves</span></div>
             <div class="move-list" id="move-list" aria-live="polite">
               <div class="empty-moves">Moves will appear here as you play.</div>
@@ -206,7 +214,7 @@
         <div><p class="eyebrow">ONLINE PLAY</p><h2 id="online-title">Play online</h2></div>
         <button class="directory-close" id="online-close" type="button" aria-label="Close online play">×</button>
       </div>
-      <p class="editor-note">Find an open game or invite a friend. Online rooms require a reachable Openboard room server and support standard chess.</p>
+      <p class="editor-note">Find an open game or invite a friend. Online rooms support standard chess and need a reachable room server. The Windows launcher starts one locally; GitHub Pages needs a separately hosted server URL.</p>
       <label class="studio-field"><span>Room server URL</span><input id="online-server-url" type="url" autocomplete="url" /></label>
       <label class="studio-field"><span>Your display name</span><input id="online-player-name" maxlength="24" autocomplete="nickname" placeholder="Player" /></label>
       <div class="online-tabs" role="tablist" aria-label="Online game options">
@@ -293,6 +301,7 @@
     </dialog>
     <script defer src="./src/sound-manifest.js"></script>
     <script defer src="./src/piece-theme.js"></script>
+    <script defer src="./src/game-insights.js"></script>
     <script defer src="./vendor/chess.js"></script>
     <script defer src="./src/piece-studio.js"></script>
     <script defer src="./src/main.js"></script>

@@ -29,6 +29,8 @@ jobs:
         run: npm ci
       - name: Build site
         run: npm run build
+        env:
+          VITE_OPENBOARD_SERVER_URL: ${{ vars.OPENBOARD_SERVER_URL }}
       - name: Add Pages marker
         run: touch dist/.nojekyll
       - name: Upload Pages artifact

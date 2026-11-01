@@ -17,6 +17,9 @@ function stockfishAssetPath(fileName) {
 function stockfishFiles() {
   return {
     name: 'openboard-stockfish-files',
+    transformIndexHtml(html) {
+      return html.replace('__OPENBOARD_SERVER_URL__', process.env.VITE_OPENBOARD_SERVER_URL || '');
+    },
     configureServer(server) {
       server.middlewares.use('/stockfish', (request, response, next) => {
         const fileName = new URL(request.url, 'http://localhost').pathname.replace(/^\/+/, '');
@@ -56,7 +59,7 @@ function stockfishFiles() {
       const outputVendor = resolve('dist/vendor');
       await Promise.all([mkdir(outputScripts, { recursive: true }), mkdir(outputVendor, { recursive: true })]);
       await Promise.all([
-        ...['main.js', 'piece-theme.js', 'piece-studio.js', 'sound-manifest.js'].map((fileName) => copyFile(
+        ...['main.js', 'piece-theme.js', 'piece-studio.js', 'sound-manifest.js', 'game-insights.js'].map((fileName) => copyFile(
           resolve(sourceScripts, fileName),
           resolve(outputScripts, fileName),
         )),

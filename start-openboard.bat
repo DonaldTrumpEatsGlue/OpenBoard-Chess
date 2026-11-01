@@ -36,4 +36,19 @@ echo Check the Openboard Chess Server window for the error.
 pause
 exit /b 1
 :server_ready
+curl.exe --silent --fail http://127.0.0.1:3001/health >nul 2>nul
+if errorlevel 1 (
+  start "Openboard Online Rooms" "%~dp0start-openboard-online-server.bat"
+  for /l %%I in (1,1,15) do (
+    curl.exe --silent --fail http://127.0.0.1:3001/health >nul 2>nul
+    if not errorlevel 1 goto online_ready
+    timeout /t 1 /nobreak >nul
+  )
+  echo Online room server did not start. Offline chess is still available.
+  echo Check the Openboard Online Rooms window before using the Online tab.
+  goto open_app
+)
+:online_ready
+echo Openboard Online Rooms is available at ws://127.0.0.1:3001/ws.
+:open_app
 start "" http://127.0.0.1:5173/
