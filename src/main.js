@@ -1806,6 +1806,7 @@ async function connectToOnlineRoom(action, roomCode = null, roomPassword = '') {
     updateOnlineStatus(error.message || 'Enter a valid online room server URL.');
     return;
   }
+  let pendingRequest;
   if (action === 'create' || action === 'create-public') {
     const lobbyName = document.querySelector('#online-lobby-name').value.trim();
     if (!lobbyName) {
@@ -1819,7 +1820,7 @@ async function connectToOnlineRoom(action, roomCode = null, roomPassword = '') {
       document.querySelector('#online-lobby-password').focus();
       return;
     }
-    onlinePendingRequest = {
+    pendingRequest = {
       type: action === 'create-public' ? 'create-public-room' : 'create-room',
       lobbyName,
       password: document.querySelector('#online-password-enabled').checked
@@ -1827,7 +1828,7 @@ async function connectToOnlineRoom(action, roomCode = null, roomPassword = '') {
         : '',
     };
   } else if (action === 'join' || action === 'join-public') {
-    onlinePendingRequest = {
+    pendingRequest = {
       type: action === 'join-public' ? 'join-public-room' : 'join-room',
       code: roomCode ?? document.querySelector('#online-room-code').value.trim(),
       password: roomPassword || (
@@ -1837,9 +1838,10 @@ async function connectToOnlineRoom(action, roomCode = null, roomPassword = '') {
       ),
     };
   } else {
-    onlinePendingRequest = { type: 'list-public-rooms' };
+    pendingRequest = { type: 'list-public-rooms' };
   }
   if (action !== 'browse' && !setOnlineGameState(true)) return;
+  onlinePendingRequest = pendingRequest;
   updateOnlineStatus(action === 'browse' ? 'Connecting to the room server…' : 'Connecting to room server…');
   const socket = new WebSocket(endpoint);
   onlineSocket = socket;
