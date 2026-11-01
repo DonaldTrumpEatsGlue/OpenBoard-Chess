@@ -1318,7 +1318,7 @@ function initializeAuthSession() {
       token_type: fragment.get('token_type') || 'bearer',
     });
     history.replaceState(null, '', `${location.pathname}${location.search}`);
-    document.querySelector('#online-auth-status').textContent = 'Email confirmed. You can now join or create a lobby.';
+    document.querySelector('#online-auth-status').textContent = 'Signed in. You can now join or create a lobby.';
     return;
   }
 
@@ -1340,7 +1340,7 @@ function updateAccountUI(message = '') {
   const isSignedIn = Boolean(authSession?.access_token);
   const usernameField = document.querySelector('#online-username-field');
   document.querySelector('#online-account-state').textContent = isSignedIn
-    ? `Signed in · ${authSession.user?.email || 'verified account'}`
+    ? `Signed in · ${authSession.user?.email || 'Openboard account'}`
     : 'Sign in or create an account';
   document.querySelector('#online-username').disabled = authMode !== 'signup' || isSignedIn;
   usernameField.hidden = authMode !== 'signup' || isSignedIn;
@@ -1353,6 +1353,9 @@ function updateAccountUI(message = '') {
   document.querySelector('#online-auth-mode').textContent = authMode === 'signup'
     ? 'Already registered? Sign in'
     : 'Need an account? Create one';
+  document.querySelector('#online-continue').hidden = !isSignedIn;
+  document.querySelector('#online-signin-required').hidden = isSignedIn;
+  document.querySelector('#online-play-controls').hidden = !isSignedIn;
   if (message) document.querySelector('#online-auth-status').textContent = message;
 }
 
@@ -1447,21 +1450,27 @@ async function submitOnlineAuth() {
       if (!await checkUsernameAvailable(username)) {
         throw new Error('That username is already taken. Choose a different one.');
       }
-      await requestSupabaseAuth(`signup?redirect_to=${encodeURIComponent(`${location.origin}${location.pathname}`)}`, {
+      const session = await requestSupabaseAuth('signup', {
         email,
         password,
         data: { username },
       });
-      document.querySelector('#online-account-password').value = '';
-      status.textContent = `Username @${username} is reserved. Check ${email} for the verification link, then sign in.`;
-    } else {
-      const session = await requestSupabaseAuth('token?grant_type=password', { email, password });
       if (!session.access_token || !session.refresh_token) {
-        throw new Error('Email verification is required. Check your email before signing in.');
+        throw new Error('Supabase is still requiring email confirmation. Turn off “Confirm email” in Authentication → Sign In / Providers → Email, then remove this pending signup from Authentication → Users and create the account again.');
       }
       saveAuthSession(session);
       document.querySelector('#online-account-password').value = '';
-      status.textContent = 'Signed in. Your verified username will be confirmed when you connect.';
+      status.textContent = `Account created and signed in as @${username}.`;
+      selectOnlineSection('play');
+    } else {
+      const session = await requestSupabaseAuth('token?grant_type=password', { email, password });
+      if (!session.access_token || !session.refresh_token) {
+        throw new Error('Sign-in did not return a session. Check the email and password, then try again.');
+      }
+      saveAuthSession(session);
+      document.querySelector('#online-account-password').value = '';
+      status.textContent = 'Signed in. You can now join or create a lobby.';
+      selectOnlineSection('play');
     }
   } catch (error) {
     console.error('Online account request failed:', error);
@@ -1533,7 +1542,7 @@ function requestPublicRooms() {
     empty.className = 'public-room-empty';
     empty.textContent = 'Create an account and sign in to browse public lobbies.';
     document.querySelector('#public-room-list').append(empty);
-    updateOnlineStatus('Sign in to a verified account to browse public lobbies.');
+    updateOnlineStatus('Sign in to your Openboard account to browse public lobbies.');
     return;
   }
   if (onlineSocket?.readyState === WebSocket.OPEN) {
@@ -1557,6 +1566,21 @@ function selectOnlineTab(tab) {
   document.querySelector('#online-friends-panel').hidden = !friendsSelected;
   document.querySelector('#online-public-panel').hidden = friendsSelected;
   if (!friendsSelected) requestPublicRooms();
+}
+
+function selectOnlineSection(section) {
+  const accountSelected = section === 'account';
+  document.querySelector('#online-account-tab').setAttribute('aria-selected', String(accountSelected));
+  document.querySelector('#online-play-tab').setAttribute('aria-selected', String(!accountSelected));
+  document.querySelector('#online-account-tab').classList.toggle('active', accountSelected);
+  document.querySelector('#online-play-tab').classList.toggle('active', !accountSelected);
+  document.querySelector('#online-account-panel').hidden = !accountSelected;
+  document.querySelector('#online-play-panel').hidden = accountSelected;
+  if (!accountSelected && authSession?.access_token) requestPublicRoomsIfSelected();
+}
+
+function requestPublicRoomsIfSelected() {
+  if (!document.querySelector('#online-public-panel').hidden) requestPublicRooms();
 }
 
 function isCustomVariantActive() {
@@ -1652,7 +1676,7 @@ function handleOnlineMessage(socket, message) {
   if (message.type === 'error') {
     if (!onlineIdentityVerified) {
       onlinePendingRequest = null;
-      updateOnlineStatus(message.message || 'Sign in to a verified account before using online play.');
+      updateOnlineStatus(message.message || 'Sign in to your Openboard account before using online play.');
       onlineSocket = null;
       socket.close();
       return;
@@ -1665,7 +1689,7 @@ function handleOnlineMessage(socket, message) {
     onlineIdentityVerified = true;
     onlinePlayerName = message.username;
     document.querySelector('#online-account-state').textContent = `Signed in as @${onlinePlayerName}`;
-    document.querySelector('#online-auth-status').textContent = 'Verified account ready for online play.';
+    document.querySelector('#online-auth-status').textContent = 'Account ready for online play.';
     if (onlinePendingRequest) {
       socket.send(JSON.stringify(onlinePendingRequest));
       onlinePendingRequest = null;
@@ -1770,7 +1794,7 @@ async function connectToOnlineRoom(action, roomCode = null, roomPassword = '') {
   try {
     const session = await getValidAuthSession();
     if (!session?.access_token) {
-      updateOnlineStatus('Create an account and verify your email before using online play.');
+      updateOnlineStatus('Create an account and sign in before using online play.');
       document.querySelector('#online-email').focus();
       return;
     }
@@ -2277,14 +2301,20 @@ function showMessage(title, text) {
 }
 
 document.querySelector('#online-open').addEventListener('click', () => {
+  selectOnlineSection(authSession?.access_token ? 'play' : 'account');
   selectOnlineTab('friends');
   onlineDialog.showModal();
 });
 document.querySelector('#online-tab').addEventListener('click', () => {
+  selectOnlineSection(authSession?.access_token ? 'play' : 'account');
   selectOnlineTab('public');
   onlineDialog.showModal();
 });
 document.querySelector('#online-close').addEventListener('click', () => onlineDialog.close());
+document.querySelector('#online-account-tab').addEventListener('click', () => selectOnlineSection('account'));
+document.querySelector('#online-play-tab').addEventListener('click', () => selectOnlineSection('play'));
+document.querySelector('#online-continue').addEventListener('click', () => selectOnlineSection('play'));
+document.querySelector('#online-go-account').addEventListener('click', () => selectOnlineSection('account'));
 document.querySelector('#online-friends-tab').addEventListener('click', () => selectOnlineTab('friends'));
 document.querySelector('#online-public-tab').addEventListener('click', () => selectOnlineTab('public'));
 document.querySelector('#online-host').addEventListener('click', () => connectToOnlineRoom('create'));
@@ -2300,8 +2330,8 @@ document.querySelector('#online-auth-mode').addEventListener('click', () => {
     authMode === 'signup' ? 'new-password' : 'current-password',
   );
   updateAccountUI(authMode === 'signup'
-    ? 'Create a username and verify your email to claim it.'
-    : 'Sign in with your verified email and password.');
+    ? 'Create an account. Email confirmation is disabled for this free setup.'
+    : 'Sign in with your email and password.');
 });
 document.querySelector('#online-auth-signout').addEventListener('click', signOutOnlineAccount);
 for (const field of ['#online-username', '#online-email', '#online-account-password']) {

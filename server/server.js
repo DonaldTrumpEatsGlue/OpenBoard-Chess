@@ -38,7 +38,7 @@ async function authenticateAccessToken(accessToken) {
     throw new Error('Online accounts are not configured on this server yet.');
   }
   if (typeof accessToken !== 'string' || accessToken.length < 20 || accessToken.length > 4096) {
-    throw new Error('Sign in to a verified account before using online play.');
+    throw new Error('Sign in to your Openboard account before using online play.');
   }
 
   const headers = {
@@ -51,9 +51,7 @@ async function authenticateAccessToken(accessToken) {
   });
   if (!userResponse.ok) throw new Error('Your sign-in expired. Sign in again to continue.');
   const user = await userResponse.json();
-  if (!user?.id || !(user.email_confirmed_at || user.confirmed_at)) {
-    throw new Error('Verify your email address before using online play.');
-  }
+  if (!user?.id) throw new Error('Your sign-in is invalid. Sign in again to continue.');
 
   const profileUrl = new URL(`${supabaseUrl}/rest/v1/profiles`);
   profileUrl.searchParams.set('id', `eq.${user.id}`);
@@ -64,7 +62,7 @@ async function authenticateAccessToken(accessToken) {
   });
   if (!profileResponse.ok) throw new Error('Could not load your reserved username.');
   const [profile] = await profileResponse.json();
-  if (!profile?.username) throw new Error('Your verified account does not have a reserved username.');
+  if (!profile?.username) throw new Error('Your account does not have a reserved username. Create a new account or contact the site owner.');
   return { id: user.id, username: profile.username };
 }
 
@@ -158,8 +156,8 @@ async function handleMessage(socket, player, rawMessage) {
     send(socket, {
       type: 'error',
       message: player.authenticating
-        ? 'Account sign-in is still being verified.'
-        : 'Sign in to a verified account before using online play.',
+        ? 'Account sign-in is still being checked.'
+        : 'Sign in to your Openboard account before using online play.',
     });
     return;
   }

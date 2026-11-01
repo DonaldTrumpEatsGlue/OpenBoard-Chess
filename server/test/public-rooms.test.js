@@ -42,7 +42,7 @@ async function waitForServer(port) {
   throw new Error('Online room server did not start in time.');
 }
 
-function createAccount(username, verified = true) {
+function createAccount(username, verified = false) {
   const token = `test-access-token-long-${userIdCounter}`;
   const id = `00000000-0000-4000-8000-${String(userIdCounter++).padStart(12, '0')}`;
   authUsers.set(token, {
@@ -126,31 +126,30 @@ test('origin allowlist supports GitHub Pages subdomains and rejects unrelated we
   assert.match(error.message, /Unexpected server response: 403/);
 });
 
-test('database schema reserves case-insensitive usernames before email confirmation', () => {
+test('database schema reserves case-insensitive usernames when accounts are created', () => {
   const schema = readFileSync(path.resolve(__dirname, '../../supabase/schema.sql'), 'utf8');
   assert.match(schema, /username_key text not null unique/i);
   assert.match(schema, /after insert on auth\.users/i);
-  assert.match(schema, /after update of email_confirmed_at on auth\.users/i);
   assert.match(schema, /new\.raw_user_meta_data\s*->>\s*'username'/i);
   assert.match(schema, /lower\(requested_username\)/i);
   assert.match(schema, /raise exception 'username_taken'/i);
-  assert.match(schema, /new\.email_confirmed_at is null/i);
+  assert.doesNotMatch(schema, /new\.email_confirmed_at is null/i);
+  assert.match(schema, /from auth\.users as users[\s\S]*on conflict do nothing/i);
 });
 
-test('online actions require a verified account and use its reserved username', async () => {
+test('online actions require an account and use its reserved username without email verification', async () => {
   const anonymous = await new WebSocket(endpoint);
   await once(anonymous, 'open');
   const denied = await request(anonymous, { type: 'list-public-rooms' });
   assert.equal(denied.type, 'error');
-  assert.match(denied.message, /verified account/i);
+  assert.match(denied.message, /sign in to your openboard account/i);
   anonymous.close();
 
   const token = createAccount('Unverified', false);
   const unverified = await new WebSocket(endpoint);
   await once(unverified, 'open');
-  const authRejected = await request(unverified, { type: 'authenticate', accessToken: token });
-  assert.equal(authRejected.type, 'error');
-  assert.match(authRejected.message, /verify your email/i);
+  const authAccepted = await request(unverified, { type: 'authenticate', accessToken: token });
+  assert.deepEqual(authAccepted, { type: 'authenticated', username: 'Unverified' });
   unverified.close();
 
   const host = await connect(undefined, 'ReservedOwner');

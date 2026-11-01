@@ -25,8 +25,7 @@ as $$
 declare
   requested_username text := new.raw_user_meta_data ->> 'username';
 begin
-  if new.email_confirmed_at is null
-    or exists (select 1 from public.profiles where id = new.id) then
+  if exists (select 1 from public.profiles where id = new.id) then
     return new;
   end if;
 
@@ -51,6 +50,16 @@ create trigger on_openboard_user_created
   for each row execute procedure public.claim_openboard_username();
 
 drop trigger if exists on_openboard_user_verified on auth.users;
-create trigger on_openboard_user_verified
-  after update of email_confirmed_at on auth.users
-  for each row execute procedure public.claim_openboard_username();
+
+insert into public.profiles (id, username, username_key)
+select
+  users.id,
+  users.raw_user_meta_data ->> 'username',
+  lower(users.raw_user_meta_data ->> 'username')
+from auth.users as users
+where users.raw_user_meta_data ->> 'username' ~ '^[A-Za-z0-9_]{3,20}$'
+  and not exists (
+    select 1 from public.profiles where profiles.id = users.id
+  )
+order by users.created_at, users.id
+on conflict do nothing;

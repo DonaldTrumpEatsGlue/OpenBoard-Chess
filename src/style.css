@@ -264,6 +264,12 @@ body[data-interface-theme="light"] #custom-rules-dialog { color: #27382d; backgr
 .online-account .studio-status { margin: 10px 0 0; }
 .online-auth-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .online-auth-actions button { min-height: 34px; padding: 0 11px; border-radius: 7px; font-size: 10px; cursor: pointer; }
+.online-sections { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin: 14px 0; padding: 4px; border: 1px solid #ffffff12; border-radius: 10px; background: #10191477; }
+.online-section-tab { min-height: 36px; border: 0; border-radius: 7px; color: var(--muted); background: transparent; font-size: 11px; font-weight: 600; cursor: pointer; }
+.online-section-tab.active { color: #19231b; background: var(--lime); }
+.online-section-panel[hidden], .online-play-controls[hidden], .online-signin-required[hidden] { display: none; }
+.online-signin-required { margin: 14px 0; padding: 16px; border: 1px solid #ffffff17; border-radius: 10px; background: #ffffff05; color: var(--muted); font-size: 11px; }
+.online-continue-button { margin-top: 12px; min-height: 34px; padding: 0 11px; border-radius: 7px; font-size: 10px; cursor: pointer; }
 .online-account [hidden], .online-lobby-settings [hidden] { display: none; }
 .online-password-toggle { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 10px; cursor: pointer; }
 .online-password-toggle input { accent-color: var(--lime); }
@@ -292,8 +298,10 @@ body[data-interface-theme="light"] .online-dialog { color: #27382d; background: 
 body[data-interface-theme="light"] .online-dialog .studio-field input { color: #27382d; border-color: #243d2a24; background: #fff; }
 body[data-interface-theme="light"] .online-account, body[data-interface-theme="light"] .online-lobby-settings { border-color: #243d2a20; background: #ffffff; }
 body[data-interface-theme="light"] .online-account-heading strong { color: #27382d; }
-body[data-interface-theme="light"] .online-tabs { border-color: #243d2a20; background: #e8ebdf; }
+body[data-interface-theme="light"] .online-tabs, body[data-interface-theme="light"] .online-sections { border-color: #243d2a20; background: #e8ebdf; }
 body[data-interface-theme="light"] .online-tab.active { color: #19231b; }
+body[data-interface-theme="light"] .online-section-tab.active { color: #19231b; }
+body[data-interface-theme="light"] .online-signin-required { border-color: #243d2a20; background: #fff; }
 body[data-interface-theme="light"] .public-room-card { border-color: #243d2a20; background: #fff; }
 body[data-interface-theme="light"] .public-room-copy strong { color: #27382d; }
 body[data-interface-theme="light"] .rule-toggle, body[data-interface-theme="light"] .custom-piece-editor { border-color: #243d2a20; background: #ffffff; }
