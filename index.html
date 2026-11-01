@@ -15,11 +15,15 @@
           <span class="brand-mark" aria-hidden="true">♞</span>
           <span>openboard</span>
         </a>
+        <nav class="primary-nav" aria-label="Game modes">
+          <a class="primary-nav-tab" href="#game">Computer</a>
+          <button class="primary-nav-tab" id="online-tab" type="button" aria-haspopup="dialog" aria-controls="online-dialog">Online</button>
+        </nav>
         <span class="topbar-note">Chess, on your terms.</span>
       </header>
 
       <main class="layout">
-        <section class="play-area" aria-label="Chess game">
+        <section class="play-area" id="game" aria-label="Chess game">
           <div class="game-heading">
             <div>
               <p class="eyebrow">PLAY THE COMPUTER</p>
@@ -199,16 +203,27 @@
     </dialog>
     <dialog id="online-dialog" class="online-dialog" aria-labelledby="online-title">
       <div class="directory-header">
-        <div><p class="eyebrow">FRIEND MATCH</p><h2 id="online-title">Play online</h2></div>
+        <div><p class="eyebrow">ONLINE PLAY</p><h2 id="online-title">Play online</h2></div>
         <button class="directory-close" id="online-close" type="button" aria-label="Close online play">×</button>
       </div>
-      <p class="editor-note">Invite a friend with a room code. Both players need access to the same Openboard room server. Only standard chess is supported in online matches.</p>
+      <p class="editor-note">Find an open game or invite a friend. Online rooms require a reachable Openboard room server and support standard chess.</p>
       <label class="studio-field"><span>Room server URL</span><input id="online-server-url" type="url" autocomplete="url" /></label>
       <label class="studio-field"><span>Your display name</span><input id="online-player-name" maxlength="24" autocomplete="nickname" placeholder="Player" /></label>
-      <div class="online-actions"><button class="primary-button" id="online-host" type="button">Create invite</button><button class="secondary-button" id="online-disconnect" type="button">Play offline</button></div>
-      <label class="studio-field"><span>Friend's invite code</span><input id="online-room-code" maxlength="6" autocomplete="off" autocapitalize="characters" /></label>
-      <button class="secondary-button online-join-button" id="online-join" type="button">Join game</button>
-      <div class="online-invite" id="online-invite" hidden><span>Invite code</span><strong id="online-invite-code"></strong><button class="secondary-button" id="online-copy-code" type="button">Copy</button></div>
+      <div class="online-tabs" role="tablist" aria-label="Online game options">
+        <button class="online-tab active" id="online-friends-tab" type="button" role="tab" aria-selected="true" aria-controls="online-friends-panel">Friend invite</button>
+        <button class="online-tab" id="online-public-tab" type="button" role="tab" aria-selected="false" aria-controls="online-public-panel">Public rooms</button>
+      </div>
+      <section id="online-friends-panel" class="online-tab-panel" role="tabpanel" aria-labelledby="online-friends-tab">
+        <div class="online-actions"><button class="primary-button" id="online-host" type="button">Create invite</button></div>
+        <label class="studio-field"><span>Friend's invite code</span><input id="online-room-code" maxlength="6" autocomplete="off" autocapitalize="characters" /></label>
+        <button class="secondary-button online-join-button" id="online-join" type="button">Join game</button>
+        <div class="online-invite" id="online-invite" hidden><span>Invite code</span><strong id="online-invite-code"></strong><button class="secondary-button" id="online-copy-code" type="button">Copy</button></div>
+      </section>
+      <section id="online-public-panel" class="online-tab-panel" role="tabpanel" aria-labelledby="online-public-tab" hidden>
+        <div class="online-actions"><button class="primary-button" id="online-create-public" type="button">Create public game</button><button class="secondary-button" id="online-refresh-rooms" type="button">Refresh list</button></div>
+        <div class="public-room-list" id="public-room-list" role="list" aria-live="polite"><p class="public-room-empty">Connect to a room server to find open games.</p></div>
+      </section>
+      <div class="online-footer-actions"><button class="secondary-button" id="online-disconnect" type="button">Play offline</button></div>
       <p class="studio-status" id="online-status" role="status">No online room connected.</p>
     </dialog>
     <dialog id="piece-studio-dialog" class="piece-studio-dialog" aria-labelledby="piece-studio-title">

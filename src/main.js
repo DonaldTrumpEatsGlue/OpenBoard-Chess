@@ -133,6 +133,8 @@ let onlineRoomCode = null;
 let onlinePlayerName = 'Player';
 let onlinePreviousClock = null;
 let onlinePreviousColor = null;
+let publicRooms = [];
+let publicRoomsTimer = null;
 const defaultCustomRules = {
   noDraws: false,
   pieceMovements: {
@@ -1132,6 +1134,65 @@ function updateOnlineStatus(message) {
   document.querySelector('#online-status').textContent = message;
 }
 
+function renderPublicRooms() {
+  const list = document.querySelector('#public-room-list');
+  list.replaceChildren();
+  const availableRooms = publicRooms.filter((room) => room.code !== onlineRoomCode);
+  if (!availableRooms.length) {
+    const empty = document.createElement('p');
+    empty.className = 'public-room-empty';
+    empty.textContent = publicRooms.some((room) => room.code === onlineRoomCode)
+      ? 'Your public game is listed for other players. Waiting for someone to join.'
+      : 'No open games right now. Create one and invite someone to join.';
+    list.append(empty);
+    return;
+  }
+
+  for (const room of availableRooms) {
+    const card = document.createElement('div');
+    card.className = 'public-room-card';
+    card.setAttribute('role', 'listitem');
+    const copy = document.createElement('div');
+    copy.className = 'public-room-copy';
+    const name = document.createElement('strong');
+    name.textContent = room.name;
+    const details = document.createElement('span');
+    details.textContent = `Waiting for a player · ${room.code}`;
+    const join = document.createElement('button');
+    join.className = 'primary-button';
+    join.type = 'button';
+    join.textContent = 'Join';
+    join.addEventListener('click', () => connectToOnlineRoom('join-public', room.code));
+    copy.append(name, details);
+    card.append(copy, join);
+    list.append(card);
+  }
+}
+
+function requestPublicRooms() {
+  if (onlineSocket?.readyState === WebSocket.OPEN) {
+    updateOnlineStatus('Refreshing public games…');
+    onlineSocket.send(JSON.stringify({ type: 'list-public-rooms' }));
+    return;
+  }
+  if (onlineSocket?.readyState === WebSocket.CONNECTING) return;
+  publicRooms = [];
+  renderPublicRooms();
+  document.querySelector('#public-room-list .public-room-empty').textContent = 'Connecting to the room server…';
+  connectToOnlineRoom('browse');
+}
+
+function selectOnlineTab(tab) {
+  const friendsSelected = tab === 'friends';
+  document.querySelector('#online-friends-tab').setAttribute('aria-selected', String(friendsSelected));
+  document.querySelector('#online-public-tab').setAttribute('aria-selected', String(!friendsSelected));
+  document.querySelector('#online-friends-tab').classList.toggle('active', friendsSelected);
+  document.querySelector('#online-public-tab').classList.toggle('active', !friendsSelected);
+  document.querySelector('#online-friends-panel').hidden = !friendsSelected;
+  document.querySelector('#online-public-panel').hidden = friendsSelected;
+  if (!friendsSelected) requestPublicRooms();
+}
+
 function isCustomVariantActive() {
   return customRules.noDraws || customRules.customPieces.length > 0
     || Object.entries(customRules.pieceMovements).some(([piece, sides]) => ['w', 'b'].some((color) => {
@@ -1222,6 +1283,15 @@ function handleOnlineMessage(socket, message) {
     updateOnlineStatus(message.message || 'The room server rejected that action.');
     return;
   }
+  if (message.type === 'public-rooms') {
+    publicRooms = Array.isArray(message.rooms)
+      ? message.rooms.filter((room) => typeof room?.code === 'string' && typeof room?.name === 'string')
+      : [];
+    renderPublicRooms();
+    const count = publicRooms.filter((room) => room.code !== onlineRoomCode).length;
+    updateOnlineStatus(`Found ${count} other open ${count === 1 ? 'game' : 'games'}.`);
+    return;
+  }
   if (message.type === 'room-created') {
     onlineRoomCode = message.code;
     playerColor = message.color;
@@ -1229,8 +1299,14 @@ function handleOnlineMessage(socket, message) {
     flipped = false;
     document.querySelector('#online-invite-code').textContent = onlineRoomCode;
     document.querySelector('#online-invite').hidden = false;
+    if (message.isPublic) {
+      publicRooms = [{ code: onlineRoomCode, name: onlinePlayerName }, ...publicRooms.filter((room) => room.code !== onlineRoomCode)];
+    }
     startNewGame();
-    updateOnlineStatus('Room created. Share the server URL and invite code with your friend.');
+    updateOnlineStatus(message.isPublic
+      ? 'Public game created. It is listed for anyone using this room server.'
+      : 'Room created. Share the server URL and invite code with your friend.');
+    renderPublicRooms();
     renderBoard();
     return;
   }
@@ -1286,7 +1362,11 @@ function handleOnlineMessage(socket, message) {
   }
 }
 
-function connectToOnlineRoom(action) {
+function connectToOnlineRoom(action, roomCode = null) {
+  if (action === 'browse' && onlineSocket?.readyState === WebSocket.OPEN) {
+    requestPublicRooms();
+    return;
+  }
   if (onlineSocket) {
     onlineSocket.close();
     onlineSocket = null;
@@ -1300,16 +1380,25 @@ function connectToOnlineRoom(action) {
     updateOnlineStatus(error.message || 'Enter a valid online room server URL.');
     return;
   }
-  if (!setOnlineGameState(true)) return;
+  if (action !== 'browse' && !setOnlineGameState(true)) return;
   onlinePlayerName = document.querySelector('#online-player-name').value.trim().slice(0, 24) || 'Player';
-  updateOnlineStatus('Connecting to room server…');
+  updateOnlineStatus(action === 'browse' ? 'Connecting to the room server…' : 'Connecting to room server…');
   const socket = new WebSocket(endpoint);
   onlineSocket = socket;
   socket.addEventListener('open', () => {
     if (socket !== onlineSocket) return;
-    socket.send(JSON.stringify(action === 'create'
-      ? { type: 'create-room', name: onlinePlayerName }
-      : { type: 'join-room', code: document.querySelector('#online-room-code').value.trim(), name: onlinePlayerName }));
+    const request = action === 'browse'
+      ? { type: 'list-public-rooms' }
+      : action === 'create'
+        ? { type: 'create-room', name: onlinePlayerName }
+        : action === 'create-public'
+          ? { type: 'create-public-room', name: onlinePlayerName }
+          : {
+            type: action === 'join-public' ? 'join-public-room' : 'join-room',
+            code: roomCode ?? document.querySelector('#online-room-code').value.trim(),
+            name: onlinePlayerName,
+          };
+    socket.send(JSON.stringify(request));
   });
   socket.addEventListener('message', (event) => {
     try {
@@ -1744,11 +1833,32 @@ function showMessage(title, text) {
   messageDialog.showModal();
 }
 
-document.querySelector('#online-open').addEventListener('click', () => onlineDialog.showModal());
+document.querySelector('#online-open').addEventListener('click', () => {
+  selectOnlineTab('friends');
+  onlineDialog.showModal();
+});
+document.querySelector('#online-tab').addEventListener('click', () => {
+  selectOnlineTab('public');
+  onlineDialog.showModal();
+});
 document.querySelector('#online-close').addEventListener('click', () => onlineDialog.close());
+document.querySelector('#online-friends-tab').addEventListener('click', () => selectOnlineTab('friends'));
+document.querySelector('#online-public-tab').addEventListener('click', () => selectOnlineTab('public'));
 document.querySelector('#online-host').addEventListener('click', () => connectToOnlineRoom('create'));
+document.querySelector('#online-create-public').addEventListener('click', () => connectToOnlineRoom('create-public'));
+document.querySelector('#online-refresh-rooms').addEventListener('click', requestPublicRooms);
 document.querySelector('#online-join').addEventListener('click', () => connectToOnlineRoom('join'));
 document.querySelector('#online-disconnect').addEventListener('click', disconnectOnlineGame);
+onlineDialog.addEventListener('close', () => {
+  if (publicRoomsTimer) clearInterval(publicRoomsTimer);
+  publicRoomsTimer = null;
+});
+onlineDialog.addEventListener('toggle', () => {
+  if (!onlineDialog.open || publicRoomsTimer) return;
+  publicRoomsTimer = setInterval(() => {
+    if (!document.querySelector('#online-public-panel').hidden) requestPublicRooms();
+  }, 15_000);
+});
 document.querySelector('#online-copy-code').addEventListener('click', async () => {
   if (!onlineRoomCode) return;
   try {

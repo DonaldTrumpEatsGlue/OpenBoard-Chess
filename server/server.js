@@ -30,6 +30,15 @@ function generateRoomCode() {
   return code;
 }
 
+function getPublicRooms() {
+  const now = Date.now();
+  return [...rooms.values()]
+    .filter((room) => room.isPublic && room.expiresAt > now
+      && room.players.w.socket?.readyState === WebSocket.OPEN
+      && (!room.players.b.socket || room.players.b.socket.readyState !== WebSocket.OPEN))
+    .map((room) => ({ code: room.code, name: room.players.w.name }));
+}
+
 function broadcast(room, payload) {
   for (const player of Object.values(room.players)) send(player.socket, payload);
 }
@@ -65,11 +74,17 @@ function handleMessage(socket, player, rawMessage) {
     return;
   }
 
-  if (message.type === 'create-room') {
+  if (message.type === 'list-public-rooms') {
+    send(socket, { type: 'public-rooms', rooms: getPublicRooms() });
+    return;
+  }
+
+  if (message.type === 'create-room' || message.type === 'create-public-room') {
     if (player.room) leaveRoom(player);
     const code = generateRoomCode();
     const room = {
       code,
+      isPublic: message.type === 'create-public-room',
       chess: new Chess(),
       players: {
         w: { socket, name: normalizeName(message.name, 'White') },
@@ -80,15 +95,29 @@ function handleMessage(socket, player, rawMessage) {
     rooms.set(code, room);
     player.room = room;
     player.color = 'w';
-    send(socket, { type: 'room-created', code, color: 'w', name: room.players.b.name });
+    send(socket, {
+      type: 'room-created',
+      code,
+      color: 'w',
+      name: room.players.b.name,
+      isPublic: room.isPublic,
+    });
     return;
   }
 
-  if (message.type === 'join-room') {
+  if (message.type === 'join-room' || message.type === 'join-public-room') {
     const code = typeof message.code === 'string' ? message.code.trim().toUpperCase() : '';
     const room = rooms.get(code);
     if (!room || room.expiresAt < Date.now()) {
       send(socket, { type: 'error', message: 'That invite code is not active.' });
+      return;
+    }
+    if (message.type === 'join-public-room' && !room.isPublic) {
+      send(socket, { type: 'error', message: 'That room is not listed as a public game.' });
+      return;
+    }
+    if (!room.players.w.socket || room.players.w.socket.readyState !== WebSocket.OPEN) {
+      send(socket, { type: 'error', message: 'The room host is no longer connected.' });
       return;
     }
     if (room.players.b.socket && room.players.b.socket.readyState === WebSocket.OPEN) {

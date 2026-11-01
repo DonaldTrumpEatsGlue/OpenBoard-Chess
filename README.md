@@ -20,9 +20,11 @@ The page also opens directly from `index.html`, but browser security can prevent
 
 ## Friend games
 
-Start the room server with `start-openboard-online-server.bat` or `npm run online-server`; it listens on port 3001. In the app, choose **Play a friend online**, create a room, then share the displayed room-server URL and six-character invite code. Your friend enters both values and selects **Join game**. The server applies and validates every move using chess.js before relaying it; room state is in memory and rooms expire after 30 minutes. To play over the public internet, host the Node server on an internet-accessible machine and use its secure `wss://` URL (configure `OPENBOARD_PORT` and optionally `OPENBOARD_ALLOWED_ORIGINS`); the bat launcher is for local testing.
+Start the room server with `start-openboard-online-server.bat` or `npm run online-server`; it listens on port 3001. Use the **Online** tab to browse open public rooms, create a public game, or switch to **Friend invite** to create/join a private room by code. Everyone must use the same reachable room-server URL. The server applies and validates every move using chess.js before relaying it; room state is in memory and rooms expire after 30 minutes. To play over the public internet, host the Node server on an internet-accessible machine and use its secure `wss://` URL (configure `OPENBOARD_PORT` and optionally `OPENBOARD_ALLOWED_ORIGINS`); the bat launcher is for local testing.
 
-Online rooms currently support two players in standard chess only. Clocks, draw offers, account login, friends lists, ranked matchmaking, persistent game history, and automatic reconnect are not implemented. Do not expose the room server to untrusted public traffic without placing it behind HTTPS/WSS and configuring allowed origins.
+Online rooms currently support two players in standard chess only. The public browser lists rooms on the selected server; it is not a global directory across unrelated servers. GitHub Pages hosts only the game website, so public online rooms require a separately hosted WebSocket server. Clocks, draw offers, account login, friends lists, ranked matchmaking, persistent game history, and automatic reconnect are not implemented. Do not expose the room server to untrusted public traffic without placing it behind HTTPS/WSS and configuring allowed origins.
+
+Run `npm run test:online` to test public room listing, private-room exclusion, and joining a listed game.
 
 ## Current features
 
