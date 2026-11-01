@@ -10,8 +10,11 @@ const stockfishAssets = [
   'Copying.txt',
 ];
 
+function stockfishAssetPath(fileName) {
+  return resolve('node_modules/stockfish', fileName === 'Copying.txt' ? fileName : `bin/${fileName}`);
+}
+
 function stockfishFiles() {
-  const packageDirectory = resolve('node_modules/stockfish');
   return {
     name: 'openboard-stockfish-files',
     configureServer(server) {
@@ -26,7 +29,7 @@ function stockfishFiles() {
           ? 'application/wasm'
           : fileName.endsWith('.js') ? 'text/javascript' : 'text/plain; charset=utf-8');
         response.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-        createReadStream(resolve(packageDirectory, 'bin', fileName))
+        createReadStream(stockfishAssetPath(fileName))
           .on('error', next)
           .pipe(response);
       });
@@ -44,7 +47,7 @@ function stockfishFiles() {
       const outputDirectory = resolve('dist/stockfish');
       await mkdir(outputDirectory, { recursive: true });
       await Promise.all(stockfishAssets.map((fileName) => copyFile(
-        resolve(packageDirectory, fileName === 'Copying.txt' ? fileName : `bin/${fileName}`),
+        stockfishAssetPath(fileName),
         resolve(outputDirectory, fileName),
       )));
 

@@ -979,11 +979,38 @@ function findBestMove(bot) {
   return scoredMoves[0]?.move ?? moves[0];
 }
 
-function reportStockfishFailure(error) {
+function reportStockfishFailure(error, bot, token) {
   console.error('Stockfish could not complete its move:', error);
-  aiThinking = false;
-  gameMessage.textContent = 'Stockfish could not complete its move. Choose an opponent and start a new game to retry.';
-  renderBoard();
+  if (token !== gameToken || gameResult || isGameOver()) return;
+  const fallbackDepth = Math.max(1, Math.min(bot.depth || 2, 2));
+  let move;
+  try {
+    move = findBestMove({ depth: fallbackDepth, variety: 1 });
+  } catch (fallbackError) {
+    console.error('The local fallback could not find a move:', fallbackError);
+    aiThinking = false;
+    gameMessage.textContent = 'Stockfish and the local fallback both failed. Reload the page and start a new game.';
+    renderBoard();
+    return;
+  }
+  if (!move) {
+    aiThinking = false;
+    gameMessage.textContent = 'Stockfish failed and no legal fallback move is available. Start a new game.';
+    renderBoard();
+    return;
+  }
+  try {
+    const appliedMove = makeGameMove(move);
+    playMoveSound(appliedMove, 'opponent');
+    registerClockMove();
+    finishBotTurn();
+    gameMessage.textContent = `Stockfish couldn't load; the local fallback played ${move.san}.`;
+  } catch (fallbackError) {
+    console.error('The local fallback move could not be applied:', fallbackError);
+    aiThinking = false;
+    gameMessage.textContent = 'Stockfish and the local fallback both failed. Reload the page and start a new game.';
+    renderBoard();
+  }
 }
 
 function requestBotMove(bot, token) {
@@ -1011,7 +1038,7 @@ function requestBotMove(bot, token) {
       }
       if (!uciMove || uciMove === '(none)' || uciMove === '0000') {
         if (!isGameOver()) {
-          reportStockfishFailure(new Error('The engine returned no move for a non-terminal position.'));
+          reportStockfishFailure(new Error('The engine returned no move for a non-terminal position.'), bot, token);
         }
         return;
       }
@@ -1021,7 +1048,7 @@ function requestBotMove(bot, token) {
         const appliedMove = makeGameMove(move);
         playMoveSound(appliedMove, 'opponent');
       } catch (error) {
-        reportStockfishFailure(new Error(`The engine returned an illegal move: ${error.message}`));
+        reportStockfishFailure(new Error(`The engine returned an illegal move: ${error.message}`), bot, token);
         return;
       }
       registerClockMove();
@@ -1070,11 +1097,11 @@ function requestBotMove(bot, token) {
         activeWorker = null;
       }
       if (token !== gameToken || isGameOver() || gameResult) return;
-      reportStockfishFailure(error);
+      reportStockfishFailure(error, bot, token);
     };
     worker.postMessage('uci');
   } catch (error) {
-    reportStockfishFailure(error);
+    reportStockfishFailure(error, bot, token);
   }
 }
 
