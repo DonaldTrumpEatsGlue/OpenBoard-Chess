@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: openboard-online
+    runtime: node
+    plan: free
+    region: oregon
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: OPENBOARD_ALLOWED_ORIGINS
+        value: https://*.github.io
