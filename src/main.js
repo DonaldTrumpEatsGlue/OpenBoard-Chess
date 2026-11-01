@@ -108,6 +108,7 @@ const botAvatarColors = ['#d3a771', '#9dbea4', '#91a5d5', '#81ad91', '#d2bd75', 
 
 let selectedSquare = null;
 let legalTargets = [];
+let suggestedMove = null;
 let flipped = false;
 let aiThinking = false;
 let gameToken = 0;
@@ -724,6 +725,8 @@ function renderBoard() {
       button.dataset.square = square;
       button.setAttribute('role', 'gridcell');
       button.setAttribute('aria-label', `${square}${piece ? `, ${piece.color === 'w' ? 'white' : 'black'} ${customIdentity?.name ?? piece.type}` : ''}`);
+      if (suggestedMove?.from === square) button.classList.add('suggested-from');
+      if (suggestedMove?.to === square) button.classList.add('suggested-to');
 
       if (colIndex === 0) {
         const rankLabel = document.createElement('span');
@@ -859,6 +862,7 @@ function playMove(from, to, promotion = 'q') {
     gameMessage.textContent = 'That move could not be made. Please choose another square.';
     return;
   }
+  suggestedMove = null;
   if (puzzleMode && (from !== puzzleSolution.from || to !== puzzleSolution.to)) {
     undoGameMove();
     gameMessage.textContent = 'Not quite. Look for a checking move near the black king.';
@@ -1444,6 +1448,7 @@ function startNewGame() {
     game.reset();
     configureStartingPosition();
     gameResult = false;
+    suggestedMove = null;
     selectedSquare = null;
     legalTargets = [];
     aiThinking = false;
@@ -1463,6 +1468,7 @@ function startNewGame() {
   gameResult = false;
   analysisMode = false;
   puzzleMode = false;
+  suggestedMove = null;
   selectedSquare = null;
   legalTargets = [];
   aiThinking = false;
@@ -1673,6 +1679,7 @@ document.querySelector('#undo').addEventListener('click', () => {
   const humanMove = undoGameMove();
   if (humanMove) redoMoves.push(humanMove);
   gameResult = false;
+  suggestedMove = null;
   selectedSquare = null;
   legalTargets = [];
   updateGameState();
@@ -1684,6 +1691,7 @@ document.querySelector('#redo').addEventListener('click', () => {
   if (humanMove) makeGameMove({ from: humanMove.from, to: humanMove.to, promotion: humanMove.promotion });
   const botMove = redoMoves.pop();
   if (botMove) makeGameMove({ from: botMove.from, to: botMove.to, promotion: botMove.promotion });
+  suggestedMove = null;
   updateGameState();
   renderBoard();
 });
@@ -2043,6 +2051,7 @@ document.querySelector('#puzzle-start').addEventListener('click', () => {
   flipped = false;
   analysisMode = false;
   puzzleMode = true;
+  suggestedMove = null;
   gameResult = false;
   aiThinking = false;
   gameMessage.textContent = 'White to move. Find checkmate in one.';
@@ -2092,6 +2101,7 @@ document.querySelector('#load-position').addEventListener('click', () => {
   configureStartingPosition();
   analysisMode = true;
   gameResult = false;
+  suggestedMove = null;
   selectedSquare = null;
   legalTargets = [];
   renderBoard();
@@ -2110,12 +2120,21 @@ document.querySelector('#copy-fen').addEventListener('click', async () => {
 });
 
 document.querySelector('#suggest-move').addEventListener('click', () => {
-  const suggestion = findBestMove({ depth: 2, variety: 1 });
-  if (!suggestion) {
-    showMessage('Engine suggestion', 'No legal move is available in this position.');
+  if (aiThinking || gameResult || isGameOver() || (onlineMode && (!onlineReady || game.turn() !== playerColor))) return;
+  if (!analysisMode && !puzzleMode && !onlineMode && game.turn() !== playerColor) {
+    gameMessage.textContent = 'Wait for your turn before requesting a suggestion.';
     return;
   }
-  showMessage('Engine suggestion', `Consider ${suggestion.san} (${suggestion.from} to ${suggestion.to}).`);
+  const suggestion = findBestMove({ depth: 2, variety: 1 });
+  if (!suggestion) {
+    suggestedMove = null;
+    gameMessage.textContent = 'No legal move is available in this position.';
+    renderBoard();
+    return;
+  }
+  suggestedMove = { from: suggestion.from, to: suggestion.to };
+  gameMessage.textContent = `Suggested move: ${suggestion.san} · ${suggestion.from} to ${suggestion.to}.`;
+  renderBoard();
 });
 
 if (!game) {
