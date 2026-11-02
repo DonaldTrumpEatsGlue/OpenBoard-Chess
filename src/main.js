@@ -109,6 +109,7 @@ const botAvatarColors = ['#d3a771', '#9dbea4', '#91a5d5', '#81ad91', '#d2bd75', 
 
 let selectedSquare = null;
 let legalTargets = [];
+let pendingPremove = null;
 let suggestedMove = null;
 let moveInsights = [];
 let flipped = false;
@@ -796,6 +797,8 @@ function renderBoard() {
       }
       if (lastMoveTo === square) button.classList.add('last-move');
       if (selectedSquare === square) button.classList.add('selected');
+      if (pendingPremove?.from === square) button.classList.add('premove-from');
+      if (pendingPremove?.to === square) button.classList.add('premove-to');
       if (currentCheck && piece?.type === 'k' && piece.color === game.turn()) button.classList.add('in-check');
       if (legalTargets.includes(square)) {
         const target = document.createElement('span');
@@ -830,9 +833,12 @@ function renderBoard() {
       button.addEventListener('drop', (event) => {
         event.preventDefault();
         const from = event.dataTransfer.getData('text/plain') || selectedSquare;
-        const candidate = getLegalMoves({ square: from }).find((move) => move.to === square);
+        const premoving = onlineMode && game.turn() !== playerColor;
+        const candidate = (premoving ? getPremoveMoves(from) : getLegalMoves({ square: from }))
+          .find((move) => move.to === square);
         if (!candidate) return;
         if (isPawnIdentity(from) && isPromotionSquare(square, game.get(from)?.color)) askPromotion(from, square);
+        else if (premoving) queuePremove(from, square);
         else playMove(from, square);
       });
       button.disabled = aiThinking || gameOver || gameResult || (onlineMode && !onlineReady);
@@ -968,9 +974,39 @@ function recordMoveInsight(move, quality) {
 }
 
 function onSquareClick(square) {
+  const premoving = onlineMode && onlineReady && game.turn() !== playerColor;
   if (aiThinking || gameResult || isGameOver() || (onlineMode && (!onlineReady || onlineSocket?.readyState !== WebSocket.OPEN))
-    || (!analysisMode && !puzzleMode && game.turn() !== playerColor)) return;
+    || (!analysisMode && !puzzleMode && game.turn() !== playerColor && !premoving)) return;
   const clickedPiece = game.get(square);
+  if (premoving) {
+    if (pendingPremove && (square === pendingPremove.from || square === pendingPremove.to)) {
+      pendingPremove = null;
+      selectedSquare = null;
+      legalTargets = [];
+      gameMessage.textContent = 'Premove canceled.';
+      renderBoard();
+      return;
+    }
+    if (selectedSquare && legalTargets.includes(square)) {
+      if (isPawnIdentity(selectedSquare) && isPromotionSquare(square, game.get(selectedSquare)?.color)) {
+        askPromotion(selectedSquare, square);
+        return;
+      }
+      queuePremove(selectedSquare, square);
+      return;
+    }
+    if (clickedPiece?.color === playerColor) {
+      pendingPremove = null;
+      selectedSquare = square;
+      legalTargets = [...new Set(getPremoveMoves(square).map((move) => move.to))];
+      playSound('selection');
+    } else {
+      selectedSquare = null;
+      legalTargets = [];
+    }
+    renderBoard();
+    return;
+  }
   if (selectedSquare && legalTargets.includes(square)) {
     if (isPawnIdentity(selectedSquare) && isPromotionSquare(square, game.get(selectedSquare)?.color)) {
       askPromotion(selectedSquare, square);
@@ -990,6 +1026,42 @@ function onSquareClick(square) {
   renderBoard();
 }
 
+function getPremoveMoves(square) {
+  const piece = game.get(square);
+  if (!piece || piece.color !== playerColor || !onlineMode || game.turn() === playerColor) return [];
+  try {
+    const fen = game.fen().split(' ');
+    fen[1] = playerColor;
+    fen[3] = '-';
+    const premoveGame = new Chess(fen.join(' '));
+    const moves = premoveGame.moves({ square, verbose: true, legal: false });
+    if (piece.type === 'p') {
+      const file = square.charCodeAt(0) - 97;
+      const rank = Number(square.slice(square.match(/[0-9]/).index));
+      const direction = piece.color === 'w' ? 1 : -1;
+      for (const targetFile of [file - 1, file + 1]) {
+        if (targetFile < 0 || targetFile > 7) continue;
+        const target = `${String.fromCharCode(97 + targetFile)}${rank + direction}`;
+        if (game.get(target)?.color === playerColor) continue;
+        moves.push({ from: square, to: target, piece: 'p' });
+      }
+    }
+    return moves;
+  } catch (error) {
+    console.error('Could not generate premove targets:', error);
+    gameMessage.textContent = 'Could not prepare premove targets for this position.';
+    return [];
+  }
+}
+
+function queuePremove(from, to, promotion = 'q') {
+  pendingPremove = { from, to, promotion };
+  selectedSquare = null;
+  legalTargets = [];
+  gameMessage.textContent = 'Premove queued. Click its source or destination to cancel.';
+  renderBoard();
+}
+
 function askPromotion(from, to) {
   promotionDialog.showModal();
   promotionDialog.querySelectorAll('button').forEach((button) => {
@@ -997,7 +1069,8 @@ function askPromotion(from, to) {
       event.preventDefault();
       const promotion = button.value;
       promotionDialog.close();
-      playMove(from, to, promotion);
+      if (onlineMode && game.turn() !== playerColor) queuePremove(from, to, promotion);
+      else playMove(from, to, promotion);
     };
   });
 }
@@ -1041,6 +1114,7 @@ function playMove(from, to, promotion = 'q') {
   if (onlineMode) {
     onlineSocket.send(JSON.stringify({ type: 'move', from, to, promotion }));
   }
+  pendingPremove = null;
   selectedSquare = null;
   legalTargets = [];
   playMoveSound(appliedMove, 'self');
@@ -1057,6 +1131,7 @@ function playMove(from, to, promotion = 'q') {
   } else {
     renderBoard();
   }
+  return appliedMove;
 }
 
 function evaluatePosition() {
@@ -1664,6 +1739,9 @@ function setOnlineGameState(active) {
     onlinePreviousColor = playerColor;
   }
   onlineMode = active;
+  pendingPremove = null;
+  selectedSquare = null;
+  legalTargets = [];
   onlineReady = false;
   onlineIdentityVerified = false;
   onlinePendingRequest = null;
@@ -1714,9 +1792,30 @@ function applyOnlineMove(message) {
   recordMoveInsight(appliedMove, quality);
   registerClockMove();
   playMoveSound(appliedMove, 'opponent');
+  selectedSquare = null;
+  legalTargets = [];
   updateGameState();
   renderBoard();
   updateOnlineStatus(`${message.san} played by your opponent.`);
+  if (pendingPremove) {
+    if (game.turn() !== playerColor || isGameOver() || gameResult) {
+      pendingPremove = null;
+      renderBoard();
+    } else {
+      const premove = pendingPremove;
+      const isLegal = getLegalMoves({ square: premove.from }).some((move) => move.to === premove.to
+        && (!move.promotion || move.promotion === premove.promotion));
+      pendingPremove = null;
+      if (isLegal) {
+        const playedMove = playMove(premove.from, premove.to, premove.promotion);
+        if (playedMove) updateOnlineStatus(`Premove played: ${playedMove.san}.`);
+      } else {
+        gameMessage.textContent = 'Your premove was no longer legal and was cleared.';
+        renderBoard();
+        updateOnlineStatus('Premove cleared because it was no longer legal after your opponent’s move.');
+      }
+    }
+  }
 }
 
 function handleOnlineMessage(socket, message) {
@@ -1814,6 +1913,7 @@ function handleOnlineMessage(socket, message) {
   }
   if (message.type === 'opponent-left') {
     onlineReady = false;
+    pendingPremove = null;
     updateOnlineStatus('Your opponent disconnected. The room remains open for a reconnect.');
     gameMessage.textContent = 'Your opponent disconnected.';
     renderBoard();
@@ -1821,6 +1921,7 @@ function handleOnlineMessage(socket, message) {
   }
   if (message.type === 'resigned') {
     if (message.color !== playerColor) {
+      pendingPremove = null;
       markGameResult('victory');
       gameMessage.textContent = 'Your opponent resigned. You win!';
       updateOnlineStatus('Your opponent resigned.');
@@ -1918,6 +2019,9 @@ async function connectToOnlineRoom(action, roomCode = null, roomPassword = '') {
   socket.addEventListener('close', () => {
     if (socket !== onlineSocket) return;
     onlineReady = false;
+    pendingPremove = null;
+    selectedSquare = null;
+    legalTargets = [];
     if (!connectionFailed) updateOnlineStatus('The room server closed the connection. Check that the server is running and that the URL is correct.');
     renderBoard();
   });
@@ -1931,6 +2035,7 @@ function disconnectOnlineGame() {
   onlineReady = false;
   onlineIdentityVerified = false;
   onlinePendingRequest = null;
+  pendingPremove = null;
   if (socket?.readyState === WebSocket.OPEN) socket.close();
   setOnlineGameState(false);
   document.querySelector('#online-invite').hidden = true;
@@ -1957,6 +2062,7 @@ function startNewGame() {
     gameResult = false;
     moveInsights = [];
     suggestedMove = null;
+    pendingPremove = null;
     selectedSquare = null;
     legalTargets = [];
     aiThinking = false;
@@ -1978,6 +2084,7 @@ function startNewGame() {
   puzzleMode = false;
   moveInsights = [];
   suggestedMove = null;
+  pendingPremove = null;
   selectedSquare = null;
   legalTargets = [];
   aiThinking = false;
