@@ -1685,24 +1685,35 @@ function renderPublicRooms() {
     name.textContent = room.name;
     const details = document.createElement('span');
     details.textContent = room.inProgress
-      ? `Live game · ${room.code} · ${room.spectators || 0} watching`
-      : `Waiting for a player · ${room.code}`;
-    const action = document.createElement('button');
-    action.className = room.inProgress ? 'secondary-button' : 'primary-button';
-    action.type = 'button';
-    action.textContent = room.inProgress ? 'Watch' : 'Join';
-    action.addEventListener('click', () => {
+      ? `Live game · ${room.spectators || 0} watching · ${room.code}`
+      : `Waiting for a player · ${room.spectators || 0} watching · ${room.code}`;
+    const connectToRoom = (action) => {
       const password = room.locked ? window.prompt(`Password for “${room.name}”`) : '';
       if (room.locked && password === null) return;
-      connectToOnlineRoom(room.inProgress ? 'watch' : 'join-public', room.code, password || '');
-    });
+      connectToOnlineRoom(action, room.code, password || '');
+    };
     copy.append(name, details);
     if (room.host) {
       details.textContent = room.inProgress
-        ? `@${room.host} vs @${room.opponent || '…'} · ${room.spectators || 0} watching · ${room.code}`
-        : `Hosted by @${room.host} · ${room.locked ? 'Password required · ' : ''}${room.code}`;
+        ? `@${room.host} vs @${room.opponent || '…'} · ${room.spectators || 0} watching · ${room.locked ? 'Password required · ' : ''}${room.code}`
+        : `Hosted by @${room.host} · ${room.spectators || 0} watching · ${room.locked ? 'Password required · ' : ''}${room.code}`;
     }
-    card.append(copy, action);
+    if (!room.inProgress) {
+      const join = document.createElement('button');
+      join.className = 'primary-button';
+      join.type = 'button';
+      join.textContent = 'Join';
+      join.addEventListener('click', () => connectToRoom('join-public'));
+      card.append(copy, join);
+    } else {
+      card.append(copy);
+    }
+    const watch = document.createElement('button');
+    watch.className = room.inProgress ? 'primary-button' : 'secondary-button';
+    watch.type = 'button';
+    watch.textContent = 'Watch';
+    watch.addEventListener('click', () => connectToRoom('watch'));
+    card.append(watch);
     list.append(card);
   }
 }
@@ -1971,11 +1982,19 @@ function handleOnlineMessage(socket, message) {
       document.querySelector('#bot-profile-name').textContent = `${message.players.w || 'White'} vs ${message.players.b || 'Black'}`;
     }
     if (!restoreOnlinePosition(message)) return;
+    const watching = `${message.spectators || 1} ${message.spectators === 1 ? 'spectator' : 'spectators'}`;
     updateOnlineStatus(message.waiting
-      ? `Watching room ${onlineRoomCode}. Waiting for the game to start.`
-      : `Spectating ${message.players?.w || 'White'} vs ${message.players?.b || 'Black'}.`);
+      ? `Watching room ${onlineRoomCode}. Waiting for the game to start · ${watching}.`
+      : `Spectating ${message.players?.w || 'White'} vs ${message.players?.b || 'Black'} · ${watching}.`);
     renderBoard();
     onlineDialog.close();
+    return;
+  }
+  if (message.type === 'spectator-count') {
+    const watching = `${message.count} ${message.count === 1 ? 'spectator' : 'spectators'}`;
+    updateOnlineStatus(onlineSpectating
+      ? `Spectating · ${watching}.`
+      : `Online game · ${watching}.`);
     return;
   }
   if (message.type === 'move') {

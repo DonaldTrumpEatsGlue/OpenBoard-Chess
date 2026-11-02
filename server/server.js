@@ -122,6 +122,7 @@ function leaveRoom(player) {
     player.room = null;
     player.role = null;
     room.expiresAt = Date.now() + roomLifetimeMs;
+    broadcast(room, { type: 'spectator-count', count: room.spectators.size });
     return;
   }
   const slot = room.players[player.color];
@@ -311,6 +312,7 @@ async function handleMessage(socket, player, rawMessage) {
         && room.players.b.socket?.readyState === WebSocket.OPEN),
       spectators: room.spectators.size,
     });
+    broadcast(room, { type: 'spectator-count', count: room.spectators.size });
     return;
   }
 

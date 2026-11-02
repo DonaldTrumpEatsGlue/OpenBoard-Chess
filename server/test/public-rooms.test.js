@@ -208,13 +208,17 @@ test('optional lobby passwords block incorrect joins and allow the correct one',
       password: 'incorrect',
     });
     assert.match(deniedWatch.message, /password is incorrect/i);
+    const hostCount = once(host, 'message').then(([data]) => JSON.parse(data.toString()));
     const allowedWatch = await request(watcher, {
       type: 'spectate-room',
       code: created.code,
       password: 'secret-room',
     });
+    const watcherCount = once(watcher, 'message').then(([data]) => JSON.parse(data.toString()));
     assert.equal(allowedWatch.type, 'spectator-start');
     assert.equal(allowedWatch.waiting, true);
+    assert.deepEqual(await hostCount, { type: 'spectator-count', count: 1 });
+    assert.deepEqual(await watcherCount, { type: 'spectator-count', count: 1 });
 
     const hostStart = once(host, 'message').then(([data]) => JSON.parse(data.toString()));
     const guestStart = request(guest, {
@@ -300,11 +304,18 @@ test('spectators can watch live public games without taking player slots', async
 
   try {
     const created = await request(host, { type: 'create-public-room', lobbyName: 'Live Match' });
+    const hostCountUpdate = once(host, 'message').then(([data]) => JSON.parse(data.toString()));
     const initialWatch = await request(spectator, { type: 'spectate-room', code: created.code });
+    const spectatorCountUpdate = once(spectator, 'message').then(([data]) => JSON.parse(data.toString()));
     assert.equal(initialWatch.type, 'spectator-start');
     assert.equal(initialWatch.waiting, true);
+    assert.equal(initialWatch.spectators, 1);
     assert.deepEqual(initialWatch.players, { w: 'SpectateHost', b: 'Black' });
     assert.equal(initialWatch.fen, 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1');
+    assert.deepEqual(await hostCountUpdate, { type: 'spectator-count', count: 1 });
+    assert.deepEqual(await spectatorCountUpdate, { type: 'spectator-count', count: 1 });
+    const waitingListing = await request(browser, { type: 'list-public-rooms' });
+    assert.equal(waitingListing.rooms[0].spectators, 1);
     assert.equal((await request(spectator, { type: 'move', from: 'e2', to: 'e4' })).type, 'error');
 
     const spectatorStart = once(spectator, 'message').then(([data]) => JSON.parse(data.toString()));
@@ -338,6 +349,12 @@ test('spectators can watch live public games without taking player slots', async
     const fullRoom = await request(extraPlayer, { type: 'join-public-room', code: created.code });
     assert.equal(fullRoom.type, 'error');
     assert.match(fullRoom.message, /already has two players/i);
+
+    const leavingCount = once(host, 'message').then(([data]) => JSON.parse(data.toString()));
+    spectator.close();
+    assert.deepEqual(await leavingCount, { type: 'spectator-count', count: 0 });
+    const updatedListing = await request(browser, { type: 'list-public-rooms' });
+    assert.equal(updatedListing.rooms[0].spectators, 0);
   } finally {
     for (const socket of [host, spectator, joiner, extraPlayer, browser]) socket.close();
   }
