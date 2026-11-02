@@ -13,6 +13,7 @@ let endpoint;
 let authServer;
 let authUrl;
 const authUsers = new Map();
+const passwordRecoveryRequests = [];
 let userIdCounter = 1;
 
 async function findOpenPort() {
@@ -171,6 +172,31 @@ before(async () => {
     const user = authUsers.get(token);
     if (request.url === '/auth/v1/user') {
       response.writeHead(user ? 200 : 401).end(JSON.stringify(user || { message: 'Invalid token' }));
+      return;
+    }
+    if (request.url?.startsWith('/auth/v1/recover')) {
+      let rawBody = '';
+      for await (const chunk of request) rawBody += chunk;
+      passwordRecoveryRequests.push({
+        ...JSON.parse(rawBody),
+        redirectTo: new URL(request.url, 'http://localhost').searchParams.get('redirect_to'),
+      });
+      response.writeHead(200).end('{}');
+      return;
+    }
+    if (request.url === '/auth/v1/verify') {
+      let rawBody = '';
+      for await (const chunk of request) rawBody += chunk;
+      const { email, token: recoveryToken, type } = JSON.parse(rawBody);
+      const account = [...authUsers.entries()].find(([, candidate]) => candidate.email === email);
+      const verified = type === 'recovery' && recoveryToken === '123456' && account;
+      response.writeHead(verified ? 200 : 400).end(JSON.stringify(verified
+        ? {
+          access_token: account[0],
+          refresh_token: `test-refresh-${account[0]}`,
+          user: { id: account[1].id, email: account[1].email, username: account[1].username },
+        }
+        : { message: 'Invalid token' }));
       return;
     }
     if (request.url?.startsWith('/auth/v1/admin/users/')) {
@@ -360,6 +386,68 @@ test('username sign-in returns an auth session without disclosing the account em
   assert.deepEqual(unknownAccount.body, { message: 'Invalid username or password.' });
 });
 
+test('password recovery accepts email or username without revealing the linked email', async () => {
+  const token = createAccount('RecoveryOwner');
+  const endpointUrl = new URL(endpoint);
+  endpointUrl.protocol = 'http:';
+  endpointUrl.pathname = '/auth/recover';
+  endpointUrl.search = '';
+  endpointUrl.hash = '';
+  const redirectTo = 'https://donaldtrumpeatsglue.github.io/OpenBoardChess/';
+  const genericMessage = 'If an account exists for that email or username, password reset instructions have been sent.';
+
+  const usernameResult = await postJson(endpointUrl, {
+    identity: 'rEcOvErYoWnEr',
+    redirectTo,
+  });
+  assert.equal(usernameResult.status, 200);
+  assert.deepEqual(usernameResult.body, { message: genericMessage });
+  assert.equal(passwordRecoveryRequests.at(-1).email, 'recoveryowner@example.test');
+  assert.equal(passwordRecoveryRequests.at(-1).redirectTo, redirectTo);
+  assert.equal(JSON.stringify(usernameResult.body).includes('@example.test'), false);
+
+  const emailResult = await postJson(endpointUrl, {
+    identity: 'recoveryowner@example.test',
+    redirectTo,
+  });
+  assert.equal(emailResult.status, 200);
+  assert.deepEqual(emailResult.body, { message: genericMessage });
+  assert.equal(passwordRecoveryRequests.at(-1).email, 'recoveryowner@example.test');
+
+  const unknownResult = await postJson(endpointUrl, {
+    identity: 'UnknownRecovery',
+    redirectTo,
+  });
+  assert.equal(unknownResult.status, 200);
+  assert.deepEqual(unknownResult.body, { message: genericMessage });
+});
+
+test('password recovery codes verify by username without exposing the account email', async () => {
+  const token = createAccount('RecoveryCodeOwner');
+  const endpointUrl = new URL(endpoint);
+  endpointUrl.protocol = 'http:';
+  endpointUrl.pathname = '/auth/verify-recovery';
+  endpointUrl.search = '';
+  endpointUrl.hash = '';
+
+  const result = await postJson(endpointUrl, {
+    identity: 'recoverycodeowner',
+    token: '123456',
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.access_token, token);
+  assert.ok(result.body.refresh_token);
+  assert.equal(result.body.user.email, undefined);
+  assert.equal(JSON.stringify(result.body).includes('@example.test'), false);
+
+  const invalidCode = await postJson(endpointUrl, {
+    identity: 'recoverycodeowner',
+    token: '000000',
+  });
+  assert.equal(invalidCode.status, 400);
+  assert.deepEqual(invalidCode.body, { message: 'The recovery code is invalid or expired.' });
+});
+
 test('one account cannot create multiple active rooms from repeated or parallel requests', async () => {
   const token = createAccount('SingleRoomOwner');
   const host = await connectWithAccessToken(token, 'SingleRoomOwner');
@@ -421,6 +509,42 @@ test('a player can explicitly leave a room and create another lobby', async () =
   } finally {
     host.close();
     guest.close();
+  }
+});
+
+test('a public lobby is removed and cannot be rejoined after both players leave', async () => {
+  const hostToken = createAccount('EmptyLobbyHost');
+  const host = await connectWithAccessToken(hostToken, 'EmptyLobbyHost');
+  const guest = await connect(undefined, 'EmptyLobbyGuest');
+  const browser = await connect(undefined, 'EmptyLobbyBrowser');
+  const reconnectingHost = await connectWithAccessToken(hostToken, 'EmptyLobbyHost');
+  try {
+    const room = await request(host, {
+      type: 'create-public-room',
+      lobbyName: 'Empty when both leave',
+    });
+    const hostStart = waitForMessage(host, (message) => message.type === 'game-start');
+    const guestStart = request(guest, { type: 'join-public-room', code: room.code });
+    await Promise.all([hostStart, guestStart]);
+
+    const guestDeparture = waitForMessage(guest, (message) => message.type === 'opponent-left');
+    await sendAndWait(host, { type: 'leave-room' }, (message) => message.type === 'left-room');
+    await guestDeparture;
+    await sendAndWait(guest, { type: 'leave-room' }, (message) => message.type === 'left-room');
+
+    const listing = await request(browser, { type: 'list-public-rooms' });
+    assert.equal(listing.rooms.some((listedRoom) => listedRoom.code === room.code), false);
+    const rejoin = await request(reconnectingHost, {
+      type: 'join-public-room',
+      code: room.code,
+    });
+    assert.equal(rejoin.type, 'error');
+    assert.match(rejoin.message, /not active/i);
+  } finally {
+    host.close();
+    guest.close();
+    browser.close();
+    reconnectingHost.close();
   }
 });
 

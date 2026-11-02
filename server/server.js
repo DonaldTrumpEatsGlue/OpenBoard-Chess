@@ -13,9 +13,9 @@ const chatRateLimit = 5;
 const supabaseUrl = (process.env.SUPABASE_URL || '').replace(/\/+$/, '');
 const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || '';
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-const usernameLoginAttempts = new Map();
-const usernameLoginWindowMs = 15 * 60 * 1000;
-const usernameLoginLimit = 10;
+const accountRequestAttempts = new Map();
+const accountRequestWindowMs = 15 * 60 * 1000;
+const accountRequestLimit = 10;
 const allowedOrigins = (process.env.OPENBOARD_ALLOWED_ORIGINS || '')
   .split(',')
   .map((origin) => origin.trim())
@@ -68,30 +68,30 @@ function readJsonBody(request, maxLength = 2048) {
   });
 }
 
-function allowUsernameLogin(request, response) {
+function allowAccountRequest(request, response) {
   const now = Date.now();
-  for (const [ip, attempt] of usernameLoginAttempts) {
-    if (now - attempt.startedAt >= usernameLoginWindowMs) usernameLoginAttempts.delete(ip);
+  for (const [ip, attempt] of accountRequestAttempts) {
+    if (now - attempt.startedAt >= accountRequestWindowMs) accountRequestAttempts.delete(ip);
   }
   const ip = request.socket.remoteAddress || 'unknown';
-  let attempt = usernameLoginAttempts.get(ip);
-  if (!attempt || now - attempt.startedAt >= usernameLoginWindowMs) {
+  let attempt = accountRequestAttempts.get(ip);
+  if (!attempt || now - attempt.startedAt >= accountRequestWindowMs) {
     attempt = { startedAt: now, count: 0 };
-    usernameLoginAttempts.set(ip, attempt);
+    accountRequestAttempts.set(ip, attempt);
   }
   attempt.count += 1;
-  if (attempt.count <= usernameLoginLimit) return true;
+  if (attempt.count <= accountRequestLimit) return true;
   response.writeHead(429, {
     'Cache-Control': 'no-store',
     'Content-Type': 'application/json; charset=utf-8',
-    'Retry-After': String(Math.ceil((usernameLoginWindowMs - (now - attempt.startedAt)) / 1000)),
-  }).end(JSON.stringify({ message: 'Too many sign-in attempts. Try again later.' }));
+    'Retry-After': String(Math.ceil((accountRequestWindowMs - (now - attempt.startedAt)) / 1000)),
+  }).end(JSON.stringify({ message: 'Too many account requests. Try again later.' }));
   return false;
 }
 
-async function signInWithUsername(username, password) {
+async function lookupUserByUsername(username) {
   if (!supabaseUrl || !supabaseAnonKey || !supabaseServiceRoleKey) {
-    throw new Error('Username sign-in is not configured on this server.');
+    throw new Error('Username lookup is not configured on this server.');
   }
   const headers = {
     apikey: supabaseServiceRoleKey,
@@ -114,6 +114,11 @@ async function signInWithUsername(username, password) {
   });
   if (!userResponse.ok) throw new Error('Could not look up the account.');
   const user = await userResponse.json();
+  return user?.email ? user : null;
+}
+
+async function signInWithUsername(username, password) {
+  const user = await lookupUserByUsername(username);
   if (!user?.email) return null;
 
   const tokenResponse = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
@@ -132,6 +137,70 @@ async function signInWithUsername(username, password) {
   const sessionUser = { ...session.user };
   delete sessionUser.email;
   return { ...session, user: sessionUser };
+}
+
+async function sendPasswordRecovery(identity, redirectTo) {
+  if (!supabaseUrl || !supabaseAnonKey) {
+    throw new Error('Password recovery is not configured on this server.');
+  }
+  let email = identity.toLowerCase();
+  if (!identity.includes('@')) {
+    if (!/^[A-Za-z0-9_]{3,20}$/.test(identity)) {
+      return;
+    }
+    const user = await lookupUserByUsername(identity);
+    if (!user?.email) return;
+    email = user.email;
+  } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identity) || identity.length > 254) {
+    return;
+  }
+  const recoverUrl = new URL(`${supabaseUrl}/auth/v1/recover`);
+  recoverUrl.searchParams.set('redirect_to', redirectTo);
+  const recoveryResponse = await fetch(recoverUrl, {
+    method: 'POST',
+    headers: {
+      apikey: supabaseAnonKey,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ email }),
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!recoveryResponse.ok && recoveryResponse.status !== 400 && recoveryResponse.status !== 429) {
+    throw new Error('The account service could not send a password recovery email.');
+  }
+}
+
+async function verifyPasswordRecovery(identity, token) {
+  let email = identity.toLowerCase();
+  if (!identity.includes('@')) {
+    const user = await lookupUserByUsername(identity);
+    if (!user?.email) {
+      const error = new Error('The recovery code is invalid or expired.');
+      error.statusCode = 400;
+      throw error;
+    }
+    email = user.email;
+  }
+  const verificationResponse = await fetch(`${supabaseUrl}/auth/v1/verify`, {
+    method: 'POST',
+    headers: {
+      apikey: supabaseAnonKey,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ email, token, type: 'recovery' }),
+    signal: AbortSignal.timeout(5000),
+  });
+  const result = await verificationResponse.json();
+  if (!verificationResponse.ok || !result.access_token || !result.refresh_token) {
+    const error = new Error('The recovery code is invalid or expired.');
+    error.statusCode = verificationResponse.status >= 500 ? 503 : 400;
+    throw error;
+  }
+  if (result.user) {
+    result.user = { ...result.user };
+    delete result.user.email;
+  }
+  return result;
 }
 
 function send(socket, payload) {
@@ -200,7 +269,10 @@ function getPublicRooms(accountId) {
   const now = Date.now();
   return [...rooms.values()]
     .filter((room) => room.isPublic && room.expiresAt > now
-      && room.players.w.accountId)
+      && room.players.w.accountId
+      && [room.players.w, room.players.b].some(
+        (slot) => slot.socket?.readyState === WebSocket.OPEN,
+      ))
     .map((room) => {
       const hostOnline = room.players.w.socket?.readyState === WebSocket.OPEN;
       const opponentOnline = room.players.b.socket?.readyState === WebSocket.OPEN;
@@ -268,7 +340,9 @@ function leaveRoom(player) {
   player.color = null;
   player.role = null;
   room.expiresAt = Date.now() + roomLifetimeMs;
-  if (room.players.w.socket || room.players.b.socket) {
+  const hasConnectedPlayer = [room.players.w, room.players.b]
+    .some((slot) => slot.socket?.readyState === WebSocket.OPEN);
+  if (hasConnectedPlayer) {
     broadcast(room, { type: 'opponent-left' });
   } else {
     for (const spectator of room.spectators) {
@@ -278,6 +352,7 @@ function leaveRoom(player) {
       spectator.socket.close(1000, 'Game ended.');
     }
     room.spectators.clear();
+    rooms.delete(room.code);
   }
 }
 
@@ -411,6 +486,12 @@ async function handleMessage(socket, player, rawMessage) {
     }
     if (!roomPasswordMatches(room, message.password)) {
       send(socket, { type: 'error', message: 'That lobby password is incorrect.' });
+      return;
+    }
+    if (![room.players.w, room.players.b].some(
+      (slot) => slot.socket?.readyState === WebSocket.OPEN,
+    )) {
+      send(socket, { type: 'error', message: 'That lobby is empty and can no longer be rejoined.' });
       return;
     }
     const reconnectColor = ['w', 'b'].find((color) => room.players[color].accountId === player.identity.id);
@@ -602,7 +683,9 @@ async function handleMessage(socket, player, rawMessage) {
 
 const server = http.createServer(async (request, response) => {
   const requestUrl = new URL(request.url, 'http://localhost');
-  if (requestUrl.pathname === '/auth/username') {
+  if (['/auth/username', '/auth/recover', '/auth/verify-recovery'].includes(requestUrl.pathname)) {
+    const isRecovery = requestUrl.pathname === '/auth/recover';
+    const isRecoveryVerification = requestUrl.pathname === '/auth/verify-recovery';
     addAuthCorsHeaders(request, response);
     if (request.headers.origin && !isAllowedOrigin(request.headers.origin)) {
       response.writeHead(403).end();
@@ -620,7 +703,7 @@ const server = http.createServer(async (request, response) => {
       response.writeHead(405, { Allow: 'POST, OPTIONS' }).end();
       return;
     }
-    if (!allowUsernameLogin(request, response)) return;
+    if (!allowAccountRequest(request, response)) return;
     let credentials;
     try {
       credentials = await readJsonBody(request);
@@ -631,6 +714,79 @@ const server = http.createServer(async (request, response) => {
       }).end(JSON.stringify({ message: error.message }));
       return;
     }
+    if (isRecoveryVerification) {
+      const identity = typeof credentials?.identity === 'string' ? credentials.identity.trim() : '';
+      const token = typeof credentials?.token === 'string' ? credentials.token.trim() : '';
+      if ((!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identity) && !/^[A-Za-z0-9_]{3,20}$/.test(identity))
+        || !/^\d{6}$/.test(token)) {
+        response.writeHead(400, {
+          'Cache-Control': 'no-store',
+          'Content-Type': 'application/json; charset=utf-8',
+        }).end(JSON.stringify({ message: 'Enter the account email or username and the six-digit recovery code.' }));
+        return;
+      }
+      try {
+        const session = await verifyPasswordRecovery(identity, token);
+        response.writeHead(200, {
+          'Cache-Control': 'no-store',
+          'Content-Type': 'application/json; charset=utf-8',
+        }).end(JSON.stringify(session));
+      } catch (error) {
+        if (error.statusCode !== 400) {
+          console.error('Password recovery code verification failed:', error.message);
+        }
+        response.writeHead(error.statusCode || 503, {
+          'Cache-Control': 'no-store',
+          'Content-Type': 'application/json; charset=utf-8',
+        }).end(JSON.stringify({ message: error.message || 'Password recovery is unavailable.' }));
+      }
+      return;
+    }
+    if (isRecovery) {
+      const identity = typeof credentials?.identity === 'string' ? credentials.identity.trim() : '';
+      let redirectUrl;
+      try {
+        redirectUrl = new URL(credentials?.redirectTo);
+      } catch {
+        response.writeHead(400, {
+          'Cache-Control': 'no-store',
+          'Content-Type': 'application/json; charset=utf-8',
+        }).end(JSON.stringify({ message: 'Enter a valid password-reset link destination.' }));
+        return;
+      }
+      if (!isAllowedOrigin(redirectUrl.origin) || !['https:', 'http:'].includes(redirectUrl.protocol)) {
+        response.writeHead(400, {
+          'Cache-Control': 'no-store',
+          'Content-Type': 'application/json; charset=utf-8',
+        }).end(JSON.stringify({ message: 'Password-reset links can only return to an approved website.' }));
+        return;
+      }
+      if (!identity || identity.length > 254
+        || (!identity.includes('@') && !/^[A-Za-z0-9_]{3,20}$/.test(identity))) {
+        response.writeHead(400, {
+          'Cache-Control': 'no-store',
+          'Content-Type': 'application/json; charset=utf-8',
+        }).end(JSON.stringify({ message: 'Enter a valid account email or username.' }));
+        return;
+      }
+      try {
+        await sendPasswordRecovery(identity, redirectUrl.toString());
+        response.writeHead(200, {
+          'Cache-Control': 'no-store',
+          'Content-Type': 'application/json; charset=utf-8',
+        }).end(JSON.stringify({
+          message: 'If an account exists for that email or username, password reset instructions have been sent.',
+        }));
+      } catch (error) {
+        console.error('Password recovery request failed:', error.message);
+        response.writeHead(503, {
+          'Cache-Control': 'no-store',
+          'Content-Type': 'application/json; charset=utf-8',
+        }).end(JSON.stringify({ message: error.message || 'Password recovery is unavailable.' }));
+      }
+      return;
+    }
+
     const username = typeof credentials?.username === 'string' ? credentials.username.trim() : '';
     const password = typeof credentials?.password === 'string' ? credentials.password : '';
     if (!/^[A-Za-z0-9_]{3,20}$/.test(username) || password.length < 8 || password.length > 72) {

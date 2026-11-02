@@ -161,6 +161,7 @@ let authSession = null;
 let authUsername = '';
 let authMode = 'signup';
 let passwordRecoveryMode = false;
+let passwordRecoveryCodeMode = false;
 const defaultCustomRules = {
   boardSize: 8,
   noDraws: false,
@@ -1523,6 +1524,7 @@ function initializeAuthSession() {
   const accessToken = fragment.get('access_token');
   if (accessToken && fragment.get('refresh_token')) {
     passwordRecoveryMode = fragment.get('type') === 'recovery';
+    passwordRecoveryCodeMode = false;
     authMode = 'signin';
     saveAuthSession({
       access_token: accessToken,
@@ -1563,6 +1565,9 @@ function updateAccountUI(message = '') {
     authMode === 'signup' ? 'Email' : 'Email or username';
   document.querySelector('#online-password-label-text').textContent =
     passwordRecoveryMode ? 'New password' : 'Password';
+  document.querySelector('#online-recovery-code-field').hidden = !passwordRecoveryCodeMode;
+  document.querySelector('#online-recovery-code').disabled = !passwordRecoveryCodeMode;
+  document.querySelector('#online-account-password').hidden = passwordRecoveryCodeMode;
   document.querySelector('#online-account-password').autocomplete =
     passwordRecoveryMode || authMode === 'signup' ? 'new-password' : 'current-password';
   usernameField.hidden = authMode !== 'signup' || isSignedIn || passwordRecoveryMode;
@@ -1574,18 +1579,19 @@ function updateAccountUI(message = '') {
   document.querySelector('#online-email').disabled = isSignedIn;
   document.querySelector('#online-account-password').disabled = isSignedIn && !passwordRecoveryMode;
   document.querySelector('#online-auth-submit').hidden = isSignedIn && !passwordRecoveryMode;
-  document.querySelector('#online-auth-mode').hidden = isSignedIn || passwordRecoveryMode;
-  document.querySelector('#online-auth-reset').hidden = isSignedIn || authMode !== 'signin' || passwordRecoveryMode;
+  document.querySelector('#online-auth-mode').hidden = isSignedIn || passwordRecoveryMode || passwordRecoveryCodeMode;
+  document.querySelector('#online-auth-reset').hidden = isSignedIn || authMode !== 'signin' || passwordRecoveryMode || passwordRecoveryCodeMode;
   document.querySelector('#online-auth-signout').hidden = !isSignedIn || passwordRecoveryMode;
   document.querySelector('#online-auth-submit').textContent = passwordRecoveryMode
     ? 'Update password'
+    : passwordRecoveryCodeMode ? 'Verify code'
     : authMode === 'signup' ? 'Create account' : 'Sign in';
   document.querySelector('#online-auth-mode').textContent = authMode === 'signup'
     ? 'Already registered? Sign in'
     : 'Need an account? Create one';
-  document.querySelector('#online-continue').hidden = !isSignedIn || passwordRecoveryMode;
-  document.querySelector('#online-signin-required').hidden = isSignedIn && !passwordRecoveryMode;
-  document.querySelector('#online-play-controls').hidden = !isSignedIn || passwordRecoveryMode;
+  document.querySelector('#online-continue').hidden = !isSignedIn || passwordRecoveryMode || passwordRecoveryCodeMode;
+  document.querySelector('#online-signin-required').hidden = isSignedIn && !passwordRecoveryMode && !passwordRecoveryCodeMode;
+  document.querySelector('#online-play-controls').hidden = !isSignedIn || passwordRecoveryMode || passwordRecoveryCodeMode;
   if (message) document.querySelector('#online-auth-status').textContent = message;
 }
 
@@ -1650,27 +1656,73 @@ async function requestUsernameSignIn(username, password) {
 async function requestPasswordReset() {
   const identity = document.querySelector('#online-email').value.trim();
   const status = document.querySelector('#online-auth-status');
-  if (!identity.includes('@')) {
-    status.textContent = 'Enter the email address on your account to receive a password reset link.';
+  const isEmail = identity.includes('@');
+  if ((!isEmail && !/^[A-Za-z0-9_]{3,20}$/.test(identity))
+    || (isEmail && (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identity) || identity.length > 254))) {
+    status.textContent = 'Enter the email address or username linked to your account.';
     document.querySelector('#online-email').focus();
     return;
   }
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identity) || identity.length > 254) {
-    status.textContent = 'Enter a valid email address for your account.';
-    document.querySelector('#online-email').focus();
+  if (!onlineServerUrl) {
+    status.textContent = 'Password recovery is unavailable because the online server is not configured.';
     return;
   }
-  const redirectTo = `${location.origin}${location.pathname}`;
+  const endpoint = new URL(onlineServerUrl);
+  endpoint.protocol = endpoint.protocol === 'wss:' ? 'https:' : 'http:';
+  endpoint.pathname = '/auth/recover';
+  endpoint.search = '';
+  endpoint.hash = '';
   try {
-    await requestSupabaseAuth(`recover?redirect_to=${encodeURIComponent(redirectTo)}`, {
-      email: identity.toLowerCase(),
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        identity,
+        redirectTo: `${location.origin}${location.pathname}`,
+      }),
     });
-    status.textContent =
-      'If an account exists for that email, password reset instructions have been sent.';
+    let result;
+    try {
+      result = await response.json();
+    } catch {
+      throw new Error('The online server returned an unreadable password-recovery response.');
+    }
+    if (!response.ok) throw new Error(result.message || 'Password recovery is unavailable.');
+    passwordRecoveryCodeMode = true;
+    document.querySelector('#online-recovery-code').value = '';
+    updateAccountUI('If an account exists for that email or username, a six-digit recovery code has been sent to its linked email address.');
+    document.querySelector('#online-recovery-code').focus();
   } catch (error) {
     console.error('Password reset request failed:', error);
     status.textContent = error.message || 'Could not request a password reset. Please try again.';
   }
+}
+
+async function verifyPasswordRecoveryCode() {
+  const endpoint = new URL(onlineServerUrl);
+  endpoint.protocol = endpoint.protocol === 'wss:' ? 'https:' : 'http:';
+  endpoint.pathname = '/auth/verify-recovery';
+  endpoint.search = '';
+  endpoint.hash = '';
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      identity: document.querySelector('#online-email').value.trim(),
+      token: document.querySelector('#online-recovery-code').value.trim(),
+    }),
+  });
+  let result;
+  try {
+    result = await response.json();
+  } catch {
+    throw new Error('The online server returned an unreadable recovery response.');
+  }
+  if (!response.ok) throw new Error(result.message || 'The recovery code is invalid or expired.');
+  passwordRecoveryCodeMode = false;
+  passwordRecoveryMode = true;
+  saveAuthSession(result);
+  updateAccountUI('Code verified. Choose a new password for your account.');
 }
 
 async function updateRecoveredPassword(password) {
@@ -1697,6 +1749,7 @@ async function updateRecoveredPassword(password) {
     throw new Error(typeof detail === 'string' ? detail : 'Could not update your password.');
   }
   passwordRecoveryMode = false;
+  passwordRecoveryCodeMode = false;
   saveAuthSession({ ...authSession, user });
   document.querySelector('#online-account-password').value = '';
   updateAccountUI('Password updated. Your account is ready to use.');
@@ -1731,6 +1784,26 @@ async function getValidAuthSession() {
 }
 
 async function submitOnlineAuth() {
+  if (passwordRecoveryCodeMode) {
+    const code = document.querySelector('#online-recovery-code').value.trim();
+    const status = document.querySelector('#online-auth-status');
+    if (!/^\d{6}$/.test(code)) {
+      status.textContent = 'Enter the six-digit code from your recovery email.';
+      return;
+    }
+    const submit = document.querySelector('#online-auth-submit');
+    submit.disabled = true;
+    status.textContent = 'Verifying your recovery code…';
+    try {
+      await verifyPasswordRecoveryCode();
+    } catch (error) {
+      console.error('Password recovery code verification failed:', error);
+      status.textContent = error.message || 'Could not verify the recovery code. Please try again.';
+    } finally {
+      submit.disabled = false;
+    }
+    return;
+  }
   if (passwordRecoveryMode) {
     const newPassword = document.querySelector('#online-account-password').value;
     const status = document.querySelector('#online-auth-status');
@@ -2982,7 +3055,7 @@ document.querySelector('#online-auth-mode').addEventListener('click', () => {
     : 'Sign in with your email or username and password.');
 });
 document.querySelector('#online-auth-signout').addEventListener('click', signOutOnlineAccount);
-for (const field of ['#online-username', '#online-email', '#online-account-password']) {
+for (const field of ['#online-username', '#online-email', '#online-account-password', '#online-recovery-code']) {
   document.querySelector(field).addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && !document.querySelector('#online-auth-submit').hidden) submitOnlineAuth();
   });
