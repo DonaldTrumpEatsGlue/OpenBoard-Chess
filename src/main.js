@@ -181,8 +181,9 @@ function isStalemate() { return !isCheck() && getLegalMoves().length === 0; }
 function isThreefoldRepetition() { return !customRules.noDraws && game.in_threefold_repetition(); }
 function isInsufficientMaterial() { return !customRules.noDraws && game.insufficient_material(); }
 function isDraw() {
-  return !customRules.noDraws && (isThreefoldRepetition()
-    || isInsufficientMaterial() || Number(game.fen().split(' ')[4]) >= 100);
+  return !customRules.noDraws && (Number(game.fen().split(' ')[4]) >= 100
+    || isInsufficientMaterial()
+    || (game.history().length >= 8 && isThreefoldRepetition()));
 }
 
 function snapshotCustomIdentity() {
@@ -227,12 +228,14 @@ function enPassantCapturedSquare(move) {
   return `${file}${rank}`;
 }
 
-function makeGameMove(move) {
+function makeGameMove(move, prevalidated = false) {
   const movingIdentity = customMovementBySquare.get(move.from);
   const movingCustomPiece = customRules.customPieces.find((piece) => piece.id === customPieceBySquare.get(move.from));
-  const legalMove = getLegalMoves({ square: move.from })
-    .find((candidate) => candidate.to === move.to
-      && (!candidate.promotion || candidate.promotion === (move.promotion ?? 'q')));
+  const legalMove = prevalidated
+    ? move
+    : getLegalMoves({ square: move.from })
+      .find((candidate) => candidate.to === move.to
+        && (!candidate.promotion || candidate.promotion === (move.promotion ?? 'q')));
   if (!legalMove) throw new Error('The rules engine rejected the move.');
   const movingPiece = game.get(legalMove.from);
   if (movingPiece.type !== legalMove.piece) {
@@ -757,6 +760,7 @@ function squareAt(row, col) {
 
 function renderBoard() {
   const size = game.board().length;
+  const premoveWindow = canQueuePremove();
   const rows = [...Array(size).keys()];
   const cols = [...Array(size).keys()];
   if (flipped) {
@@ -820,7 +824,8 @@ function renderBoard() {
         pieceElement.setAttribute('aria-hidden', 'true');
         button.append(pieceElement);
       }
-      button.draggable = Boolean(piece && piece.color === playerColor && !aiThinking && !gameResult);
+      button.draggable = Boolean(piece && piece.color === playerColor && !gameResult
+        && (!aiThinking || premoveWindow));
       button.addEventListener('dragstart', (event) => {
         if (!button.draggable) return;
         selectedSquare = square;
@@ -841,7 +846,7 @@ function renderBoard() {
         else if (premoving) queuePremove(from, square);
         else playMove(from, square);
       });
-      button.disabled = aiThinking || gameOver || gameResult || (onlineMode && !onlineReady);
+      button.disabled = (aiThinking && !premoveWindow) || gameOver || gameResult || (onlineMode && !onlineReady);
       button.addEventListener('click', () => onSquareClick(square));
       boardElement.append(button);
     });
@@ -920,27 +925,10 @@ function analyzeMoveQuality(move) {
   if (isCustomVariantActive()) return null;
   const mover = game.turn();
   const candidates = getLegalMoves();
-  const scores = candidates.map((candidate) => {
-    let moved = false;
-    try {
-      makeGameMove(candidate);
-      moved = true;
-      const attackedSacrifice = !candidate.captured
-        && (pieceValues[candidate.piece] ?? 0) >= pieceValues.n
-        && getLegalMoves().some((reply) => reply.to === candidate.to && reply.captured);
-      const whiteScore = search(1, -Infinity, Infinity);
-      return {
-        candidate,
-        score: mover === 'w' ? whiteScore : -whiteScore,
-        attackedSacrifice,
-      };
-    } catch (error) {
-      console.error('Could not evaluate a move for feedback:', error);
-      return null;
-    } finally {
-      if (moved) undoGameMove();
-    }
-  }).filter(Boolean);
+  const scores = candidates.map((candidate) => ({
+    candidate,
+    score: estimateMoveImpact(candidate, game.history().length + 1),
+  }));
   if (!scores.length) return null;
   scores.sort((left, right) => right.score - left.score);
   const chosen = scores.find(({ candidate }) => candidate.from === move.from
@@ -954,10 +942,23 @@ function analyzeMoveQuality(move) {
     grade: window.OpenboardGameInsights.classifyMove({
       loss,
       bestGap: bestScore - nextBestScore,
-      soundSacrifice: chosen.attackedSacrifice && loss <= 25,
+      soundSacrifice: false,
     }),
     loss,
   };
+}
+
+function estimateMoveImpact(move, plyCount) {
+  const piece = game.get(move.from);
+  const promotion = move.promotion ? { type: move.promotion, color: piece.color } : piece;
+  const capturedSquare = move.flags.includes('e') ? enPassantCapturedSquare(move) : move.to;
+  const capturedPiece = game.get(capturedSquare);
+  const moverSign = piece.color === 'w' ? 1 : -1;
+  const materialAndPositionChange = piecePositionValue(promotion, move.to, plyCount)
+    - piecePositionValue(piece, move.from, plyCount - 1)
+    + (capturedPiece ? pieceValues[capturedPiece.type] : 0);
+  const checkBonus = move.san?.includes('+') || move.san?.includes('#') ? 40 : 0;
+  return moverSign * materialAndPositionChange + checkBonus;
 }
 
 function recordMoveInsight(move, quality) {
@@ -974,8 +975,9 @@ function recordMoveInsight(move, quality) {
 }
 
 function onSquareClick(square) {
-  const premoving = onlineMode && onlineReady && game.turn() !== playerColor;
-  if (aiThinking || gameResult || isGameOver() || (onlineMode && (!onlineReady || onlineSocket?.readyState !== WebSocket.OPEN))
+  const premoving = canQueuePremove();
+  if ((aiThinking && !premoving) || gameResult || isGameOver()
+    || (onlineMode && (!onlineReady || onlineSocket?.readyState !== WebSocket.OPEN))
     || (!analysisMode && !puzzleMode && game.turn() !== playerColor && !premoving)) return;
   const clickedPiece = game.get(square);
   if (premoving) {
@@ -1028,7 +1030,7 @@ function onSquareClick(square) {
 
 function getPremoveMoves(square) {
   const piece = game.get(square);
-  if (!piece || piece.color !== playerColor || !onlineMode || game.turn() === playerColor) return [];
+  if (!piece || piece.color !== playerColor || !canQueuePremove()) return [];
   try {
     const fen = game.fen().split(' ');
     fen[1] = playerColor;
@@ -1052,6 +1054,11 @@ function getPremoveMoves(square) {
     gameMessage.textContent = 'Could not prepare premove targets for this position.';
     return [];
   }
+}
+
+function canQueuePremove() {
+  if (onlineMode) return onlineReady && game.turn() !== playerColor;
+  return aiThinking && !analysisMode && !puzzleMode && game.turn() !== playerColor;
 }
 
 function queuePremove(from, to, promotion = 'q') {
@@ -1134,14 +1141,7 @@ function playMove(from, to, promotion = 'q') {
   return appliedMove;
 }
 
-function evaluatePosition() {
-  if (isCheckmate()) return game.turn() === 'w' ? -100000 : 100000;
-  if (isStalemate()) {
-    if (!customRules.noDraws) return 0;
-    return game.turn() === 'w' ? -100000 : 100000;
-  }
-  if (isDraw()) return 0;
-
+function evaluateMaterialPosition() {
   let score = 0;
   const board = game.board();
   for (let row = 0; row < board.length; row += 1) {
@@ -1149,31 +1149,42 @@ function evaluatePosition() {
       const piece = board[row][col];
       if (!piece) continue;
       const square = squareAt(row, col);
-      const movementIdentity = customMovementBySquare.get(square);
-      const customDefinition = customRules.customPieces.find((definition) => definition.id === customPieceBySquare.get(square));
-      const originalType = customDefinition?.replaces ?? movementIdentity?.original ?? piece.type;
-      const direction = piece.color === 'w' ? 1 : -1;
-      const advancement = piece.color === 'w' ? board.length - 2 - row : row - 1;
-      const center = (board.length - 1) / 2;
-      const centerDistance = Math.abs(center - col) + Math.abs(center - row);
-      let positional = 0;
-      if (originalType === 'p') positional = advancement * 7;
-      if (originalType === 'n' || originalType === 'b') positional = (7 - centerDistance) * 4;
-      if (originalType === 'k' && game.history().length > 20) positional = (7 - centerDistance) * 2;
-      score += direction * (pieceValues[originalType] + positional);
+      score += (piece.color === 'w' ? 1 : -1) * piecePositionValue(piece, square, game.history().length);
     }
   }
   return score;
 }
 
+function piecePositionValue(piece, square, plyCount) {
+  const boardSize = game.board().length;
+  const row = boardSize - Number(square.slice(square.match(/[0-9]/).index));
+  const col = square.charCodeAt(0) - 97;
+  const movementIdentity = customMovementBySquare.get(square);
+  const customDefinition = customRules.customPieces.find((definition) => definition.id === customPieceBySquare.get(square));
+  const originalType = customDefinition?.replaces ?? movementIdentity?.original ?? piece.type;
+  const advancement = piece.color === 'w' ? boardSize - 2 - row : row - 1;
+  const center = (boardSize - 1) / 2;
+  const centerDistance = Math.abs(center - col) + Math.abs(center - row);
+  let positional = 0;
+  if (originalType === 'p') positional = advancement * 7;
+  if (originalType === 'n' || originalType === 'b') positional = (7 - centerDistance) * 4;
+  if (originalType === 'k' && plyCount > 20) positional = (7 - centerDistance) * 2;
+  return pieceValues[originalType] + positional;
+}
+
 function search(depth, alpha, beta) {
-  if (depth === 0 || isGameOver()) return evaluatePosition();
   const moves = getLegalMoves();
+  if (!moves.length) {
+    if (isCheck() || customRules.noDraws) return game.turn() === 'w' ? -100000 : 100000;
+    return 0;
+  }
+  if (!customRules.noDraws && (Number(game.fen().split(' ')[4]) >= 100 || game.insufficient_material())) return 0;
+  if (depth === 0) return evaluateMaterialPosition();
   moves.sort((a, b) => moveOrderScore(b) - moveOrderScore(a));
   const maximizing = game.turn() === 'w';
   let best = maximizing ? -Infinity : Infinity;
   for (const move of moves) {
-    makeGameMove(move);
+    makeGameMove(move, true);
     const score = search(depth - 1, alpha, beta);
     undoGameMove();
     if (maximizing) {
@@ -1197,7 +1208,7 @@ function findBestMove(bot) {
   const moves = getLegalMoves();
   const scoredMoves = [];
   for (const move of moves) {
-    makeGameMove(move);
+    makeGameMove(move, true);
     const score = search(bot.depth - 1, -Infinity, Infinity);
     undoGameMove();
     scoredMoves.push({ move, score });
@@ -1359,6 +1370,31 @@ function finishBotTurn() {
   aiThinking = false;
   updateGameState();
   renderBoard();
+  playPendingPremove();
+}
+
+function playPendingPremove() {
+  if (!pendingPremove) return;
+  if (game.turn() !== playerColor || isGameOver() || gameResult) {
+    pendingPremove = null;
+    renderBoard();
+    return;
+  }
+  const premove = pendingPremove;
+  const legalMove = getLegalMoves({ square: premove.from }).find((move) => move.to === premove.to
+    && (!move.promotion || move.promotion === premove.promotion));
+  pendingPremove = null;
+  if (!legalMove) {
+    gameMessage.textContent = 'Your premove was no longer legal and was cleared.';
+    renderBoard();
+    if (onlineMode) updateOnlineStatus('Premove cleared because it was no longer legal after your opponent’s move.');
+    return;
+  }
+  const playedMove = playMove(legalMove.from, legalMove.to, premove.promotion);
+  if (playedMove) {
+    if (onlineMode) updateOnlineStatus(`Premove played: ${playedMove.san}.`);
+    else gameMessage.textContent = `Premove played: ${playedMove.san}.`;
+  }
 }
 
 function updateGameState() {
@@ -1797,25 +1833,7 @@ function applyOnlineMove(message) {
   updateGameState();
   renderBoard();
   updateOnlineStatus(`${message.san} played by your opponent.`);
-  if (pendingPremove) {
-    if (game.turn() !== playerColor || isGameOver() || gameResult) {
-      pendingPremove = null;
-      renderBoard();
-    } else {
-      const premove = pendingPremove;
-      const isLegal = getLegalMoves({ square: premove.from }).some((move) => move.to === premove.to
-        && (!move.promotion || move.promotion === premove.promotion));
-      pendingPremove = null;
-      if (isLegal) {
-        const playedMove = playMove(premove.from, premove.to, premove.promotion);
-        if (playedMove) updateOnlineStatus(`Premove played: ${playedMove.san}.`);
-      } else {
-        gameMessage.textContent = 'Your premove was no longer legal and was cleared.';
-        renderBoard();
-        updateOnlineStatus('Premove cleared because it was no longer legal after your opponent’s move.');
-      }
-    }
-  }
+  playPendingPremove();
 }
 
 function handleOnlineMessage(socket, message) {

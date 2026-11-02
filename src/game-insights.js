@@ -43,13 +43,13 @@
   ];
 
   const grades = {
-    best: { label: 'Best', icon: '⭐', description: 'The strongest move in this quick local search.' },
-    excellent: { label: 'Excellent', icon: '👍', description: 'Very close to the top-scoring move in this quick local search.' },
-    good: { label: 'Good', icon: '✅', description: 'A sound move; the local search found a stronger option.' },
-    inaccuracy: { label: 'Inaccuracy', icon: '?!', description: 'This gives up a noticeable amount compared with the top local-search move.' },
-    mistake: { label: 'Mistake', icon: '⚠️', description: 'A serious opportunity was missed in the quick local search.' },
-    blunder: { label: 'Blunder', icon: '❌', description: 'A major opportunity was missed in the quick local search.' },
-    great: { label: 'Great', icon: '!', description: 'The top move stood out as a critical continuation in this quick local search.' },
+    best: { label: 'Best', icon: '⭐', description: 'The strongest move in this quick local position estimate.' },
+    excellent: { label: 'Excellent', icon: '👍', description: 'Very close to the top-scoring move in this quick local position estimate.' },
+    good: { label: 'Good', icon: '✅', description: 'A sound move; the local position estimate found a stronger option.' },
+    inaccuracy: { label: 'Inaccuracy', icon: '?!', description: 'This gives up a noticeable amount compared with the top estimated move.' },
+    mistake: { label: 'Mistake', icon: '⚠️', description: 'A serious opportunity was missed in the quick local position estimate.' },
+    blunder: { label: 'Blunder', icon: '❌', description: 'A major opportunity was missed in the quick local position estimate.' },
+    great: { label: 'Great', icon: '!', description: 'The top move stood out as a critical continuation in this quick local position estimate.' },
     brilliant: { label: 'Brilliant', icon: '‼️', description: 'A sound, attacked-piece sacrifice was among the top moves in this quick local search.' },
   };
 
