@@ -291,6 +291,8 @@ body[data-interface-theme="light"] #custom-rules-dialog { color: #27382d; backgr
 .online-account .studio-status { margin: 10px 0 0; }
 .online-auth-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .online-auth-actions button { min-height: 34px; padding: 0 11px; border-radius: 7px; font-size: 10px; cursor: pointer; }
+.online-auth-reset { margin-top: 9px; padding: 0; border: 0; color: var(--lime); background: transparent; font-size: 10px; text-decoration: underline; cursor: pointer; }
+.online-auth-reset[hidden] { display: none; }
 .online-sections { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin: 14px 0; padding: 4px; border: 1px solid #ffffff12; border-radius: 10px; background: #10191477; }
 .online-section-tab { min-height: 36px; border: 0; border-radius: 7px; color: var(--muted); background: transparent; font-size: 11px; font-weight: 600; cursor: pointer; }
 .online-section-tab.active { color: #19231b; background: var(--lime); }
