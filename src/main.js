@@ -1,4 +1,5 @@
-const game = typeof Chess === 'undefined' ? null : new Chess();
+let game = typeof Chess === 'undefined' ? null : new Chess();
+let activeBoardSize = 8;
 const boardElement = document.querySelector('#board');
 const moveListElement = document.querySelector('#move-list');
 const gameMessage = document.querySelector('#game-message');
@@ -147,10 +148,12 @@ const onlineServerUrl = configuredOnlineServerUrl
 const supabaseUrl = document.querySelector('meta[name="openboard-supabase-url"]')?.content.trim().replace(/\/+$/, '') || '';
 const supabaseAnonKey = document.querySelector('meta[name="openboard-supabase-anon-key"]')?.content.trim() || '';
 const authSessionStorageKey = 'openboard-auth-session';
+const playableBoardSizes = [8, 10, 12, 14, 16, 18, 20];
 let authSession = null;
 let authUsername = '';
 let authMode = 'signup';
 const defaultCustomRules = {
+  boardSize: 8,
   noDraws: false,
   pieceMovements: {
     p: { w: ['p'], b: ['p'] },
@@ -202,6 +205,27 @@ function moveIdentity(map, from, to) {
   if (identity) map.set(to, identity);
 }
 
+function castlingRookSquares(color, flags) {
+  const rank = color === 'w' ? '1' : String(game.board().length);
+  const offset = (game.board().length - 8) / 2;
+  const kingSide = flags.includes('k');
+  const rookFrom = offset + (kingSide ? 7 : 0);
+  const rookTo = offset + (kingSide ? 5 : 3);
+  return {
+    from: `${String.fromCharCode(97 + rookFrom)}${rank}`,
+    to: `${String.fromCharCode(97 + rookTo)}${rank}`,
+    path: kingSide
+      ? [offset + 5, offset + 6]
+      : [offset + 3, offset + 2],
+  };
+}
+
+function enPassantCapturedSquare(move) {
+  const file = move.to.match(/^[a-z]+/)[0];
+  const rank = move.from.slice(move.from.match(/[0-9]/).index);
+  return `${file}${rank}`;
+}
+
 function makeGameMove(move) {
   const movingIdentity = customMovementBySquare.get(move.from);
   const movingCustomPiece = customRules.customPieces.find((piece) => piece.id === customPieceBySquare.get(move.from));
@@ -231,13 +255,13 @@ function makeGameMove(move) {
     }
     throw new Error('The rules engine rejected the move.');
   }
-  const capturedSquare = result.flags.includes('e') ? `${result.to[0]}${result.from[1]}` : result.to;
+  const capturedSquare = result.flags.includes('e') ? enPassantCapturedSquare(result) : result.to;
   customMovementBySquare.delete(capturedSquare);
   customPieceBySquare.delete(capturedSquare);
   moveIdentity(customMovementBySquare, result.from, result.to);
   moveIdentity(customPieceBySquare, result.from, result.to);
   if ((movingIdentity?.original === 'p' || (!movingCustomPiece?.studio && movingCustomPiece?.replaces === 'p'))
-    && (result.to.endsWith('8') || result.to.endsWith('1'))) {
+    && isPromotionSquare(result.to, result.color)) {
     const promotedType = move.promotion || 'q';
     game.remove(result.to);
     game.put({ type: promotedType, color: result.color }, result.to);
@@ -249,9 +273,7 @@ function makeGameMove(move) {
     customPieceBySquare.delete(result.to);
   }
   if (result.flags.includes('k') || result.flags.includes('q')) {
-    const rank = result.color === 'w' ? '1' : '8';
-    const rookFrom = result.flags.includes('k') ? `h${rank}` : `a${rank}`;
-    const rookTo = result.flags.includes('k') ? `f${rank}` : `d${rank}`;
+    const { from: rookFrom, to: rookTo } = castlingRookSquares(result.color, result.flags);
     moveIdentity(customMovementBySquare, rookFrom, rookTo);
     moveIdentity(customPieceBySquare, rookFrom, rookTo);
   }
@@ -270,9 +292,10 @@ function configureStartingPosition() {
   customMovementBySquare = new Map();
   customPieceBySquare = new Map();
   game.clearCustomMovements();
-  for (let rank = 1; rank <= 8; rank += 1) {
-    for (const file of 'abcdefgh') {
-      const square = `${file}${rank}`;
+  const size = game.board().length;
+  for (let rank = 1; rank <= size; rank += 1) {
+    for (let file = 0; file < size; file += 1) {
+      const square = `${String.fromCharCode(97 + file)}${rank}`;
       const piece = game.get(square);
       if (!piece || piece.type === 'k') continue;
       const customDefinition = customRules.customPieces.find((candidate) => candidate.replaces === piece.type
@@ -346,8 +369,8 @@ function isPawnIdentity(square) {
 function variantIsInCheck(color) {
   const board = game.board();
   let kingSquare = null;
-  for (let row = 0; row < 8; row += 1) {
-    for (let col = 0; col < 8; col += 1) {
+  for (let row = 0; row < board.length; row += 1) {
+    for (let col = 0; col < board[row].length; col += 1) {
       if (board[row][col]?.type === 'k' && board[row][col].color === color) kingSquare = squareAt(row, col);
     }
   }
@@ -358,8 +381,8 @@ function variantIsInCheck(color) {
 function variantSquareAttacked(square, attackerColor) {
   const board = game.board();
   if (game.is_attacked(square, attackerColor)) return true;
-  for (let row = 0; row < 8; row += 1) {
-    for (let col = 0; col < 8; col += 1) {
+  for (let row = 0; row < board.length; row += 1) {
+    for (let col = 0; col < board[row].length; col += 1) {
       const piece = board[row][col];
       if (!piece || piece.color !== attackerColor) continue;
       const from = squareAt(row, col);
@@ -370,9 +393,14 @@ function variantSquareAttacked(square, attackerColor) {
 }
 
 function attacksSquare(from, to, color, pattern) {
-  const dx = to.charCodeAt(0) - from.charCodeAt(0);
-  const fromRank = Number(from[1]);
-  const toRank = Number(to[1]);
+  const fileNumber = (square) => {
+    let file = 0;
+    for (const character of square.match(/^[a-z]+/)[0]) file = file * 26 + character.charCodeAt(0) - 96;
+    return file - 1;
+  };
+  const dx = fileNumber(to) - fileNumber(from);
+  const fromRank = Number(from.slice(from.match(/[0-9]/).index));
+  const toRank = Number(to.slice(to.match(/[0-9]/).index));
   const dy = toRank - fromRank;
   const absX = Math.abs(dx);
   const absY = Math.abs(dy);
@@ -387,9 +415,9 @@ function attacksSquare(from, to, color, pattern) {
   if (!['q', 'r', 'b'].includes(pattern)) return false;
   const stepX = Math.sign(dx);
   const stepY = Math.sign(dy);
-  let file = from.charCodeAt(0) - 97 + stepX;
+  let file = fileNumber(from) + stepX;
   let rank = fromRank + stepY;
-  while (file !== to.charCodeAt(0) - 97 || rank !== toRank) {
+  while (file !== fileNumber(to) || rank !== toRank) {
     if (game.get(`${String.fromCharCode(97 + file)}${rank}`)) return false;
     file += stepX;
     rank += stepY;
@@ -415,9 +443,11 @@ function getLegalMoves(options = {}) {
       const candidates = game.moves({ square, verbose: true });
       for (const candidate of candidates) {
         if (candidate.flags.includes('k') || candidate.flags.includes('q')) {
-          const rank = candidate.color === 'w' ? '1' : '8';
-          const path = candidate.flags.includes('k') ? [`f${rank}`, `g${rank}`] : [`d${rank}`, `c${rank}`];
-          if (path.some((pathSquare) => variantSquareAttacked(pathSquare, candidate.color === 'w' ? 'b' : 'w'))) continue;
+          if (variantIsInCheck(candidate.color)) continue;
+          const rank = candidate.color === 'w' ? '1' : String(game.board().length);
+          const { path } = castlingRookSquares(candidate.color, candidate.flags);
+          const pathSquares = path.map((file) => `${String.fromCharCode(97 + file)}${rank}`);
+          if (pathSquares.some((pathSquare) => variantSquareAttacked(pathSquare, candidate.color === 'w' ? 'b' : 'w'))) continue;
         }
         const key = `${candidate.from}${candidate.to}${candidate.promotion ?? ''}`;
         if (seen.has(key)) continue;
@@ -429,7 +459,7 @@ function getLegalMoves(options = {}) {
           customPieceBySquare = pieceSnapshot;
           continue;
         }
-        const capturedSquare = played.flags.includes('e') ? `${played.to[0]}${played.from[1]}` : played.to;
+        const capturedSquare = played.flags.includes('e') ? enPassantCapturedSquare(played) : played.to;
         customMovementBySquare.delete(capturedSquare);
         customPieceBySquare.delete(capturedSquare);
         moveIdentity(customMovementBySquare, played.from, played.to);
@@ -439,16 +469,16 @@ function getLegalMoves(options = {}) {
           customPieceBySquare.delete(played.to);
         } else if ((customMovementBySquare.get(played.to)?.original === 'p'
           || customRules.customPieces.find((definition) => definition.id === customPieceBySquare.get(played.to))?.replaces === 'p')
-          && (played.to.endsWith('8') || played.to.endsWith('1'))) {
+          && isPromotionSquare(played.to, played.color)) {
           game.remove(played.to);
           game.put({ type: 'q', color: played.color }, played.to);
           customMovementBySquare.delete(played.to);
           customPieceBySquare.delete(played.to);
         }
         if (played.flags.includes('k') || played.flags.includes('q')) {
-          const rank = played.color === 'w' ? '1' : '8';
-          moveIdentity(customMovementBySquare, played.flags.includes('k') ? `h${rank}` : `a${rank}`, played.flags.includes('k') ? `f${rank}` : `d${rank}`);
-          moveIdentity(customPieceBySquare, played.flags.includes('k') ? `h${rank}` : `a${rank}`, played.flags.includes('k') ? `f${rank}` : `d${rank}`);
+          const { from: rookFrom, to: rookTo } = castlingRookSquares(played.color, played.flags);
+          moveIdentity(customMovementBySquare, rookFrom, rookTo);
+          moveIdentity(customPieceBySquare, rookFrom, rookTo);
         }
         const safe = !variantIsInCheck(piece.color);
         game.undo();
@@ -477,6 +507,7 @@ function updateCustomRulesSummary() {
     }));
   if (changedPieces.length) pieces.push(`${changedPieces.length} piece movement${changedPieces.length > 1 ? 's' : ''} changed`);
   if (customRules.customPieces.length) pieces.push(`${customRules.customPieces.length} custom piece${customRules.customPieces.length > 1 ? 's' : ''}`);
+  if (customRules.boardSize !== 8) pieces.push(`${customRules.boardSize}×${customRules.boardSize}`);
   if (!pieces.length) pieces.push('Standard chess');
   pieces.push(customRules.noDraws ? 'no draws' : 'draws allowed');
   document.querySelector('#custom-rules-summary').textContent = `${pieces.join(' · ')} ↗`;
@@ -485,6 +516,7 @@ function updateCustomRulesSummary() {
 }
 
 function populateCustomRulesForm() {
+  document.querySelector('#board-size').value = String(customRules.boardSize);
   document.querySelector('#no-draws').checked = customRules.noDraws;
   refreshStudioGamePieceChoices();
   editingPieceMovements = JSON.parse(JSON.stringify(customRules.pieceMovements));
@@ -709,6 +741,9 @@ function readCustomRulesForm() {
     return null;
   }
   return {
+    boardSize: playableBoardSizes.includes(Number(document.querySelector('#board-size').value))
+      ? Number(document.querySelector('#board-size').value)
+      : 8,
     noDraws: document.querySelector('#no-draws').checked,
     pieceMovements,
     customPieces,
@@ -716,17 +751,22 @@ function readCustomRulesForm() {
 }
 
 function squareAt(row, col) {
-  return `${String.fromCharCode(97 + col)}${8 - row}`;
+  return `${String.fromCharCode(97 + col)}${game.board().length - row}`;
 }
 
 function renderBoard() {
-  const rows = [...Array(8).keys()];
-  const cols = [...Array(8).keys()];
+  const size = game.board().length;
+  const rows = [...Array(size).keys()];
+  const cols = [...Array(size).keys()];
   if (flipped) {
     rows.reverse();
     cols.reverse();
   }
+  boardElement.style.setProperty('--board-size', size);
   boardElement.replaceChildren();
+  const gameOver = isGameOver();
+  const currentCheck = isCheck();
+  const lastMoveTo = game.history({ verbose: true }).at(-1)?.to;
 
   rows.forEach((rank, rowIndex) => {
     cols.forEach((file, colIndex) => {
@@ -745,18 +785,18 @@ function renderBoard() {
       if (colIndex === 0) {
         const rankLabel = document.createElement('span');
         rankLabel.className = `coordinate rank-coordinate ${(rank + file) % 2 === 0 ? 'on-light' : 'on-dark'}`;
-        rankLabel.textContent = String(8 - rank);
+        rankLabel.textContent = String(size - rank);
         button.append(rankLabel);
       }
-      if (rowIndex === 7) {
+      if (rowIndex === size - 1) {
         const fileLabel = document.createElement('span');
         fileLabel.className = `coordinate file-coordinate ${(rank + file) % 2 === 0 ? 'on-light' : 'on-dark'}`;
         fileLabel.textContent = String.fromCharCode(97 + file);
         button.append(fileLabel);
       }
-      if (game.history({ verbose: true }).at(-1)?.to === square) button.classList.add('last-move');
+      if (lastMoveTo === square) button.classList.add('last-move');
       if (selectedSquare === square) button.classList.add('selected');
-      if (isCheck() && piece?.type === 'k' && piece.color === game.turn()) button.classList.add('in-check');
+      if (currentCheck && piece?.type === 'k' && piece.color === game.turn()) button.classList.add('in-check');
       if (legalTargets.includes(square)) {
         const target = document.createElement('span');
         target.className = piece ? 'move-target capture-target' : 'move-target';
@@ -792,16 +832,20 @@ function renderBoard() {
         const from = event.dataTransfer.getData('text/plain') || selectedSquare;
         const candidate = getLegalMoves({ square: from }).find((move) => move.to === square);
         if (!candidate) return;
-        if (isPawnIdentity(from)
-          && (square.endsWith('8') || square.endsWith('1'))) askPromotion(from, square);
+        if (isPawnIdentity(from) && isPromotionSquare(square, game.get(from)?.color)) askPromotion(from, square);
         else playMove(from, square);
       });
-      button.disabled = aiThinking || isGameOver() || gameResult || (onlineMode && !onlineReady);
+      button.disabled = aiThinking || gameOver || gameResult || (onlineMode && !onlineReady);
       button.addEventListener('click', () => onSquareClick(square));
       boardElement.append(button);
     });
   });
   renderMoves();
+}
+
+function isPromotionSquare(square, color) {
+  const rank = Number(square.slice(square.match(/[0-9]/).index));
+  return rank === (color === 'w' ? game.board().length : 1);
 }
 
 function renderMoves() {
@@ -928,8 +972,7 @@ function onSquareClick(square) {
     || (!analysisMode && !puzzleMode && game.turn() !== playerColor)) return;
   const clickedPiece = game.get(square);
   if (selectedSquare && legalTargets.includes(square)) {
-    if (isPawnIdentity(selectedSquare)
-      && (square.endsWith('8') || square.endsWith('1'))) {
+    if (isPawnIdentity(selectedSquare) && isPromotionSquare(square, game.get(selectedSquare)?.color)) {
       askPromotion(selectedSquare, square);
       return;
     }
@@ -1026,8 +1069,8 @@ function evaluatePosition() {
 
   let score = 0;
   const board = game.board();
-  for (let row = 0; row < 8; row += 1) {
-    for (let col = 0; col < 8; col += 1) {
+  for (let row = 0; row < board.length; row += 1) {
+    for (let col = 0; col < board[row].length; col += 1) {
       const piece = board[row][col];
       if (!piece) continue;
       const square = squareAt(row, col);
@@ -1035,8 +1078,9 @@ function evaluatePosition() {
       const customDefinition = customRules.customPieces.find((definition) => definition.id === customPieceBySquare.get(square));
       const originalType = customDefinition?.replaces ?? movementIdentity?.original ?? piece.type;
       const direction = piece.color === 'w' ? 1 : -1;
-      const advancement = piece.color === 'w' ? 6 - row : row - 1;
-      const centerDistance = Math.abs(3.5 - col) + Math.abs(3.5 - row);
+      const advancement = piece.color === 'w' ? board.length - 2 - row : row - 1;
+      const center = (board.length - 1) / 2;
+      const centerDistance = Math.abs(center - col) + Math.abs(center - row);
       let positional = 0;
       if (originalType === 'p') positional = advancement * 7;
       if (originalType === 'n' || originalType === 'b') positional = (7 - centerDistance) * 4;
@@ -1128,7 +1172,7 @@ function reportStockfishFailure(error, bot, token) {
 }
 
 function requestBotMove(bot, token) {
-  const needsVariantSearch = customRules.customPieces.length > 0
+  const needsVariantSearch = activeBoardSize > 8 || customRules.customPieces.length > 0
     || Object.entries(customRules.pieceMovements).some(([piece, sides]) => ['w', 'b'].some((color) => {
       const movements = Array.isArray(sides) ? sides : sides?.[color] ?? [piece];
       return movements.length !== 1 || movements[0] !== piece;
@@ -1223,7 +1267,8 @@ function requestBotMove(bot, token) {
 
 function applyFallbackMove(bot, token) {
   if (token !== gameToken || isGameOver() || gameResult) return;
-  const fallbackDepth = Math.max(1, Math.min(bot.depth, 3));
+  const maxDepth = activeBoardSize >= 16 ? 1 : activeBoardSize >= 12 ? 2 : 3;
+  const fallbackDepth = Math.max(1, Math.min(bot.depth, maxDepth));
   const move = findBestMove({ ...bot, depth: fallbackDepth });
   if (move) {
     const quality = analyzeMoveQuality(move);
@@ -1587,7 +1632,7 @@ function requestPublicRoomsIfSelected() {
 }
 
 function isCustomVariantActive() {
-  return customRules.noDraws || customRules.customPieces.length > 0
+  return customRules.boardSize !== 8 || customRules.noDraws || customRules.customPieces.length > 0
     || Object.entries(customRules.pieceMovements).some(([piece, sides]) => ['w', 'b'].some((color) => {
       const movements = Array.isArray(sides) ? sides : sides?.[color] ?? [piece];
       return movements.length !== 1 || movements[0] !== piece;
@@ -1785,6 +1830,10 @@ function handleOnlineMessage(socket, message) {
 }
 
 async function connectToOnlineRoom(action, roomCode = null, roomPassword = '') {
+  if (activeBoardSize !== 8 && action !== 'browse') {
+    updateOnlineStatus('Online rooms currently use the standard 8×8 board. Select 8×8 in Custom rules before creating or joining a room.');
+    return;
+  }
   if (action === 'browse' && onlineSocket?.readyState === WebSocket.OPEN) {
     requestPublicRooms();
     return;
@@ -1897,6 +1946,11 @@ function markGameResult(soundEvent = 'draw') {
 }
 
 function startNewGame() {
+  const requestedSize = Number(customRules.boardSize) || 8;
+  if (requestedSize !== activeBoardSize) {
+    game = requestedSize === 8 ? new Chess() : new window.OpenboardLargeChess(requestedSize);
+    activeBoardSize = requestedSize;
+  }
   if (onlineMode && !onlineReady && onlineSocket) {
     game.reset();
     configureStartingPosition();
@@ -2484,6 +2538,9 @@ function loadPreferences() {
       .filter((piece, index, pieces) => !pieces.slice(0, index).some((other) =>
         other.replaces === piece.replaces && (other.color === 'both' || piece.color === 'both' || other.color === piece.color)));
     customRules = {
+      boardSize: playableBoardSizes.includes(Number(saved.customRules.boardSize))
+        ? Number(saved.customRules.boardSize)
+        : 8,
       noDraws: saved.customRules.noDraws === true,
       pieceMovements,
       customPieces,
@@ -2519,6 +2576,10 @@ document.querySelector('#reset-custom-rules').addEventListener('click', () => {
 document.querySelector('#apply-custom-rules').addEventListener('click', () => {
   const updatedRules = readCustomRulesForm();
   if (!updatedRules) return;
+  if (onlineMode && updatedRules.boardSize !== 8) {
+    showMessage('Online games use standard chess', 'Finish or disconnect from the online room before switching to a larger board.');
+    return;
+  }
   customRules = updatedRules;
   updateCustomRulesSummary();
   savePreferences();
@@ -2530,6 +2591,10 @@ loadPreferences();
 document.querySelector('#difficulty').dispatchEvent(new Event('change'));
 
 document.querySelector('#puzzle-start').addEventListener('click', () => {
+  if (activeBoardSize !== 8) {
+    showMessage('Puzzle board size', 'The built-in mate-in-one puzzle uses the standard 8×8 board. Select 8×8 in Custom rules to play it.');
+    return;
+  }
   gameToken += 1;
   if (activeWorker) {
     activeWorker.terminate();

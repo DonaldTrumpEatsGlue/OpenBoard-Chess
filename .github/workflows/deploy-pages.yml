@@ -30,6 +30,7 @@ jobs:
       - name: Test chess and online features
         run: |
           npm run test:custom-chess
+          npm run test:large-board
           npm run test:game-insights
           npm run test:online
       - name: Build site

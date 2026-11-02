@@ -183,6 +183,7 @@
           <button class="directory-close" id="close-custom-rules" type="button" aria-label="Close custom rules">×</button>
         </div>
         <p>Changes apply to a new game and are saved on this device. Bots use the selected movement rules too.</p>
+        <label class="rule-field board-size-field"><span>Playable board size</span><select id="board-size" aria-label="Playable board size"><option value="8">8×8 · Vanilla chess</option><option value="10">10×10</option><option value="12">12×12</option><option value="14">14×14</option><option value="16">16×16</option><option value="18">18×18</option><option value="20">20×20</option></select><small>On larger boards, extra back-rank slots are filled symmetrically with knights, bishops, rooks, then queens; every file gets a pawn.</small></label>
         <label class="rule-toggle"><input id="no-draws" type="checkbox" /><span><strong>No draws</strong><small>Threefold repetition, the fifty-move rule, insufficient-material draws, and draw offers are disabled. Stalemate counts as a loss.</small></span></label>
         <p class="rules-subheading">Piece movement</p>
         <p class="editor-note">Select one or more patterns to combine. For example, rook + knight makes a compound mover.</p>
@@ -335,7 +336,8 @@
     <script defer src="./src/piece-theme.js"></script>
     <script defer src="./src/game-insights.js"></script>
     <script defer src="./vendor/chess.js"></script>
+    <script defer src="./src/large-board-chess.js"></script>
     <script defer src="./src/piece-studio.js"></script>
-    <script defer src="./src/main.js?v=6"></script>
+    <script defer src="./src/main.js?v=7"></script>
   </body>
 </html>
