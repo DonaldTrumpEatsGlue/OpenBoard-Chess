@@ -71,6 +71,10 @@
             <time class="clock" id="opponent-clock" hidden>05:00</time>
           </div>
 
+          <div class="board-spectator-count" id="board-spectator-count" aria-live="polite" hidden>
+            <span aria-hidden="true">◉</span>
+            <strong id="board-spectator-count-label">0 spectators</strong>
+          </div>
           <div class="board-frame">
             <div class="board" id="board" role="grid" aria-label="Chess board"></div>
           </div>
@@ -261,11 +265,12 @@
       <section class="online-account" aria-label="Online account">
         <div class="online-account-heading"><strong>Player account</strong><span id="online-account-state">Sign in or create an account</span></div>
         <label class="studio-field" id="online-username-field"><span>Username (3–20 letters, numbers, or underscores)</span><input id="online-username" maxlength="20" autocomplete="username" minlength="3" /></label>
-        <label class="studio-field"><span id="online-email-label-text">Email</span><input id="online-email" type="email" autocomplete="email" maxlength="254" /></label>
-        <label class="studio-field"><span>Password</span><input id="online-account-password" type="password" autocomplete="new-password" minlength="8" maxlength="72" /></label>
+        <label class="studio-field" id="online-email-field"><span id="online-email-label-text">Email</span><input id="online-email" type="email" autocomplete="email" maxlength="254" /></label>
+        <label class="studio-field"><span id="online-password-label-text">Password</span><input id="online-account-password" type="password" autocomplete="new-password" minlength="8" maxlength="72" /></label>
         <div class="online-auth-actions">
           <button class="primary-button" id="online-auth-submit" type="button">Create account</button>
           <button class="secondary-button" id="online-auth-mode" type="button">Already registered? Sign in</button>
+          <button class="secondary-button" id="online-auth-reset" type="button" hidden>Forgot password?</button>
           <button class="secondary-button" id="online-auth-signout" type="button" hidden>Sign out</button>
         </div>
         <p class="studio-status" id="online-auth-status" role="status">Use an email you can access to create an account. When signing in, you can use your email or username.</p>
@@ -390,6 +395,6 @@
     <script defer src="./vendor/chess.js"></script>
     <script defer src="./src/large-board-chess.js"></script>
     <script defer src="./src/piece-studio.js"></script>
-    <script defer src="./src/main.js?v=22"></script>
+    <script defer src="./src/main.js?v=24"></script>
   </body>
 </html>

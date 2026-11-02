@@ -160,6 +160,7 @@ const playableBoardSizes = [8, 10, 12, 14, 16, 18, 20];
 let authSession = null;
 let authUsername = '';
 let authMode = 'signup';
+let passwordRecoveryMode = false;
 const defaultCustomRules = {
   boardSize: 8,
   noDraws: false,
@@ -1473,6 +1474,9 @@ function updateOnlineStatus(message) {
 
 function updateSpectatorCount(count) {
   const spectatorCount = Number.isInteger(count) && count >= 0 ? count : 0;
+  document.querySelector('#board-spectator-count').hidden = !onlineMode;
+  document.querySelector('#board-spectator-count-label').textContent =
+    `${spectatorCount} ${spectatorCount === 1 ? 'spectator' : 'spectators'}`;
   document.querySelector('#online-spectator-count').textContent =
     `Spectators: ${spectatorCount}`;
   if (onlineMode && onlineRoomCode) {
@@ -1518,6 +1522,8 @@ function initializeAuthSession() {
   const fragment = new URLSearchParams(location.hash.replace(/^#/, ''));
   const accessToken = fragment.get('access_token');
   if (accessToken && fragment.get('refresh_token')) {
+    passwordRecoveryMode = fragment.get('type') === 'recovery';
+    authMode = 'signin';
     saveAuthSession({
       access_token: accessToken,
       refresh_token: fragment.get('refresh_token'),
@@ -1525,7 +1531,9 @@ function initializeAuthSession() {
       token_type: fragment.get('token_type') || 'bearer',
     });
     history.replaceState(null, '', `${location.pathname}${location.search}`);
-    document.querySelector('#online-auth-status').textContent = 'Signed in. You can now join or create a lobby.';
+    document.querySelector('#online-auth-status').textContent = passwordRecoveryMode
+      ? 'Choose a new password for your account.'
+      : 'Signed in. You can now join or create a lobby.';
     return;
   }
 
@@ -1546,29 +1554,38 @@ function initializeAuthSession() {
 function updateAccountUI(message = '') {
   const isSignedIn = Boolean(authSession?.access_token);
   const usernameField = document.querySelector('#online-username-field');
+  const emailField = document.querySelector('#online-email-field');
   const identityField = document.querySelector('#online-email');
   identityField.type = authMode === 'signup' ? 'email' : 'text';
   identityField.autocomplete = authMode === 'signup' ? 'email' : 'username';
   identityField.placeholder = authMode === 'signup' ? '' : 'Email or username';
   document.querySelector('#online-email-label-text').textContent =
     authMode === 'signup' ? 'Email' : 'Email or username';
+  document.querySelector('#online-password-label-text').textContent =
+    passwordRecoveryMode ? 'New password' : 'Password';
+  document.querySelector('#online-account-password').autocomplete =
+    passwordRecoveryMode || authMode === 'signup' ? 'new-password' : 'current-password';
+  usernameField.hidden = authMode !== 'signup' || isSignedIn || passwordRecoveryMode;
+  emailField.hidden = isSignedIn || passwordRecoveryMode;
   document.querySelector('#online-account-state').textContent = isSignedIn
     ? `Signed in · ${authSession.user?.email || 'Openboard account'}`
     : 'Sign in or create an account';
   document.querySelector('#online-username').disabled = authMode !== 'signup' || isSignedIn;
-  usernameField.hidden = authMode !== 'signup' || isSignedIn;
   document.querySelector('#online-email').disabled = isSignedIn;
-  document.querySelector('#online-account-password').disabled = isSignedIn;
-  document.querySelector('#online-auth-submit').hidden = isSignedIn;
-  document.querySelector('#online-auth-mode').hidden = isSignedIn;
-  document.querySelector('#online-auth-signout').hidden = !isSignedIn;
-  document.querySelector('#online-auth-submit').textContent = authMode === 'signup' ? 'Create account' : 'Sign in';
+  document.querySelector('#online-account-password').disabled = isSignedIn && !passwordRecoveryMode;
+  document.querySelector('#online-auth-submit').hidden = isSignedIn && !passwordRecoveryMode;
+  document.querySelector('#online-auth-mode').hidden = isSignedIn || passwordRecoveryMode;
+  document.querySelector('#online-auth-reset').hidden = isSignedIn || authMode !== 'signin' || passwordRecoveryMode;
+  document.querySelector('#online-auth-signout').hidden = !isSignedIn || passwordRecoveryMode;
+  document.querySelector('#online-auth-submit').textContent = passwordRecoveryMode
+    ? 'Update password'
+    : authMode === 'signup' ? 'Create account' : 'Sign in';
   document.querySelector('#online-auth-mode').textContent = authMode === 'signup'
     ? 'Already registered? Sign in'
     : 'Need an account? Create one';
-  document.querySelector('#online-continue').hidden = !isSignedIn;
-  document.querySelector('#online-signin-required').hidden = isSignedIn;
-  document.querySelector('#online-play-controls').hidden = !isSignedIn;
+  document.querySelector('#online-continue').hidden = !isSignedIn || passwordRecoveryMode;
+  document.querySelector('#online-signin-required').hidden = isSignedIn && !passwordRecoveryMode;
+  document.querySelector('#online-play-controls').hidden = !isSignedIn || passwordRecoveryMode;
   if (message) document.querySelector('#online-auth-status').textContent = message;
 }
 
@@ -1630,6 +1647,61 @@ async function requestUsernameSignIn(username, password) {
   return result;
 }
 
+async function requestPasswordReset() {
+  const identity = document.querySelector('#online-email').value.trim();
+  const status = document.querySelector('#online-auth-status');
+  if (!identity.includes('@')) {
+    status.textContent = 'Enter the email address on your account to receive a password reset link.';
+    document.querySelector('#online-email').focus();
+    return;
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identity) || identity.length > 254) {
+    status.textContent = 'Enter a valid email address for your account.';
+    document.querySelector('#online-email').focus();
+    return;
+  }
+  const redirectTo = `${location.origin}${location.pathname}`;
+  try {
+    await requestSupabaseAuth(`recover?redirect_to=${encodeURIComponent(redirectTo)}`, {
+      email: identity.toLowerCase(),
+    });
+    status.textContent =
+      'If an account exists for that email, password reset instructions have been sent.';
+  } catch (error) {
+    console.error('Password reset request failed:', error);
+    status.textContent = error.message || 'Could not request a password reset. Please try again.';
+  }
+}
+
+async function updateRecoveredPassword(password) {
+  if (!authSession?.access_token) {
+    throw new Error('Your password reset link has expired. Request a new reset email.');
+  }
+  const response = await fetch(`${supabaseUrl}/auth/v1/user`, {
+    method: 'PUT',
+    headers: {
+      apikey: supabaseAnonKey,
+      Authorization: `Bearer ${authSession.access_token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ password }),
+  });
+  let user;
+  try {
+    user = await response.json();
+  } catch {
+    throw new Error(`Account service returned an unreadable response (${response.status}).`);
+  }
+  if (!response.ok) {
+    const detail = user.msg || user.message || user.error_description || user.error;
+    throw new Error(typeof detail === 'string' ? detail : 'Could not update your password.');
+  }
+  passwordRecoveryMode = false;
+  saveAuthSession({ ...authSession, user });
+  document.querySelector('#online-account-password').value = '';
+  updateAccountUI('Password updated. Your account is ready to use.');
+}
+
 async function checkUsernameAvailable(username) {
   const profileUrl = new URL(`${supabaseUrl}/rest/v1/profiles`);
   profileUrl.searchParams.set('username_key', `eq.${username.toLowerCase()}`);
@@ -1659,6 +1731,26 @@ async function getValidAuthSession() {
 }
 
 async function submitOnlineAuth() {
+  if (passwordRecoveryMode) {
+    const newPassword = document.querySelector('#online-account-password').value;
+    const status = document.querySelector('#online-auth-status');
+    if (newPassword.length < 8 || newPassword.length > 72) {
+      status.textContent = 'Passwords must be between 8 and 72 characters.';
+      return;
+    }
+    const submit = document.querySelector('#online-auth-submit');
+    submit.disabled = true;
+    status.textContent = 'Updating your password…';
+    try {
+      await updateRecoveredPassword(newPassword);
+    } catch (error) {
+      console.error('Password update failed:', error);
+      status.textContent = error.message || 'Could not update your password. Request a new reset link and try again.';
+    } finally {
+      submit.disabled = false;
+    }
+    return;
+  }
   const identity = document.querySelector('#online-email').value.trim();
   const email = identity.toLowerCase();
   const emailInput = document.querySelector('#online-email');
@@ -1963,7 +2055,7 @@ function setOnlineGameState(active, spectating = false) {
   onlineMode = active;
   onlineSpectating = active && spectating;
   document.querySelector('#online-game-actions').hidden = !active;
-  if (!active) updateSpectatorCount(0);
+  updateSpectatorCount(0);
   setOnlineCreatePending(onlineCreatePending);
   if (active) suggestedMove = null;
   configureOnlineChat(active, onlineSpectating);
@@ -2878,6 +2970,7 @@ for (const channel of ['player', 'spectator']) {
   });
 }
 document.querySelector('#online-auth-submit').addEventListener('click', submitOnlineAuth);
+document.querySelector('#online-auth-reset').addEventListener('click', requestPasswordReset);
 document.querySelector('#online-auth-mode').addEventListener('click', () => {
   authMode = authMode === 'signup' ? 'signin' : 'signup';
   document.querySelector('#online-account-password').setAttribute(

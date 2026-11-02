@@ -118,6 +118,9 @@ h1 { margin-bottom: 0; font-family: Manrope, sans-serif; font-size: clamp(25px, 
 .player-tag { margin-left: auto; color: #98a49a; font-size: 9px; font-weight: 700; letter-spacing: .12em; }
 .clock { min-width: 61px; margin-left: 9px; padding: 5px 7px; border: 1px solid #ffffff16; border-radius: 5px; color: #eaf0e8; background: #10191455; font-size: 11px; font-variant-numeric: tabular-nums; text-align: center; }
 .clock-low { color: #ff9a8f; border-color: #ff9a8f60; }
+.board-spectator-count { display: flex; align-items: center; justify-content: flex-end; gap: 7px; margin: -7px 4px 8px; color: #c8d6bf; font-size: 11px; }
+.board-spectator-count > span { color: var(--lime); font-size: 13px; }
+.board-spectator-count[hidden] { display: none; }
 .board-frame { padding: 8px; border: 1px solid #ffffff12; border-radius: 12px; background: #26342d; box-shadow: 0 20px 60px #0b130f66; }
 .board { display: grid; grid-template-columns: repeat(var(--board-size, 8), minmax(0, 1fr)); grid-template-rows: repeat(var(--board-size, 8), minmax(0, 1fr)); overflow: hidden; aspect-ratio: 1; border-radius: 4px; }
 .square { position: relative; display: grid; place-items: center; min-width: 0; aspect-ratio: 1; padding: 0; border: 0; border-radius: 0; cursor: pointer; }
