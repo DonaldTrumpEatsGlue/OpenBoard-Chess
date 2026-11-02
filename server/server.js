@@ -12,6 +12,10 @@ const chatRateWindowMs = 10_000;
 const chatRateLimit = 5;
 const supabaseUrl = (process.env.SUPABASE_URL || '').replace(/\/+$/, '');
 const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || '';
+const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const usernameLoginAttempts = new Map();
+const usernameLoginWindowMs = 15 * 60 * 1000;
+const usernameLoginLimit = 10;
 const allowedOrigins = (process.env.OPENBOARD_ALLOWED_ORIGINS || '')
   .split(',')
   .map((origin) => origin.trim())
@@ -26,6 +30,108 @@ function isAllowedOrigin(origin) {
       && origin.endsWith(suffix)
       && origin.length > prefix.length + suffix.length;
   });
+}
+
+function addAuthCorsHeaders(request, response) {
+  const origin = request.headers.origin;
+  if (origin && isAllowedOrigin(origin)) {
+    response.setHeader('Access-Control-Allow-Origin', origin);
+    response.setHeader('Vary', 'Origin');
+  }
+}
+
+function readJsonBody(request, maxLength = 2048) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    let tooLarge = false;
+    request.setEncoding('utf8');
+    request.on('data', (chunk) => {
+      if (tooLarge) return;
+      body += chunk;
+      if (body.length > maxLength) {
+        tooLarge = true;
+        body = '';
+      }
+    });
+    request.on('end', () => {
+      if (tooLarge) {
+        reject(new Error('Request body is too large.'));
+        return;
+      }
+      try {
+        resolve(JSON.parse(body));
+      } catch {
+        reject(new Error('Request body must be valid JSON.'));
+      }
+    });
+    request.on('error', reject);
+  });
+}
+
+function allowUsernameLogin(request, response) {
+  const now = Date.now();
+  for (const [ip, attempt] of usernameLoginAttempts) {
+    if (now - attempt.startedAt >= usernameLoginWindowMs) usernameLoginAttempts.delete(ip);
+  }
+  const ip = request.socket.remoteAddress || 'unknown';
+  let attempt = usernameLoginAttempts.get(ip);
+  if (!attempt || now - attempt.startedAt >= usernameLoginWindowMs) {
+    attempt = { startedAt: now, count: 0 };
+    usernameLoginAttempts.set(ip, attempt);
+  }
+  attempt.count += 1;
+  if (attempt.count <= usernameLoginLimit) return true;
+  response.writeHead(429, {
+    'Cache-Control': 'no-store',
+    'Content-Type': 'application/json; charset=utf-8',
+    'Retry-After': String(Math.ceil((usernameLoginWindowMs - (now - attempt.startedAt)) / 1000)),
+  }).end(JSON.stringify({ message: 'Too many sign-in attempts. Try again later.' }));
+  return false;
+}
+
+async function signInWithUsername(username, password) {
+  if (!supabaseUrl || !supabaseAnonKey || !supabaseServiceRoleKey) {
+    throw new Error('Username sign-in is not configured on this server.');
+  }
+  const headers = {
+    apikey: supabaseServiceRoleKey,
+    Authorization: `Bearer ${supabaseServiceRoleKey}`,
+  };
+  const profileUrl = new URL(`${supabaseUrl}/rest/v1/profiles`);
+  profileUrl.searchParams.set('username_key', `eq.${username.toLowerCase()}`);
+  profileUrl.searchParams.set('select', 'id');
+  const profileResponse = await fetch(profileUrl, {
+    headers,
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!profileResponse.ok) throw new Error('Could not look up the account.');
+  const [profile] = await profileResponse.json();
+  if (!profile?.id) return null;
+
+  const userResponse = await fetch(`${supabaseUrl}/auth/v1/admin/users/${encodeURIComponent(profile.id)}`, {
+    headers,
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!userResponse.ok) throw new Error('Could not look up the account.');
+  const user = await userResponse.json();
+  if (!user?.email) return null;
+
+  const tokenResponse = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
+    method: 'POST',
+    headers: {
+      apikey: supabaseAnonKey,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ email: user.email, password }),
+    signal: AbortSignal.timeout(5000),
+  });
+  if (tokenResponse.status === 400 || tokenResponse.status === 401) return null;
+  if (!tokenResponse.ok) throw new Error('The account service could not complete sign-in.');
+  const session = await tokenResponse.json();
+  if (!session.user) return session;
+  const sessionUser = { ...session.user };
+  delete sessionUser.email;
+  return { ...session, user: sessionUser };
 }
 
 function send(socket, payload) {
@@ -90,7 +196,7 @@ function generateRoomCode() {
   return code;
 }
 
-function getPublicRooms() {
+function getPublicRooms(accountId) {
   const now = Date.now();
   return [...rooms.values()]
     .filter((room) => room.isPublic && room.expiresAt > now
@@ -99,6 +205,10 @@ function getPublicRooms() {
       const hostOnline = room.players.w.socket?.readyState === WebSocket.OPEN;
       const opponentOnline = room.players.b.socket?.readyState === WebSocket.OPEN;
       const inProgress = Boolean(room.players.b.accountId);
+      const ownColor = ['w', 'b'].find((color) => room.players[color].accountId === accountId);
+      const ownSeatOnline = ownColor
+        ? room.players[ownColor].socket?.readyState === WebSocket.OPEN
+        : false;
       return {
         code: room.code,
         name: room.lobbyName,
@@ -107,7 +217,10 @@ function getPublicRooms() {
         locked: Boolean(room.passwordHash),
         inProgress,
         ...(inProgress ? { opponent: room.players.b.name, opponentOnline } : {}),
-        joinable: hostOnline && !room.players.b.accountId,
+        joinable: !hostOnline || !opponentOnline,
+        isYourGame: Boolean(ownColor),
+        canJoin: ownColor ? !ownSeatOnline : (!hostOnline || !opponentOnline),
+        canWatch: !ownColor,
         spectators: room.spectators.size,
       };
     });
@@ -214,7 +327,7 @@ async function handleMessage(socket, player, rawMessage) {
   }
 
   if (message.type === 'list-public-rooms') {
-    send(socket, { type: 'public-rooms', rooms: getPublicRooms() });
+    send(socket, { type: 'public-rooms', rooms: getPublicRooms(player.identity.id) });
     return;
   }
 
@@ -307,20 +420,22 @@ async function handleMessage(socket, player, rawMessage) {
     }
     let color = reconnectColor;
     if (!color) {
-      if (!room.players.w.socket || room.players.w.socket.readyState !== WebSocket.OPEN) {
-        send(socket, { type: 'error', message: 'The room host is disconnected. Only the host can reconnect to this lobby.' });
+      color = ['w', 'b'].find((candidate) => (
+        room.players[candidate].accountId
+        && room.players[candidate].socket?.readyState !== WebSocket.OPEN
+      ));
+      if (!color && room.players.w.socket?.readyState === WebSocket.OPEN && !room.players.b.accountId) {
+        color = 'b';
+      }
+      if (!color) {
+        send(socket, { type: 'error', message: 'That game already has two players.' });
         return;
       }
-      if (room.players.b.accountId) {
-        const messageText = room.players.b.socket?.readyState === WebSocket.OPEN
-          ? 'That game already has two players.'
-          : 'That player seat is reserved for its owner to reconnect.';
-        send(socket, { type: 'error', message: messageText });
-        return;
-      }
-      color = 'b';
     }
     if (player.room) leaveRoom(player);
+    if (!reconnectColor && room.players[color].accountId) {
+      room.chess = new Chess();
+    }
     room.players[color].socket = socket;
     room.players[color].name = player.identity.username;
     room.players[color].accountId = player.identity.id;
@@ -335,6 +450,7 @@ async function handleMessage(socket, player, rawMessage) {
       players,
       fen: room.chess.fen(),
       pgn: room.chess.pgn(),
+      spectators: room.spectators.size,
       playerChat: room.playerChat,
       spectatorChat: room.spectatorChat,
     };
@@ -364,6 +480,10 @@ async function handleMessage(socket, player, rawMessage) {
     }
     if (!roomPasswordMatches(room, message.password)) {
       send(socket, { type: 'error', message: 'That lobby password is incorrect.' });
+      return;
+    }
+    if ([room.players.w, room.players.b].some((slot) => slot.accountId === player.identity.id)) {
+      send(socket, { type: 'error', message: 'Players cannot spectate their own game.' });
       return;
     }
     if (![room.players.w, room.players.b].some((slot) => slot.socket?.readyState === WebSocket.OPEN)) {
@@ -480,8 +600,69 @@ async function handleMessage(socket, player, rawMessage) {
   send(socket, { type: 'error', message: 'Unsupported game action.' });
 }
 
-const server = http.createServer((request, response) => {
-  if (request.method !== 'GET' || request.url !== '/health') {
+const server = http.createServer(async (request, response) => {
+  const requestUrl = new URL(request.url, 'http://localhost');
+  if (requestUrl.pathname === '/auth/username') {
+    addAuthCorsHeaders(request, response);
+    if (request.headers.origin && !isAllowedOrigin(request.headers.origin)) {
+      response.writeHead(403).end();
+      return;
+    }
+    if (request.method === 'OPTIONS') {
+      response.writeHead(204, {
+        'Access-Control-Allow-Methods': 'POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type',
+        'Access-Control-Max-Age': '600',
+      }).end();
+      return;
+    }
+    if (request.method !== 'POST') {
+      response.writeHead(405, { Allow: 'POST, OPTIONS' }).end();
+      return;
+    }
+    if (!allowUsernameLogin(request, response)) return;
+    let credentials;
+    try {
+      credentials = await readJsonBody(request);
+    } catch (error) {
+      response.writeHead(400, {
+        'Cache-Control': 'no-store',
+        'Content-Type': 'application/json; charset=utf-8',
+      }).end(JSON.stringify({ message: error.message }));
+      return;
+    }
+    const username = typeof credentials?.username === 'string' ? credentials.username.trim() : '';
+    const password = typeof credentials?.password === 'string' ? credentials.password : '';
+    if (!/^[A-Za-z0-9_]{3,20}$/.test(username) || password.length < 8 || password.length > 72) {
+      response.writeHead(400, {
+        'Cache-Control': 'no-store',
+        'Content-Type': 'application/json; charset=utf-8',
+      }).end(JSON.stringify({ message: 'Enter a valid username and password.' }));
+      return;
+    }
+    try {
+      const session = await signInWithUsername(username, password);
+      if (!session?.access_token || !session.refresh_token) {
+        response.writeHead(401, {
+          'Cache-Control': 'no-store',
+          'Content-Type': 'application/json; charset=utf-8',
+        }).end(JSON.stringify({ message: 'Invalid username or password.' }));
+        return;
+      }
+      response.writeHead(200, {
+        'Cache-Control': 'no-store',
+        'Content-Type': 'application/json; charset=utf-8',
+      }).end(JSON.stringify(session));
+    } catch (error) {
+      console.error('Username sign-in failed:', error.message);
+      response.writeHead(503, {
+        'Cache-Control': 'no-store',
+        'Content-Type': 'application/json; charset=utf-8',
+      }).end(JSON.stringify({ message: error.message || 'Username sign-in is unavailable.' }));
+    }
+    return;
+  }
+  if (request.method !== 'GET' || requestUrl.pathname !== '/health') {
     response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }).end('Not found');
     return;
   }

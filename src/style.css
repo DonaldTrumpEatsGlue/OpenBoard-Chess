@@ -164,8 +164,9 @@ h2 { margin: 0; font-family: Manrope, sans-serif; font-size: 19px; letter-spacin
 .suggest-move-button:hover { border-color: #c8e36a9c; background: #c8e36a18; }
 .suggest-move-button > span:last-child { color: var(--lime); font-size: 15px; }
 .suggest-move-button:disabled { opacity: .48; cursor: not-allowed; }
-.online-game-actions { margin: -5px 0 15px; }
+.online-game-actions { display: grid; gap: 7px; margin: -5px 0 15px; }
 .online-game-actions[hidden] { display: none; }
+.online-game-actions > span { color: var(--muted); font-size: 11px; }
 .online-game-actions button { width: 100%; min-height: 36px; border: 1px solid #ffffff20; border-radius: 7px; color: #e8eee6; background: #ffffff08; font-size: 10px; cursor: pointer; }
 .online-game-actions button:hover { background: #ffffff14; }
 .message-dialog-content .secondary-button { min-height: 36px; border: 1px solid #ffffff20; border-radius: 7px; color: #e8eee6; background: #ffffff08; cursor: pointer; }
@@ -313,7 +314,8 @@ body[data-interface-theme="light"] #custom-rules-dialog { color: #27382d; backgr
 .public-room-card { display: flex; align-items: center; gap: 12px; padding: 11px; border: 1px solid #ffffff14; border-radius: 9px; background: #ffffff06; }
 .public-room-copy { display: grid; flex: 1; gap: 4px; min-width: 0; }
 .public-room-copy strong { overflow: hidden; color: #eaf0e8; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.public-room-copy span { color: var(--muted); font-size: 9px; }
+.public-room-copy span { color: var(--muted); font-size: 10px; }
+.public-room-copy .public-room-spectator-count { color: #eaf0e8; font-size: 11px; font-weight: 600; }
 .public-room-card button { min-height: 32px; padding: 0 12px; border-radius: 7px; cursor: pointer; }
 .public-room-empty { align-self: center; margin: 0; padding: 24px 10px; color: var(--muted); font-size: 11px; text-align: center; }
 .online-dialog .studio-status { margin-top: 14px; }

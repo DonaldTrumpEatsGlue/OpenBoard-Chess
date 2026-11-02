@@ -48,6 +48,8 @@ function createAccount(username, verified = false) {
   authUsers.set(token, {
     id,
     username,
+    email: `${username.toLowerCase()}@example.test`,
+    password: 'test-password-123',
     email_confirmed_at: verified ? new Date().toISOString() : null,
     confirmed_at: verified ? new Date().toISOString() : null,
   });
@@ -73,6 +75,29 @@ function request(socket, message) {
   return response;
 }
 
+function postJson(url, payload, origin = 'https://sample-user.github.io') {
+  return new Promise((resolve, reject) => {
+    const request = http.request(url, {
+      method: 'POST',
+      headers: {
+        Origin: origin,
+        'Content-Type': 'application/json',
+      },
+    }, (response) => {
+      let rawBody = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk) => { rawBody += chunk; });
+      response.on('end', () => resolve({
+        status: response.statusCode,
+        headers: response.headers,
+        body: JSON.parse(rawBody),
+      }));
+    });
+    request.on('error', reject);
+    request.end(JSON.stringify(payload));
+  });
+}
+
 function waitForMessage(socket, predicate) {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -96,8 +121,51 @@ function sendAndWait(socket, payload, predicate) {
   return response;
 }
 
+async function assertReplacementStartsNewGame(departureType) {
+  const host = await connect(undefined, `ResetHost${departureType}`);
+  const departingGuest = await connect(undefined, `ResetGuest${departureType}`);
+  const replacement = await connect(undefined, `Replacement${departureType}`);
+  try {
+    const room = await request(host, {
+      type: 'create-public-room',
+      lobbyName: `Reset after ${departureType}`,
+    });
+    const hostStart = waitForMessage(host, (message) => message.type === 'game-start');
+    await Promise.all([
+      request(departingGuest, { type: 'join-public-room', code: room.code }),
+      hostStart,
+    ]);
+
+    await sendAndWait(host, { type: 'move', from: 'e2', to: 'e4' }, (message) => message.type === 'move');
+    const opponentLeft = waitForMessage(host, (message) => message.type === 'opponent-left');
+    if (departureType === 'leave') {
+      await sendAndWait(departingGuest, { type: 'leave-room' }, (message) => message.type === 'left-room');
+    } else {
+      departingGuest.close();
+    }
+    await opponentLeft;
+
+    const replacementHostStart = waitForMessage(host, (message) => message.type === 'game-start');
+    const replacementStart = request(replacement, {
+      type: 'join-public-room',
+      code: room.code,
+    });
+    const [hostGame, replacementGame] = await Promise.all([replacementHostStart, replacementStart]);
+    const initialFen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+    assert.equal(hostGame.fen, initialFen);
+    assert.equal(replacementGame.fen, initialFen);
+    assert.equal(hostGame.pgn, '');
+    assert.equal(replacementGame.pgn, '');
+    assert.equal(replacementGame.color, 'b');
+  } finally {
+    host.close();
+    departingGuest.close();
+    replacement.close();
+  }
+}
+
 before(async () => {
-  authServer = http.createServer((request, response) => {
+  authServer = http.createServer(async (request, response) => {
     response.setHeader('Content-Type', 'application/json');
     const token = request.headers.authorization?.replace(/^Bearer /, '');
     const user = authUsers.get(token);
@@ -105,10 +173,53 @@ before(async () => {
       response.writeHead(user ? 200 : 401).end(JSON.stringify(user || { message: 'Invalid token' }));
       return;
     }
+    if (request.url?.startsWith('/auth/v1/admin/users/')) {
+      if (request.headers.apikey !== 'test-service-role-key') {
+        response.writeHead(401).end('{}');
+        return;
+      }
+      const requestedId = request.url.split('/').pop();
+      const account = [...authUsers.values()].find((candidate) => candidate.id === requestedId);
+      response.writeHead(account ? 200 : 404).end(JSON.stringify(account
+        ? { id: account.id, email: account.email }
+        : { message: 'User not found' }));
+      return;
+    }
+    if (request.url?.startsWith('/auth/v1/token?grant_type=password')) {
+      let rawBody = '';
+      for await (const chunk of request) rawBody += chunk;
+      const credentials = JSON.parse(rawBody);
+      const account = [...authUsers.entries()].find(([, candidate]) => (
+        candidate.email === credentials.email && candidate.password === credentials.password
+      ));
+      response.writeHead(account ? 200 : 400).end(JSON.stringify(account
+        ? {
+          access_token: account[0],
+          refresh_token: `test-refresh-${account[0]}`,
+          user: { id: account[1].id, email: account[1].email, username: account[1].username },
+        }
+        : { message: 'Invalid login credentials' }));
+      return;
+    }
     if (request.url?.startsWith('/rest/v1/profiles')) {
-      const requestedId = new URL(request.url, 'http://localhost').searchParams.get('id')?.slice(3);
-      response.writeHead(user?.id === requestedId ? 200 : 200)
-        .end(JSON.stringify(user?.id === requestedId ? [{ username: user.username }] : []));
+      const url = new URL(request.url, 'http://localhost');
+      const usernameKey = url.searchParams.get('username_key')?.slice(3);
+      if (usernameKey !== undefined) {
+        if (request.headers.apikey !== 'test-service-role-key') {
+          response.writeHead(401).end('{}');
+          return;
+        }
+        const account = [...authUsers.values()].find((candidate) => (
+          candidate.username.toLowerCase() === usernameKey
+        ));
+        response.writeHead(200).end(JSON.stringify(account ? [{ id: account.id }] : []));
+        return;
+      }
+      const requestedId = url.searchParams.get('id')?.slice(3);
+      const requestedUser = user?.id === requestedId ? user : null;
+      response.writeHead(200).end(JSON.stringify(requestedUser
+        ? [{ username: requestedUser.username }]
+        : []));
       return;
     }
     response.writeHead(404).end('{}');
@@ -127,6 +238,7 @@ before(async () => {
       OPENBOARD_ALLOWED_ORIGINS: 'https://*.github.io',
       SUPABASE_URL: authUrl,
       SUPABASE_ANON_KEY: 'test-anon-key',
+      SUPABASE_SERVICE_ROLE_KEY: 'test-service-role-key',
     },
     stdio: 'ignore',
   });
@@ -199,6 +311,9 @@ test('online actions require an account and use its reserved username without em
         locked: false,
         inProgress: false,
         joinable: true,
+        isYourGame: false,
+        canJoin: true,
+        canWatch: true,
         spectators: 0,
       }]);
     } finally {
@@ -207,6 +322,42 @@ test('online actions require an account and use its reserved username without em
   } finally {
     host.close();
   }
+});
+
+test('username sign-in returns an auth session without disclosing the account email', async () => {
+  const token = createAccount('UsernameLogin');
+  const endpointUrl = new URL(endpoint);
+  endpointUrl.protocol = 'http:';
+  endpointUrl.pathname = '/auth/username';
+  endpointUrl.search = '';
+  endpointUrl.hash = '';
+
+  const result = await postJson(endpointUrl, {
+    username: 'uSeRnAmElOgIn',
+    password: 'test-password-123',
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.headers['access-control-allow-origin'], 'https://sample-user.github.io');
+  assert.equal(result.body.access_token, token);
+  assert.ok(result.body.refresh_token);
+  assert.equal(JSON.stringify(result.body).includes('@example.test'), false);
+
+  const authenticatedSocket = await connectWithAccessToken(token, 'UsernameLogin');
+  authenticatedSocket.close();
+
+  const invalidPassword = await postJson(endpointUrl, {
+    username: 'UsernameLogin',
+    password: 'incorrect-password',
+  });
+  assert.equal(invalidPassword.status, 401);
+  assert.deepEqual(invalidPassword.body, { message: 'Invalid username or password.' });
+
+  const unknownAccount = await postJson(endpointUrl, {
+    username: 'UnknownUser',
+    password: 'test-password-123',
+  });
+  assert.equal(unknownAccount.status, 401);
+  assert.deepEqual(unknownAccount.body, { message: 'Invalid username or password.' });
 });
 
 test('one account cannot create multiple active rooms from repeated or parallel requests', async () => {
@@ -302,7 +453,10 @@ test('a disconnected guest sees a popup event and can reclaim their reserved sea
       inProgress: true,
       opponent: 'RejoiningGuest',
       opponentOnline: false,
-      joinable: false,
+      joinable: true,
+      isYourGame: false,
+      canJoin: true,
+      canWatch: true,
       spectators: 0,
     }]);
 
@@ -341,7 +495,7 @@ test('a disconnected public host can rejoin with their original color', async ()
     const listedRoom = listing.rooms.find((listed) => listed.code === room.code);
     assert.ok(listedRoom);
     assert.equal(listedRoom.hostOnline, false);
-    assert.equal(listedRoom.joinable, false);
+    assert.equal(listedRoom.joinable, true);
 
     const rejoinedHost = await connectWithAccessToken(hostToken, 'ReturningHost');
     try {
@@ -355,6 +509,72 @@ test('a disconnected public host can rejoin with their original color', async ()
   } finally {
     guest.close();
     browser.close();
+  }
+});
+
+test('a different player replacing a disconnected guest starts from the initial position', async () => {
+  await assertReplacementStartsNewGame('disconnect');
+});
+
+test('a different player replacing a guest who left starts from the initial position', async () => {
+  await assertReplacementStartsNewGame('leave');
+});
+
+test('a player cannot join or spectate their own public lobby, which remains visible to them', async () => {
+  const hostToken = createAccount('OwnRoomHost');
+  const host = await connectWithAccessToken(hostToken, 'OwnRoomHost');
+  const secondHostConnection = await connectWithAccessToken(hostToken, 'OwnRoomHost');
+  const guest = await connect(undefined, 'OwnRoomGuest');
+  try {
+    const room = await request(host, {
+      type: 'create-public-room',
+      lobbyName: 'Visible own room',
+    });
+    const ownListing = await request(host, { type: 'list-public-rooms' });
+    assert.deepEqual(ownListing.rooms.find((listedRoom) => listedRoom.code === room.code), {
+      code: room.code,
+      name: 'Visible own room',
+      host: 'OwnRoomHost',
+      hostOnline: true,
+      locked: false,
+      inProgress: false,
+      joinable: true,
+      isYourGame: true,
+      canJoin: false,
+      canWatch: false,
+      spectators: 0,
+    });
+
+    const selfWatch = await request(host, { type: 'spectate-room', code: room.code });
+    assert.equal(selfWatch.type, 'error');
+    assert.match(selfWatch.message, /cannot spectate their own game/i);
+    const selfJoin = await request(host, {
+      type: 'join-public-room',
+      code: room.code,
+    });
+    assert.equal(selfJoin.type, 'error');
+    assert.match(selfJoin.message, /already connected/i);
+    const secondConnectionWatch = await request(secondHostConnection, {
+      type: 'spectate-room',
+      code: room.code,
+    });
+    assert.equal(secondConnectionWatch.type, 'error');
+    assert.match(secondConnectionWatch.message, /cannot spectate their own game/i);
+    const secondConnectionJoin = await request(secondHostConnection, {
+      type: 'join-public-room',
+      code: room.code,
+    });
+    assert.equal(secondConnectionJoin.type, 'error');
+    assert.match(secondConnectionJoin.message, /already connected/i);
+
+    const hostStart = waitForMessage(host, (message) => message.type === 'game-start');
+    const guestStart = await request(guest, { type: 'join-public-room', code: room.code });
+    assert.equal(guestStart.type, 'game-start');
+    assert.equal((await hostStart).color, 'w');
+  } finally {
+    host.close();
+    secondHostConnection.close();
+    guest.close();
   }
 });
 
@@ -437,6 +657,9 @@ test('public room browser lists joinable games but not private invites or full g
       locked: false,
       inProgress: false,
       joinable: true,
+      isYourGame: false,
+      canJoin: true,
+      canWatch: true,
       spectators: 0,
     }]);
 
@@ -471,6 +694,9 @@ test('public room browser lists joinable games but not private invites or full g
       opponent: 'RoomJoiner',
       opponentOnline: true,
       joinable: false,
+      isYourGame: false,
+      canJoin: false,
+      canWatch: true,
       spectators: 0,
     }]);
   } finally {
@@ -530,6 +756,9 @@ test('spectators can watch live public games without taking player slots', async
       opponent: 'SecondPlayer',
       opponentOnline: true,
       joinable: false,
+      isYourGame: false,
+      canJoin: false,
+      canWatch: true,
       spectators: 1,
     }]);
     const fullRoom = await request(extraPlayer, { type: 'join-public-room', code: created.code });

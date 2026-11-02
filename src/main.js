@@ -1471,6 +1471,18 @@ function updateOnlineStatus(message) {
   document.querySelector('#online-status').textContent = message;
 }
 
+function updateSpectatorCount(count) {
+  const spectatorCount = Number.isInteger(count) && count >= 0 ? count : 0;
+  document.querySelector('#online-spectator-count').textContent =
+    `Spectators: ${spectatorCount}`;
+  if (onlineMode && onlineRoomCode) {
+    publicRooms = publicRooms.map((room) => (
+      room.code === onlineRoomCode ? { ...room, spectators: spectatorCount } : room
+    ));
+    renderPublicRooms();
+  }
+}
+
 function saveOnlineRoomCode(code) {
   try {
     localStorage.setItem(onlineRoomStorageKey, code);
@@ -1534,6 +1546,12 @@ function initializeAuthSession() {
 function updateAccountUI(message = '') {
   const isSignedIn = Boolean(authSession?.access_token);
   const usernameField = document.querySelector('#online-username-field');
+  const identityField = document.querySelector('#online-email');
+  identityField.type = authMode === 'signup' ? 'email' : 'text';
+  identityField.autocomplete = authMode === 'signup' ? 'email' : 'username';
+  identityField.placeholder = authMode === 'signup' ? '' : 'Email or username';
+  document.querySelector('#online-email-label-text').textContent =
+    authMode === 'signup' ? 'Email' : 'Email or username';
   document.querySelector('#online-account-state').textContent = isSignedIn
     ? `Signed in · ${authSession.user?.email || 'Openboard account'}`
     : 'Sign in or create an account';
@@ -1586,6 +1604,32 @@ async function requestSupabaseAuth(path, body, accessToken = '') {
   return result;
 }
 
+async function requestUsernameSignIn(username, password) {
+  if (!onlineServerUrl) {
+    throw new Error('Username sign-in is unavailable because the online server is not configured.');
+  }
+  const endpoint = new URL(onlineServerUrl);
+  endpoint.protocol = endpoint.protocol === 'wss:' ? 'https:' : 'http:';
+  endpoint.pathname = '/auth/username';
+  endpoint.search = '';
+  endpoint.hash = '';
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  });
+  let result;
+  try {
+    result = await response.json();
+  } catch {
+    throw new Error('The online server returned an unreadable sign-in response.');
+  }
+  if (!response.ok) {
+    throw new Error(result.message || 'Username sign-in failed.');
+  }
+  return result;
+}
+
 async function checkUsernameAvailable(username) {
   const profileUrl = new URL(`${supabaseUrl}/rest/v1/profiles`);
   profileUrl.searchParams.set('username_key', `eq.${username.toLowerCase()}`);
@@ -1615,7 +1659,8 @@ async function getValidAuthSession() {
 }
 
 async function submitOnlineAuth() {
-  const email = document.querySelector('#online-email').value.trim().toLowerCase();
+  const identity = document.querySelector('#online-email').value.trim();
+  const email = identity.toLowerCase();
   const emailInput = document.querySelector('#online-email');
   const password = document.querySelector('#online-account-password').value;
   const username = document.querySelector('#online-username').value.trim();
@@ -1625,8 +1670,17 @@ async function submitOnlineAuth() {
     status.textContent = 'Online accounts are not configured yet. The owner needs to finish the free hosting setup.';
     return;
   }
-  if (!emailInput.checkValidity() || !password) {
-    status.textContent = 'Enter a valid email address and password.';
+  const usernameSignIn = authMode === 'signin' && !identity.includes('@');
+  const validSignInEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identity) && identity.length <= 254;
+  const validIdentity = authMode === 'signup'
+    ? emailInput.checkValidity()
+    : usernameSignIn
+      ? /^[A-Za-z0-9_]{3,20}$/.test(identity)
+      : validSignInEmail;
+  if (!validIdentity || !password) {
+    status.textContent = authMode === 'signin'
+      ? 'Enter a valid email address or username and password.'
+      : 'Enter a valid email address and password.';
     return;
   }
   if (authMode === 'signup' && !/^[A-Za-z0-9_]{3,20}$/.test(username)) {
@@ -1661,7 +1715,9 @@ async function submitOnlineAuth() {
       status.textContent = `Account created and signed in as @${username}.`;
       selectOnlineSection('play');
     } else {
-      const session = await requestSupabaseAuth('token?grant_type=password', { email, password });
+      const session = usernameSignIn
+        ? await requestUsernameSignIn(identity, password)
+        : await requestSupabaseAuth('token?grant_type=password', { email, password });
       if (!session.access_token || !session.refresh_token) {
         throw new Error('Sign-in did not return a session. Check the email and password, then try again.');
       }
@@ -1694,13 +1750,11 @@ async function signOutOnlineAccount() {
 function renderPublicRooms() {
   const list = document.querySelector('#public-room-list');
   list.replaceChildren();
-  const availableRooms = publicRooms.filter((room) => room.code !== onlineRoomCode);
+  const availableRooms = publicRooms;
   if (!availableRooms.length) {
     const empty = document.createElement('p');
     empty.className = 'public-room-empty';
-    empty.textContent = publicRooms.some((room) => room.code === onlineRoomCode)
-      ? 'Your public game is listed for other players to join or spectate.'
-      : 'No open games right now. Create one and invite someone to join.';
+    empty.textContent = 'No public games right now. Create one and invite someone to join.';
     list.append(empty);
     return;
   }
@@ -1715,8 +1769,8 @@ function renderPublicRooms() {
     name.textContent = room.name;
     const details = document.createElement('span');
     details.textContent = room.inProgress
-      ? `Live game · ${room.spectators || 0} watching · ${room.code}`
-      : `Waiting for a player · ${room.spectators || 0} watching · ${room.code}`;
+      ? `Live game · ${room.code}`
+      : `Waiting for a player · ${room.code}`;
     const connectToRoom = (action) => {
       const password = room.locked ? window.prompt(`Password for “${room.name}”`) : '';
       if (room.locked && password === null) return;
@@ -1725,12 +1779,19 @@ function renderPublicRooms() {
     copy.append(name, details);
     if (room.host) {
       details.textContent = room.inProgress
-        ? `@${room.host}${room.hostOnline ? '' : ' (reconnecting)'} vs @${room.opponent || '…'}${room.opponentOnline ? '' : ' (reconnecting)'} · ${room.spectators || 0} watching · ${room.locked ? 'Password required · ' : ''}${room.code}`
-        : `Hosted by @${room.host}${room.hostOnline ? '' : ' (reconnecting)'} · ${room.spectators || 0} watching · ${room.locked ? 'Password required · ' : ''}${room.code}`;
+        ? `@${room.host}${room.hostOnline ? '' : ' (reconnecting)'} vs @${room.opponent || '…'}${room.opponentOnline ? '' : ' (reconnecting)'} · ${room.locked ? 'Password required · ' : ''}${room.code}`
+        : `Hosted by @${room.host}${room.hostOnline ? '' : ' (reconnecting)'} · ${room.locked ? 'Password required · ' : ''}${room.code}`;
     }
+    const spectatorCount = document.createElement('span');
+    spectatorCount.className = 'public-room-spectator-count';
+    spectatorCount.textContent = `Spectators: ${room.spectators || 0}`;
+    copy.append(spectatorCount);
     const canReconnect = (room.host === onlinePlayerName && !room.hostOnline)
       || (room.opponent === onlinePlayerName && !room.opponentOnline);
-    if (canReconnect || room.joinable || (!room.inProgress && room.joinable === undefined)) {
+    const canJoin = canReconnect || room.canJoin === true
+      || (!room.isYourGame && room.canJoin === undefined
+        && (room.joinable || (!room.inProgress && room.joinable === undefined)));
+    if (canJoin) {
       const join = document.createElement('button');
       join.className = 'primary-button';
       join.type = 'button';
@@ -1740,12 +1801,14 @@ function renderPublicRooms() {
     } else {
       card.append(copy);
     }
-    const watch = document.createElement('button');
-    watch.className = room.inProgress ? 'primary-button' : 'secondary-button';
-    watch.type = 'button';
-    watch.textContent = 'Watch';
-    watch.addEventListener('click', () => connectToRoom('watch'));
-    card.append(watch);
+    if (room.canWatch !== false && !room.isYourGame) {
+      const watch = document.createElement('button');
+      watch.className = room.inProgress ? 'primary-button' : 'secondary-button';
+      watch.type = 'button';
+      watch.textContent = 'Watch';
+      watch.addEventListener('click', () => connectToRoom('watch'));
+      card.append(watch);
+    }
     list.append(card);
   }
 }
@@ -1900,6 +1963,7 @@ function setOnlineGameState(active, spectating = false) {
   onlineMode = active;
   onlineSpectating = active && spectating;
   document.querySelector('#online-game-actions').hidden = !active;
+  if (!active) updateSpectatorCount(0);
   setOnlineCreatePending(onlineCreatePending);
   if (active) suggestedMove = null;
   configureOnlineChat(active, onlineSpectating);
@@ -2042,6 +2106,9 @@ function handleOnlineMessage(socket, message) {
         host: onlinePlayerName,
         locked: Boolean(message.locked),
         inProgress: false,
+        isYourGame: true,
+        canJoin: false,
+        canWatch: false,
         spectators: 0,
       }, ...publicRooms.filter((room) => room.code !== onlineRoomCode)];
     }
@@ -2060,6 +2127,7 @@ function handleOnlineMessage(socket, message) {
   }
   if (message.type === 'game-start') {
     onlineRoomCode = message.code;
+    updateSpectatorCount(message.spectators);
     saveOnlineRoomCode(onlineRoomCode);
     if (onlineOpponentLeftDialog.open) onlineOpponentLeftDialog.close();
     document.querySelector('#online-wait-reconnect').hidden = false;
@@ -2090,6 +2158,7 @@ function handleOnlineMessage(socket, message) {
   }
   if (message.type === 'spectator-start') {
     onlineRoomCode = message.code;
+    updateSpectatorCount(message.spectators);
     onlineReady = true;
     playerColor = 'w';
     playColorSelect.value = playerColor;
@@ -2111,6 +2180,7 @@ function handleOnlineMessage(socket, message) {
   }
   if (message.type === 'spectator-count') {
     const watching = `${message.count} ${message.count === 1 ? 'spectator' : 'spectators'}`;
+    updateSpectatorCount(message.count);
     updateOnlineStatus(onlineSpectating
       ? `Spectating · ${watching}.`
       : `Online game · ${watching}.`);
@@ -2129,10 +2199,10 @@ function handleOnlineMessage(socket, message) {
   }
   if (message.type === 'opponent-left') {
     const departureMessage = onlineSpectating
-      ? 'A player disconnected. The room remains open so they can reconnect.'
-      : 'Your opponent disconnected. The room remains open so they can reconnect.';
+      ? 'A player disconnected. They can reconnect, or another player can take their seat and start a new game.'
+      : 'Your opponent disconnected. They can reconnect, or another player can take their seat and start a new game.';
     document.querySelector('#online-opponent-left-message').textContent =
-      `${departureMessage} Choose Keep waiting to stay in the room.`;
+      `${departureMessage} A replacement starts from the initial board. Choose Keep waiting to stay in the room.`;
     if (!onlineOpponentLeftDialog.open) onlineOpponentLeftDialog.showModal();
     if (onlineSpectating) {
       updateOnlineStatus(departureMessage);
@@ -2816,7 +2886,7 @@ document.querySelector('#online-auth-mode').addEventListener('click', () => {
   );
   updateAccountUI(authMode === 'signup'
     ? 'Create an account. Email confirmation is disabled for this free setup.'
-    : 'Sign in with your email and password.');
+    : 'Sign in with your email or username and password.');
 });
 document.querySelector('#online-auth-signout').addEventListener('click', signOutOnlineAccount);
 for (const field of ['#online-username', '#online-email', '#online-account-password']) {
