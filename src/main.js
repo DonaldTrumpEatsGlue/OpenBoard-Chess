@@ -155,6 +155,7 @@ const onlineServerUrl = configuredOnlineServerUrl
 const supabaseUrl = document.querySelector('meta[name="openboard-supabase-url"]')?.content.trim().replace(/\/+$/, '') || '';
 const supabaseAnonKey = document.querySelector('meta[name="openboard-supabase-anon-key"]')?.content.trim() || '';
 const authSessionStorageKey = 'openboard-auth-session';
+const onlineRoomStorageKey = 'openboard-last-online-room';
 const playableBoardSizes = [8, 10, 12, 14, 16, 18, 20];
 let authSession = null;
 let authUsername = '';
@@ -1470,6 +1471,15 @@ function updateOnlineStatus(message) {
   document.querySelector('#online-status').textContent = message;
 }
 
+function saveOnlineRoomCode(code) {
+  try {
+    localStorage.setItem(onlineRoomStorageKey, code);
+    document.querySelector('#online-room-code').value = code;
+  } catch (error) {
+    console.error('Could not save the online invite code for reconnecting:', error);
+  }
+}
+
 function saveAuthSession(session) {
   authSession = {
     ...session,
@@ -1715,14 +1725,16 @@ function renderPublicRooms() {
     copy.append(name, details);
     if (room.host) {
       details.textContent = room.inProgress
-        ? `@${room.host} vs @${room.opponent || '…'} · ${room.spectators || 0} watching · ${room.locked ? 'Password required · ' : ''}${room.code}`
-        : `Hosted by @${room.host} · ${room.spectators || 0} watching · ${room.locked ? 'Password required · ' : ''}${room.code}`;
+        ? `@${room.host}${room.hostOnline ? '' : ' (reconnecting)'} vs @${room.opponent || '…'}${room.opponentOnline ? '' : ' (reconnecting)'} · ${room.spectators || 0} watching · ${room.locked ? 'Password required · ' : ''}${room.code}`
+        : `Hosted by @${room.host}${room.hostOnline ? '' : ' (reconnecting)'} · ${room.spectators || 0} watching · ${room.locked ? 'Password required · ' : ''}${room.code}`;
     }
-    if (!room.inProgress) {
+    const canReconnect = (room.host === onlinePlayerName && !room.hostOnline)
+      || (room.opponent === onlinePlayerName && !room.opponentOnline);
+    if (canReconnect || room.joinable || (!room.inProgress && room.joinable === undefined)) {
       const join = document.createElement('button');
       join.className = 'primary-button';
       join.type = 'button';
-      join.textContent = 'Join';
+      join.textContent = canReconnect ? 'Reconnect' : 'Join';
       join.addEventListener('click', () => connectToRoom('join-public'));
       card.append(copy, join);
     } else {
@@ -2015,6 +2027,7 @@ function handleOnlineMessage(socket, message) {
   if (message.type === 'room-created') {
     setOnlineCreatePending(false);
     onlineRoomCode = message.code;
+    saveOnlineRoomCode(onlineRoomCode);
     playerColor = message.color;
     playColorSelect.value = playerColor;
     flipped = false;
@@ -2047,6 +2060,9 @@ function handleOnlineMessage(socket, message) {
   }
   if (message.type === 'game-start') {
     onlineRoomCode = message.code;
+    saveOnlineRoomCode(onlineRoomCode);
+    if (onlineOpponentLeftDialog.open) onlineOpponentLeftDialog.close();
+    document.querySelector('#online-wait-reconnect').hidden = false;
     onlineReady = true;
     playerColor = message.color === 'w' ? 'w' : 'b';
     if (onlineSpectating) {
@@ -2113,10 +2129,10 @@ function handleOnlineMessage(socket, message) {
   }
   if (message.type === 'opponent-left') {
     const departureMessage = onlineSpectating
-      ? 'A player disconnected. The room remains open for a reconnect.'
-      : 'Your opponent disconnected. The room remains open for a reconnect.';
+      ? 'A player disconnected. The room remains open so they can reconnect.'
+      : 'Your opponent disconnected. The room remains open so they can reconnect.';
     document.querySelector('#online-opponent-left-message').textContent =
-      `${departureMessage} You can wait or return to the main chess screen.`;
+      `${departureMessage} Choose Keep waiting to stay in the room.`;
     if (!onlineOpponentLeftDialog.open) onlineOpponentLeftDialog.showModal();
     if (onlineSpectating) {
       updateOnlineStatus(departureMessage);
@@ -2156,7 +2172,7 @@ function handleOnlineMessage(socket, message) {
     updateOnlineStatus('The game ended because both players disconnected.');
     gameMessage.textContent = 'The game is no longer active.';
     document.querySelector('#online-opponent-left-message').textContent =
-      'The game ended because both players disconnected. Return to the main chess screen.';
+      'The room expired and can no longer be rejoined. Return to the main screen.';
     document.querySelector('#online-wait-reconnect').hidden = true;
     if (!onlineOpponentLeftDialog.open) onlineOpponentLeftDialog.showModal();
     renderBoard();
@@ -2309,6 +2325,7 @@ function finishDisconnectOnlineGame(socket = onlineSocket) {
   onlineIdentityVerified = false;
   onlinePendingRequest = null;
   pendingPremove = null;
+  localStorage.removeItem(onlineRoomStorageKey);
   setOnlineCreatePending(false);
   if (socket?.readyState === WebSocket.OPEN) socket.close(1000, 'Left the online lobby.');
   setOnlineGameState(false);
@@ -2836,6 +2853,14 @@ if (!onlineServerUrl && !['localhost', '127.0.0.1', '::1'].includes(location.hos
   updateOnlineStatus('The owner has not connected the online server yet.');
 }
 initializeAuthSession();
+try {
+  const savedRoomCode = localStorage.getItem(onlineRoomStorageKey);
+  if (savedRoomCode && /^[A-Z0-9]{6}$/.test(savedRoomCode)) {
+    document.querySelector('#online-room-code').value = savedRoomCode;
+  }
+} catch (error) {
+  console.error('Could not restore the saved online invite code:', error);
+}
 document.querySelector('#resign').addEventListener('click', () => {
   if (onlineSpectating) return;
   if (!game.history().length || isGameOver() || gameResult) return;

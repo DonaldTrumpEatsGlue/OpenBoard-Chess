@@ -94,16 +94,20 @@ function getPublicRooms() {
   const now = Date.now();
   return [...rooms.values()]
     .filter((room) => room.isPublic && room.expiresAt > now
-      && room.players.w.socket?.readyState === WebSocket.OPEN)
+      && room.players.w.accountId)
     .map((room) => {
-      const inProgress = Boolean(room.players.b.socket && room.players.b.socket.readyState === WebSocket.OPEN);
+      const hostOnline = room.players.w.socket?.readyState === WebSocket.OPEN;
+      const opponentOnline = room.players.b.socket?.readyState === WebSocket.OPEN;
+      const inProgress = Boolean(room.players.b.accountId);
       return {
         code: room.code,
         name: room.lobbyName,
         host: room.players.w.name,
+        hostOnline,
         locked: Boolean(room.passwordHash),
         inProgress,
-        ...(inProgress ? { opponent: room.players.b.name } : {}),
+        ...(inProgress ? { opponent: room.players.b.name, opponentOnline } : {}),
+        joinable: hostOnline && !room.players.b.accountId,
         spectators: room.spectators.size,
       };
     });
@@ -150,10 +154,10 @@ function leaveRoom(player) {
   player.room = null;
   player.color = null;
   player.role = null;
+  room.expiresAt = Date.now() + roomLifetimeMs;
   if (room.players.w.socket || room.players.b.socket) {
     broadcast(room, { type: 'opponent-left' });
   } else {
-    room.expiresAt = Date.now() + roomLifetimeMs;
     for (const spectator of room.spectators) {
       send(spectator.socket, { type: 'room-ended' });
       spectator.room = null;
@@ -296,21 +300,33 @@ async function handleMessage(socket, player, rawMessage) {
       send(socket, { type: 'error', message: 'That lobby password is incorrect.' });
       return;
     }
-    if (!room.players.w.socket || room.players.w.socket.readyState !== WebSocket.OPEN) {
-      send(socket, { type: 'error', message: 'The room host is no longer connected.' });
+    const reconnectColor = ['w', 'b'].find((color) => room.players[color].accountId === player.identity.id);
+    if (reconnectColor && room.players[reconnectColor].socket?.readyState === WebSocket.OPEN) {
+      send(socket, { type: 'error', message: `You are already connected to room ${room.code}.` });
       return;
     }
-    if (room.players.b.socket && room.players.b.socket.readyState === WebSocket.OPEN) {
-      send(socket, { type: 'error', message: 'That game already has two players.' });
-      return;
+    let color = reconnectColor;
+    if (!color) {
+      if (!room.players.w.socket || room.players.w.socket.readyState !== WebSocket.OPEN) {
+        send(socket, { type: 'error', message: 'The room host is disconnected. Only the host can reconnect to this lobby.' });
+        return;
+      }
+      if (room.players.b.accountId) {
+        const messageText = room.players.b.socket?.readyState === WebSocket.OPEN
+          ? 'That game already has two players.'
+          : 'That player seat is reserved for its owner to reconnect.';
+        send(socket, { type: 'error', message: messageText });
+        return;
+      }
+      color = 'b';
     }
     if (player.room) leaveRoom(player);
-    room.players.b.socket = socket;
-    room.players.b.name = player.identity.username;
-    room.players.b.accountId = player.identity.id;
+    room.players[color].socket = socket;
+    room.players[color].name = player.identity.username;
+    room.players[color].accountId = player.identity.id;
     room.expiresAt = Date.now() + roomLifetimeMs;
     player.room = room;
-    player.color = 'b';
+    player.color = color;
     player.role = 'player';
     const players = { w: room.players.w.name, b: room.players.b.name };
     const gameStart = {
@@ -331,8 +347,11 @@ async function handleMessage(socket, player, rawMessage) {
       waiting: false,
       spectatorChat: room.spectatorChat,
     });
-    send(room.players.w.socket, { ...gameStart, color: 'w' });
-    send(room.players.b.socket, { ...gameStart, color: 'b' });
+    for (const playerColor of ['w', 'b']) {
+      if (room.players[playerColor].socket?.readyState === WebSocket.OPEN) {
+        send(room.players[playerColor].socket, { ...gameStart, color: playerColor });
+      }
+    }
     return;
   }
 
@@ -499,7 +518,12 @@ websocketServer.on('connection', (socket) => {
 const cleanupTimer = setInterval(() => {
   const now = Date.now();
   for (const [code, room] of rooms) {
-    if (!room.players.w.socket && !room.players.b.socket && room.expiresAt <= now) {
+    if (room.expiresAt <= now) {
+      for (const slot of Object.values(room.players)) {
+        send(slot.socket, { type: 'room-ended' });
+        slot.socket?.close(1000, 'Room expired.');
+        slot.socket = null;
+      }
       for (const spectator of room.spectators) {
         send(spectator.socket, { type: 'room-ended' });
         spectator.room = null;

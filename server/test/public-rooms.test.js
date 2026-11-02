@@ -195,8 +195,10 @@ test('online actions require an account and use its reserved username without em
         code: created.code,
         name: 'Sunday Chess',
         host: 'ReservedOwner',
+        hostOnline: true,
         locked: false,
         inProgress: false,
+        joinable: true,
         spectators: 0,
       }]);
     } finally {
@@ -233,8 +235,7 @@ test('one account cannot create multiple active rooms from repeated or parallel 
     assert.match(parallelCreate.message, new RegExp(created.code));
 
     const listing = await request(secondConnection, { type: 'list-public-rooms' });
-    assert.equal(listing.rooms.length, 1);
-    assert.equal(listing.rooms[0].code, created.code);
+    assert.equal(listing.rooms.filter((room) => room.code === created.code).length, 1);
   } finally {
     host.close();
     secondConnection.close();
@@ -272,6 +273,91 @@ test('a player can explicitly leave a room and create another lobby', async () =
   }
 });
 
+test('a disconnected guest sees a popup event and can reclaim their reserved seat', async () => {
+  const hostToken = createAccount('RejoinHost');
+  const guestToken = createAccount('RejoiningGuest');
+  const host = await connectWithAccessToken(hostToken, 'RejoinHost');
+  const guest = await connectWithAccessToken(guestToken, 'RejoiningGuest');
+  const browser = await connect(undefined, 'RejoinBrowser');
+  try {
+    const room = await request(host, { type: 'create-public-room', lobbyName: 'Reconnect guest' });
+    const hostStart = waitForMessage(host, (message) => message.type === 'game-start');
+    const guestStart = request(guest, { type: 'join-public-room', code: room.code });
+    await Promise.all([hostStart, guestStart]);
+
+    const guestMove = waitForMessage(guest, (message) => message.type === 'move');
+    await sendAndWait(host, { type: 'move', from: 'e2', to: 'e4' }, (message) => message.type === 'move');
+    await guestMove;
+    const departure = waitForMessage(host, (message) => message.type === 'opponent-left');
+    guest.close();
+    await departure;
+
+    const listing = await request(browser, { type: 'list-public-rooms' });
+    assert.deepEqual(listing.rooms.filter((listedRoom) => listedRoom.code === room.code), [{
+      code: room.code,
+      name: 'Reconnect guest',
+      host: 'RejoinHost',
+      hostOnline: true,
+      locked: false,
+      inProgress: true,
+      opponent: 'RejoiningGuest',
+      opponentOnline: false,
+      joinable: false,
+      spectators: 0,
+    }]);
+
+    const rejoinedGuest = await connectWithAccessToken(guestToken, 'RejoiningGuest');
+    try {
+      const resumedHost = waitForMessage(host, (message) => message.type === 'game-start');
+      const resumedGuest = await request(rejoinedGuest, { type: 'join-public-room', code: room.code });
+      assert.equal((await resumedHost).color, 'w');
+      assert.equal(resumedGuest.color, 'b');
+      assert.equal(resumedGuest.players.b, 'RejoiningGuest');
+      assert.equal(resumedGuest.fen, 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1');
+    } finally {
+      rejoinedGuest.close();
+    }
+  } finally {
+    host.close();
+    browser.close();
+  }
+});
+
+test('a disconnected public host can rejoin with their original color', async () => {
+  const hostToken = createAccount('ReturningHost');
+  const host = await connectWithAccessToken(hostToken, 'ReturningHost');
+  const guest = await connect(undefined, 'WaitingGuest');
+  const browser = await connect(undefined, 'ReturningBrowser');
+  try {
+    const room = await request(host, { type: 'create-public-room', lobbyName: 'Reconnect host' });
+    const guestStart = request(guest, { type: 'join-public-room', code: room.code });
+    const hostStart = waitForMessage(host, (message) => message.type === 'game-start');
+    await Promise.all([guestStart, hostStart]);
+    const departure = waitForMessage(guest, (message) => message.type === 'opponent-left');
+    host.close();
+    await departure;
+
+    const listing = await request(browser, { type: 'list-public-rooms' });
+    const listedRoom = listing.rooms.find((listed) => listed.code === room.code);
+    assert.ok(listedRoom);
+    assert.equal(listedRoom.hostOnline, false);
+    assert.equal(listedRoom.joinable, false);
+
+    const rejoinedHost = await connectWithAccessToken(hostToken, 'ReturningHost');
+    try {
+      const resumedGuest = waitForMessage(guest, (message) => message.type === 'game-start');
+      const resumedHostGame = await request(rejoinedHost, { type: 'join-public-room', code: room.code });
+      assert.equal(resumedHostGame.color, 'w');
+      assert.equal((await resumedGuest).color, 'b');
+    } finally {
+      rejoinedHost.close();
+    }
+  } finally {
+    guest.close();
+    browser.close();
+  }
+});
+
 test('optional lobby passwords block incorrect joins and allow the correct one', async () => {
   const host = await connect(undefined, 'LobbyOwner');
   const wrongGuest = await connect(undefined, 'WrongGuest');
@@ -286,7 +372,7 @@ test('optional lobby passwords block incorrect joins and allow the correct one',
     assert.equal(created.locked, true);
 
     const listing = await request(wrongGuest, { type: 'list-public-rooms' });
-    assert.equal(listing.rooms[0].locked, true);
+    assert.equal(listing.rooms.find((room) => room.code === created.code).locked, true);
 
     const denied = await request(wrongGuest, {
       type: 'join-public-room',
@@ -343,12 +429,14 @@ test('public room browser lists joinable games but not private invites or full g
 
     const listing = await request(browser, { type: 'list-public-rooms' });
     assert.equal(listing.type, 'public-rooms');
-    assert.deepEqual(listing.rooms, [{
+    assert.deepEqual(listing.rooms.filter((listedRoom) => listedRoom.code === publicRoom.code), [{
       code: publicRoom.code,
       name: 'Public Lobby',
       host: 'PublicHost',
+      hostOnline: true,
       locked: false,
       inProgress: false,
+      joinable: true,
       spectators: 0,
     }]);
 
@@ -373,13 +461,16 @@ test('public room browser lists joinable games but not private invites or full g
     assert.equal(joinerGame.players.b, 'RoomJoiner');
 
     const afterJoin = await request(browser, { type: 'list-public-rooms' });
-    assert.deepEqual(afterJoin.rooms, [{
+    assert.deepEqual(afterJoin.rooms.filter((listedRoom) => listedRoom.code === publicRoom.code), [{
       code: publicRoom.code,
       name: 'Public Lobby',
       host: 'PublicHost',
+      hostOnline: true,
       locked: false,
       inProgress: true,
       opponent: 'RoomJoiner',
+      opponentOnline: true,
+      joinable: false,
       spectators: 0,
     }]);
   } finally {
@@ -407,7 +498,7 @@ test('spectators can watch live public games without taking player slots', async
     assert.deepEqual(await hostCountUpdate, { type: 'spectator-count', count: 1 });
     assert.deepEqual(await spectatorCountUpdate, { type: 'spectator-count', count: 1 });
     const waitingListing = await request(browser, { type: 'list-public-rooms' });
-    assert.equal(waitingListing.rooms[0].spectators, 1);
+    assert.equal(waitingListing.rooms.find((room) => room.code === created.code).spectators, 1);
     assert.equal((await request(spectator, { type: 'move', from: 'e2', to: 'e4' })).type, 'error');
 
     const spectatorStart = once(spectator, 'message').then(([data]) => JSON.parse(data.toString()));
@@ -429,13 +520,16 @@ test('spectators can watch live public games without taking player slots', async
     assert.equal(joinerMove.fen, spectatorMove.fen);
 
     const listing = await request(browser, { type: 'list-public-rooms' });
-    assert.deepEqual(listing.rooms, [{
+    assert.deepEqual(listing.rooms.filter((listedRoom) => listedRoom.code === created.code), [{
       code: created.code,
       name: 'Live Match',
       host: 'SpectateHost',
+      hostOnline: true,
       locked: false,
       inProgress: true,
       opponent: 'SecondPlayer',
+      opponentOnline: true,
+      joinable: false,
       spectators: 1,
     }]);
     const fullRoom = await request(extraPlayer, { type: 'join-public-room', code: created.code });
@@ -446,7 +540,7 @@ test('spectators can watch live public games without taking player slots', async
     spectator.close();
     assert.deepEqual(await leavingCount, { type: 'spectator-count', count: 0 });
     const updatedListing = await request(browser, { type: 'list-public-rooms' });
-    assert.equal(updatedListing.rooms[0].spectators, 0);
+    assert.equal(updatedListing.rooms.find((room) => room.code === created.code).spectators, 0);
   } finally {
     for (const socket of [host, spectator, joiner, extraPlayer, browser]) socket.close();
   }
