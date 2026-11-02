@@ -17,6 +17,7 @@ const customRulesDialog = document.querySelector('#custom-rules-dialog');
 const soundSettingsDialog = document.querySelector('#sound-settings-dialog');
 const onlineDialog = document.querySelector('#online-dialog');
 const onlineLeaveDialog = document.querySelector('#online-leave-dialog');
+const onlineOpponentLeftDialog = document.querySelector('#online-opponent-left-dialog');
 const pieceTheme = window.OpenboardPieceThemes.classic;
 const soundManifest = window.OpenboardSoundManifest;
 const defaultAudioSettings = {
@@ -2111,8 +2112,14 @@ function handleOnlineMessage(socket, message) {
     return;
   }
   if (message.type === 'opponent-left') {
+    const departureMessage = onlineSpectating
+      ? 'A player disconnected. The room remains open for a reconnect.'
+      : 'Your opponent disconnected. The room remains open for a reconnect.';
+    document.querySelector('#online-opponent-left-message').textContent =
+      `${departureMessage} You can wait or return to the main chess screen.`;
+    if (!onlineOpponentLeftDialog.open) onlineOpponentLeftDialog.showModal();
     if (onlineSpectating) {
-      updateOnlineStatus('A player disconnected. The room remains open for a reconnect.');
+      updateOnlineStatus(departureMessage);
       gameMessage.textContent = 'A player disconnected.';
       renderBoard();
       return;
@@ -2120,7 +2127,7 @@ function handleOnlineMessage(socket, message) {
     onlineReady = false;
     updateOnlineSuggestionAvailability();
     pendingPremove = null;
-    updateOnlineStatus('Your opponent disconnected. The room remains open for a reconnect.');
+    updateOnlineStatus(departureMessage);
     gameMessage.textContent = 'Your opponent disconnected.';
     renderBoard();
     return;
@@ -2148,6 +2155,10 @@ function handleOnlineMessage(socket, message) {
     updateOnlineChatAvailability();
     updateOnlineStatus('The game ended because both players disconnected.');
     gameMessage.textContent = 'The game is no longer active.';
+    document.querySelector('#online-opponent-left-message').textContent =
+      'The game ended because both players disconnected. Return to the main chess screen.';
+    document.querySelector('#online-wait-reconnect').hidden = true;
+    if (!onlineOpponentLeftDialog.open) onlineOpponentLeftDialog.showModal();
     renderBoard();
   }
 }
@@ -2289,6 +2300,8 @@ function finishDisconnectOnlineGame(socket = onlineSocket) {
   }
   if (onlineDialog.open) onlineDialog.close();
   if (onlineLeaveDialog.open) onlineLeaveDialog.close();
+  if (onlineOpponentLeftDialog.open) onlineOpponentLeftDialog.close();
+  document.querySelector('#online-wait-reconnect').hidden = false;
   document.querySelector('#online-leave-confirm').disabled = false;
   onlineSocket = null;
   onlineRoomCode = null;
@@ -2746,6 +2759,8 @@ document.querySelector('#online-close').addEventListener('click', () => onlineDi
 document.querySelector('#online-leave-game').addEventListener('click', () => onlineLeaveDialog.showModal());
 document.querySelector('#online-leave-cancel').addEventListener('click', () => onlineLeaveDialog.close());
 document.querySelector('#online-leave-confirm').addEventListener('click', disconnectOnlineGame);
+document.querySelector('#online-return-main').addEventListener('click', disconnectOnlineGame);
+document.querySelector('#online-wait-reconnect').addEventListener('click', () => onlineOpponentLeftDialog.close());
 document.querySelector('#online-account-tab').addEventListener('click', () => selectOnlineSection('account'));
 document.querySelector('#online-play-tab').addEventListener('click', () => selectOnlineSection('play'));
 document.querySelector('#online-continue').addEventListener('click', () => selectOnlineSection('play'));

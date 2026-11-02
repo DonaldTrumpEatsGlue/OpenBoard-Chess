@@ -310,6 +310,14 @@
         <button class="secondary-button" id="online-leave-cancel" type="button">Stay in the game</button>
       </form>
     </dialog>
+    <dialog id="online-opponent-left-dialog" aria-labelledby="online-opponent-left-title">
+      <form method="dialog" class="message-dialog-content">
+        <h2 id="online-opponent-left-title">Your opponent left</h2>
+        <p id="online-opponent-left-message">Your opponent disconnected. You can wait for them to reconnect or return to the main chess screen.</p>
+        <button class="primary-button" id="online-return-main" type="button">Return to main screen</button>
+        <button class="secondary-button" id="online-wait-reconnect" type="button">Keep waiting</button>
+      </form>
+    </dialog>
     <dialog id="piece-studio-dialog" class="piece-studio-dialog" aria-labelledby="piece-studio-title">
       <div class="studio-header">
         <div><p class="eyebrow">DESIGN YOUR OWN MOVES</p><h2 id="piece-studio-title">Custom Piece Studio</h2></div>
@@ -381,6 +389,6 @@
     <script defer src="./vendor/chess.js"></script>
     <script defer src="./src/large-board-chess.js"></script>
     <script defer src="./src/piece-studio.js"></script>
-    <script defer src="./src/main.js?v=16"></script>
+    <script defer src="./src/main.js?v=17"></script>
   </body>
 </html>
