@@ -16,6 +16,7 @@ const botDirectoryGrid = document.querySelector('#bot-directory-grid');
 const customRulesDialog = document.querySelector('#custom-rules-dialog');
 const soundSettingsDialog = document.querySelector('#sound-settings-dialog');
 const onlineDialog = document.querySelector('#online-dialog');
+const onlineLeaveDialog = document.querySelector('#online-leave-dialog');
 const pieceTheme = window.OpenboardPieceThemes.classic;
 const soundManifest = window.OpenboardSoundManifest;
 const defaultAudioSettings = {
@@ -139,6 +140,7 @@ let onlineSpectating = false;
 let onlineChatHistory = { players: [], spectators: [] };
 let onlineIdentityVerified = false;
 let onlineRoomCode = null;
+let onlineLeaveTimeout = null;
 let onlinePlayerName = '';
 let onlinePreviousClock = null;
 let onlinePreviousColor = null;
@@ -1884,6 +1886,7 @@ function setOnlineGameState(active, spectating = false) {
   }
   onlineMode = active;
   onlineSpectating = active && spectating;
+  document.querySelector('#online-game-actions').hidden = !active;
   setOnlineCreatePending(onlineCreatePending);
   if (active) suggestedMove = null;
   configureOnlineChat(active, onlineSpectating);
@@ -2011,7 +2014,6 @@ function handleOnlineMessage(socket, message) {
   if (message.type === 'room-created') {
     setOnlineCreatePending(false);
     onlineRoomCode = message.code;
-    setOnlineCreatePending(false);
     playerColor = message.color;
     playColorSelect.value = playerColor;
     flipped = false;
@@ -2035,6 +2037,11 @@ function handleOnlineMessage(socket, message) {
       : 'Private lobby created. Share the invite code with your friend.');
     renderPublicRooms();
     renderBoard();
+    onlineDialog.close();
+    return;
+  }
+  if (message.type === 'left-room') {
+    finishDisconnectOnlineGame(socket);
     return;
   }
   if (message.type === 'game-start') {
@@ -2264,18 +2271,36 @@ async function connectToOnlineRoom(action, roomCode = null, roomPassword = '') {
 }
 
 function disconnectOnlineGame() {
-  if (onlineDialog.open) onlineDialog.close();
   const socket = onlineSocket;
+  if (socket?.readyState === WebSocket.OPEN && onlineRoomCode) {
+    document.querySelector('#online-leave-confirm').disabled = true;
+    socket.send(JSON.stringify({ type: 'leave-room' }));
+    onlineLeaveTimeout = window.setTimeout(() => finishDisconnectOnlineGame(socket), 3000);
+    return;
+  }
+  finishDisconnectOnlineGame(socket);
+}
+
+function finishDisconnectOnlineGame(socket = onlineSocket) {
+  if (socket !== onlineSocket) return;
+  if (onlineLeaveTimeout !== null) {
+    window.clearTimeout(onlineLeaveTimeout);
+    onlineLeaveTimeout = null;
+  }
+  if (onlineDialog.open) onlineDialog.close();
+  if (onlineLeaveDialog.open) onlineLeaveDialog.close();
+  document.querySelector('#online-leave-confirm').disabled = false;
   onlineSocket = null;
   onlineRoomCode = null;
   onlineReady = false;
   onlineIdentityVerified = false;
   onlinePendingRequest = null;
   pendingPremove = null;
-  if (socket?.readyState === WebSocket.OPEN) socket.close();
+  setOnlineCreatePending(false);
+  if (socket?.readyState === WebSocket.OPEN) socket.close(1000, 'Left the online lobby.');
   setOnlineGameState(false);
   document.querySelector('#online-invite').hidden = true;
-  updateOnlineStatus('Playing offline. No online room connected.');
+  updateOnlineStatus('Disconnected. You are back on the main chess screen.');
   startNewGame();
 }
 
@@ -2695,6 +2720,11 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden) stopActiveSound();
 });
 window.addEventListener('pagehide', stopActiveSound);
+window.addEventListener('beforeunload', (event) => {
+  if (!onlineMode || !onlineRoomCode) return;
+  event.preventDefault();
+  event.returnValue = '';
+});
 
 function showMessage(title, text) {
   document.querySelector('#message-title').textContent = title;
@@ -2713,6 +2743,9 @@ document.querySelector('#online-tab').addEventListener('click', () => {
   onlineDialog.showModal();
 });
 document.querySelector('#online-close').addEventListener('click', () => onlineDialog.close());
+document.querySelector('#online-leave-game').addEventListener('click', () => onlineLeaveDialog.showModal());
+document.querySelector('#online-leave-cancel').addEventListener('click', () => onlineLeaveDialog.close());
+document.querySelector('#online-leave-confirm').addEventListener('click', disconnectOnlineGame);
 document.querySelector('#online-account-tab').addEventListener('click', () => selectOnlineSection('account'));
 document.querySelector('#online-play-tab').addEventListener('click', () => selectOnlineSection('play'));
 document.querySelector('#online-continue').addEventListener('click', () => selectOnlineSection('play'));
@@ -2724,7 +2757,10 @@ document.querySelector('#online-create-public').addEventListener('click', () => 
 document.querySelector('#online-refresh-rooms').addEventListener('click', requestPublicRooms);
 document.querySelector('#online-join').addEventListener('click', () => connectToOnlineRoom('join'));
 document.querySelector('#online-watch').addEventListener('click', () => connectToOnlineRoom('watch'));
-document.querySelector('#online-disconnect').addEventListener('click', disconnectOnlineGame);
+document.querySelector('#online-disconnect').addEventListener('click', () => {
+  if (onlineMode) onlineLeaveDialog.showModal();
+  else onlineDialog.close();
+});
 for (const channel of ['player', 'spectator']) {
   document.querySelector(`#online-${channel}-chat-form`).addEventListener('submit', (event) => {
     event.preventDefault();
@@ -2785,8 +2821,6 @@ if (!onlineServerUrl && !['localhost', '127.0.0.1', '::1'].includes(location.hos
   updateOnlineStatus('The owner has not connected the online server yet.');
 }
 initializeAuthSession();
-window.addEventListener('beforeunload', () => onlineSocket?.close());
-
 document.querySelector('#resign').addEventListener('click', () => {
   if (onlineSpectating) return;
   if (!game.history().length || isGameOver() || gameResult) return;

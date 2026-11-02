@@ -99,6 +99,9 @@
           <div class="secondary-actions"><button id="offer-draw">Offer draw</button><button id="resign">Resign</button><button id="export-pgn">Copy PGN</button></div>
           <div class="secondary-actions study-actions"><button id="puzzle-start">Solve a puzzle</button><button id="puzzle-hint">Puzzle hint</button><button id="analysis-open">Analyze position</button></div>
           <button type="button" class="suggest-move-button" id="suggest-move"><span>Suggest a move</span><span aria-hidden="true">✦</span></button>
+          <div class="online-game-actions" id="online-game-actions" hidden>
+            <button class="secondary-button" id="online-leave-game" type="button">Disconnect &amp; return to main screen</button>
+          </div>
 
           <div class="opponent-card" id="opponent-card">
             <div class="opponent-card-top"><span class="bot-avatar" id="bot-avatar">S</span><span class="bot-difficulty" id="bot-difficulty">INTERMEDIATE</span></div>
@@ -299,6 +302,14 @@
       <div class="online-footer-actions"><button class="secondary-button" id="online-disconnect" type="button">Play offline</button></div>
       <p class="studio-status" id="online-status" role="status">No online room connected.</p>
     </dialog>
+    <dialog id="online-leave-dialog" aria-labelledby="online-leave-title">
+      <form method="dialog" class="message-dialog-content">
+        <h2 id="online-leave-title">Leave this online game?</h2>
+        <p>You will leave the lobby and return to the main chess screen.</p>
+        <button class="primary-button" id="online-leave-confirm" type="button">Disconnect &amp; return to main screen</button>
+        <button class="secondary-button" id="online-leave-cancel" type="button">Stay in the game</button>
+      </form>
+    </dialog>
     <dialog id="piece-studio-dialog" class="piece-studio-dialog" aria-labelledby="piece-studio-title">
       <div class="studio-header">
         <div><p class="eyebrow">DESIGN YOUR OWN MOVES</p><h2 id="piece-studio-title">Custom Piece Studio</h2></div>
@@ -370,6 +381,6 @@
     <script defer src="./vendor/chess.js"></script>
     <script defer src="./src/large-board-chess.js"></script>
     <script defer src="./src/piece-studio.js"></script>
-    <script defer src="./src/main.js?v=15"></script>
+    <script defer src="./src/main.js?v=16"></script>
   </body>
 </html>

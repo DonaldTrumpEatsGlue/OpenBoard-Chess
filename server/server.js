@@ -214,6 +214,12 @@ async function handleMessage(socket, player, rawMessage) {
     return;
   }
 
+  if (message.type === 'leave-room') {
+    leaveRoom(player);
+    send(socket, { type: 'left-room' });
+    return;
+  }
+
   if (message.type === 'create-room' || message.type === 'create-public-room') {
     const existingRoom = [...rooms.values()].find((room) => (
       [room.players.w, room.players.b].some((roomPlayer) => (

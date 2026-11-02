@@ -241,6 +241,37 @@ test('one account cannot create multiple active rooms from repeated or parallel 
   }
 });
 
+test('a player can explicitly leave a room and create another lobby', async () => {
+  const host = await connect(undefined, 'LeavingHost');
+  const guest = await connect(undefined, 'StayingGuest');
+  try {
+    const created = await request(host, {
+      type: 'create-room',
+      lobbyName: 'First lobby',
+    });
+    assert.equal(created.type, 'room-created');
+    const gameStart = waitForMessage(host, (message) => message.type === 'game-start');
+    const guestStart = waitForMessage(guest, (message) => message.type === 'game-start');
+    guest.send(JSON.stringify({ type: 'join-room', code: created.code }));
+    await Promise.all([gameStart, guestStart]);
+
+    const opponentLeft = waitForMessage(guest, (message) => message.type === 'opponent-left');
+    const left = await sendAndWait(host, { type: 'leave-room' }, (message) => message.type === 'left-room');
+    assert.deepEqual(left, { type: 'left-room' });
+    await opponentLeft;
+
+    const nextLobby = await request(host, {
+      type: 'create-room',
+      lobbyName: 'Second lobby',
+    });
+    assert.equal(nextLobby.type, 'room-created');
+    assert.notEqual(nextLobby.code, created.code);
+  } finally {
+    host.close();
+    guest.close();
+  }
+});
+
 test('optional lobby passwords block incorrect joins and allow the correct one', async () => {
   const host = await connect(undefined, 'LobbyOwner');
   const wrongGuest = await connect(undefined, 'WrongGuest');
