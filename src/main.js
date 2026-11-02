@@ -1405,6 +1405,7 @@ function playPendingPremove() {
 function updateGameState() {
   updateClockDisplay();
   updateColorLabels();
+  updateOnlineSuggestionAvailability();
   if (gameResult) return;
   if (isCheckmate()) {
     gameMessage.textContent = onlineMode
@@ -1446,6 +1447,20 @@ function updateGameState() {
   } else {
     gameMessage.textContent = game.turn() === 'w' ? 'Your move.' : 'The engine is ready.';
   }
+  updateOnlineSuggestionAvailability();
+}
+
+function updateOnlineSuggestionAvailability() {
+  const suggestButton = document.querySelector('#suggest-move');
+  if (!onlineMode) {
+    suggestButton.disabled = false;
+    return;
+  }
+  suggestButton.disabled = !onlineReady
+    || onlineSpectating
+    || gameResult
+    || isGameOver()
+    || game.turn() !== playerColor;
 }
 
 function updateOnlineStatus(message) {
@@ -1787,7 +1802,7 @@ function configureOnlineControls(active, spectating = false) {
   document.querySelector('#undo').disabled = active;
   document.querySelector('#redo').disabled = active;
   document.querySelector('#custom-rules-open').disabled = active;
-  document.querySelector('#suggest-move').disabled = active;
+  updateOnlineSuggestionAvailability();
   document.querySelector('#opponent-card').hidden = active;
   document.querySelector('#opponent-name').textContent = active
     ? spectating ? 'Spectating' : 'Friend'
@@ -2096,6 +2111,7 @@ function handleOnlineMessage(socket, message) {
       return;
     }
     onlineReady = false;
+    updateOnlineSuggestionAvailability();
     pendingPremove = null;
     updateOnlineStatus('Your opponent disconnected. The room remains open for a reconnect.');
     gameMessage.textContent = 'Your opponent disconnected.';
@@ -2121,6 +2137,7 @@ function handleOnlineMessage(socket, message) {
   }
   if (message.type === 'room-ended') {
     onlineReady = false;
+    updateOnlineSuggestionAvailability();
     updateOnlineChatAvailability();
     updateOnlineStatus('The game ended because both players disconnected.');
     gameMessage.textContent = 'The game is no longer active.';
@@ -2236,6 +2253,7 @@ async function connectToOnlineRoom(action, roomCode = null, roomPassword = '') {
     if (isCreateAction) setOnlineCreatePending(false);
     if (socket !== onlineSocket) return;
     onlineReady = false;
+    updateOnlineSuggestionAvailability();
     updateOnlineChatAvailability();
     pendingPremove = null;
     selectedSquare = null;
@@ -3024,9 +3042,9 @@ document.querySelector('#copy-fen').addEventListener('click', async () => {
 });
 
 document.querySelector('#suggest-move').addEventListener('click', () => {
-  if (onlineMode) return;
+  if (onlineMode && (!onlineReady || onlineSpectating || game.turn() !== playerColor)) return;
   if (aiThinking || gameResult || isGameOver()) return;
-  if (!analysisMode && !puzzleMode && !onlineMode && game.turn() !== playerColor) {
+  if (!analysisMode && !puzzleMode && game.turn() !== playerColor) {
     gameMessage.textContent = 'Wait for your turn before requesting a suggestion.';
     return;
   }
