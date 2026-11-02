@@ -135,6 +135,7 @@ let onlinePendingRequest = null;
 let onlineMode = false;
 let onlineReady = false;
 let onlineSpectating = false;
+let onlineChatHistory = [];
 let onlineIdentityVerified = false;
 let onlineRoomCode = null;
 let onlinePlayerName = '';
@@ -1792,6 +1793,60 @@ function configureOnlineControls(active, spectating = false) {
   document.querySelector('.panel-header .live-indicator').lastChild.textContent = active ? ' ONLINE' : ' LOCAL';
 }
 
+function renderOnlineChat() {
+  const list = document.querySelector('#online-chat-messages');
+  list.replaceChildren();
+  if (!onlineChatHistory.length) {
+    const empty = document.createElement('li');
+    empty.className = 'online-chat-empty';
+    empty.textContent = 'No messages yet.';
+    list.append(empty);
+    return;
+  }
+  for (const message of onlineChatHistory) {
+    const item = document.createElement('li');
+    item.className = 'online-chat-message';
+    const name = document.createElement('strong');
+    name.textContent = `@${message.name}`;
+    const text = document.createElement('span');
+    text.textContent = message.text;
+    item.append(name, text);
+    list.append(item);
+  }
+  list.scrollTop = list.scrollHeight;
+}
+
+function setOnlineChatHistory(messages) {
+  onlineChatHistory = Array.isArray(messages)
+    ? messages.filter((message) => typeof message?.name === 'string' && typeof message?.text === 'string')
+      .slice(-100)
+    : [];
+  renderOnlineChat();
+}
+
+function configureOnlineChat(active, spectating = false) {
+  const chat = document.querySelector('#online-chat');
+  const input = document.querySelector('#online-chat-input');
+  const title = document.querySelector('#online-chat-title');
+  const audience = document.querySelector('#online-chat-audience');
+  title.textContent = spectating ? 'Spectator chat' : 'Players chat';
+  audience.textContent = spectating
+    ? 'Only spectators in this room can see this'
+    : 'Only the two players can see this';
+  input.placeholder = spectating ? 'Message the spectators…' : 'Message the players…';
+  input.setAttribute('aria-label', spectating ? 'Message to spectator chat' : 'Message to players chat');
+  chat.hidden = !active;
+  if (!active) setOnlineChatHistory([]);
+  updateOnlineChatAvailability();
+}
+
+function updateOnlineChatAvailability() {
+  const enabled = onlineMode && Boolean(onlineRoomCode)
+    && onlineSocket?.readyState === WebSocket.OPEN;
+  document.querySelector('#online-chat-input').disabled = !enabled;
+  document.querySelector('#online-chat-send').disabled = !enabled;
+}
+
 function setOnlineGameState(active, spectating = false) {
   if (active && isCustomVariantActive()) {
     showMessage('Online games use standard chess', 'Reset your custom rules before joining a friend online. This room server currently handles orthodox chess only.');
@@ -1803,6 +1858,7 @@ function setOnlineGameState(active, spectating = false) {
   }
   onlineMode = active;
   onlineSpectating = active && spectating;
+  configureOnlineChat(active, onlineSpectating);
   pendingPremove = null;
   selectedSquare = null;
   legalTargets = [];
@@ -1890,6 +1946,7 @@ function restoreOnlinePosition(message) {
 function handleOnlineMessage(socket, message) {
   if (socket !== onlineSocket || !message || typeof message.type !== 'string') return;
   if (message.type === 'error') {
+    if (onlineMode) gameMessage.textContent = message.message || 'The room server rejected that action.';
     if (!onlineIdentityVerified) {
       onlinePendingRequest = null;
       updateOnlineStatus(message.message || 'Sign in to your Openboard account before using online play.');
@@ -1929,6 +1986,8 @@ function handleOnlineMessage(socket, message) {
     flipped = false;
     document.querySelector('#online-invite-code').textContent = onlineRoomCode;
     document.querySelector('#online-invite').hidden = false;
+    setOnlineChatHistory(message.playerChat);
+    updateOnlineChatAvailability();
     if (message.isPublic) {
       publicRooms = [{
         code: onlineRoomCode,
@@ -1952,6 +2011,7 @@ function handleOnlineMessage(socket, message) {
     onlineReady = true;
     playerColor = message.color === 'w' ? 'w' : 'b';
     if (onlineSpectating) {
+      setOnlineChatHistory(message.spectatorChat);
       restoreOnlinePosition(message);
       updateOnlineStatus(`Spectating ${message.players?.w || 'White'} vs ${message.players?.b || 'Black'}.`);
       renderBoard();
@@ -1963,6 +2023,8 @@ function handleOnlineMessage(socket, message) {
       document.querySelector('#opponent-name').textContent = otherName;
       document.querySelector('#bot-profile-name').textContent = otherName;
     }
+    setOnlineChatHistory(message.playerChat);
+    updateOnlineChatAvailability();
     playColorSelect.value = playerColor;
     flipped = playerColor === 'b';
     if (!restoreOnlinePosition(message)) return;
@@ -1981,6 +2043,8 @@ function handleOnlineMessage(socket, message) {
       document.querySelector('#opponent-name').textContent = 'Spectating';
       document.querySelector('#bot-profile-name').textContent = `${message.players.w || 'White'} vs ${message.players.b || 'Black'}`;
     }
+    setOnlineChatHistory(message.spectatorChat);
+    updateOnlineChatAvailability();
     if (!restoreOnlinePosition(message)) return;
     const watching = `${message.spectators || 1} ${message.spectators === 1 ? 'spectator' : 'spectators'}`;
     updateOnlineStatus(message.waiting
@@ -1995,6 +2059,14 @@ function handleOnlineMessage(socket, message) {
     updateOnlineStatus(onlineSpectating
       ? `Spectating · ${watching}.`
       : `Online game · ${watching}.`);
+    return;
+  }
+  if (message.type === 'chat-message') {
+    const expectedChannel = onlineSpectating ? 'spectators' : 'players';
+    if (message.channel !== expectedChannel) return;
+    onlineChatHistory.push(message);
+    onlineChatHistory = onlineChatHistory.slice(-100);
+    renderOnlineChat();
     return;
   }
   if (message.type === 'move') {
@@ -2034,6 +2106,7 @@ function handleOnlineMessage(socket, message) {
   }
   if (message.type === 'room-ended') {
     onlineReady = false;
+    updateOnlineChatAvailability();
     updateOnlineStatus('The game ended because both players disconnected.');
     gameMessage.textContent = 'The game is no longer active.';
     renderBoard();
@@ -2129,6 +2202,7 @@ async function connectToOnlineRoom(action, roomCode = null, roomPassword = '') {
   socket.addEventListener('close', () => {
     if (socket !== onlineSocket) return;
     onlineReady = false;
+    updateOnlineChatAvailability();
     pendingPremove = null;
     selectedSquare = null;
     legalTargets = [];
@@ -2599,6 +2673,18 @@ document.querySelector('#online-refresh-rooms').addEventListener('click', reques
 document.querySelector('#online-join').addEventListener('click', () => connectToOnlineRoom('join'));
 document.querySelector('#online-watch').addEventListener('click', () => connectToOnlineRoom('watch'));
 document.querySelector('#online-disconnect').addEventListener('click', disconnectOnlineGame);
+document.querySelector('#online-chat-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  const input = document.querySelector('#online-chat-input');
+  const text = input.value.trim();
+  if (!text) return;
+  if (!onlineMode || !onlineRoomCode || onlineSocket?.readyState !== WebSocket.OPEN) {
+    updateOnlineStatus('Connect to a room before sending a chat message.');
+    return;
+  }
+  onlineSocket.send(JSON.stringify({ type: 'chat-send', text }));
+  input.value = '';
+});
 document.querySelector('#online-auth-submit').addEventListener('click', submitOnlineAuth);
 document.querySelector('#online-auth-mode').addEventListener('click', () => {
   authMode = authMode === 'signup' ? 'signin' : 'signup';

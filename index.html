@@ -121,6 +121,21 @@
             </div>
           </section>
 
+          <section class="online-chat" id="online-chat" aria-labelledby="online-chat-title" hidden>
+            <div class="online-chat-heading">
+              <h3 id="online-chat-title">Players chat</h3>
+              <span id="online-chat-audience">Only you and the other player can see this</span>
+            </div>
+            <ol class="online-chat-messages" id="online-chat-messages" aria-live="polite" aria-relevant="additions" role="log">
+              <li class="online-chat-empty">No messages yet.</li>
+            </ol>
+            <form class="online-chat-form" id="online-chat-form">
+              <label class="sr-only" for="online-chat-input">Message to the room chat</label>
+              <input id="online-chat-input" maxlength="300" autocomplete="off" placeholder="Write a message…" />
+              <button class="primary-button" id="online-chat-send" type="submit">Send</button>
+            </form>
+          </section>
+
           <div class="panel-footer">
             <div class="privacy-note"><span aria-hidden="true">◉</span><p><strong>Private by design</strong><br />Your game stays on this device.</p></div>
             <p class="engine-note">Stockfish powers standard-chess opponents. Custom variants use a separate rules-aware search. Engine skill presets are not calibrated ratings.</p>
@@ -339,6 +354,6 @@
     <script defer src="./vendor/chess.js"></script>
     <script defer src="./src/large-board-chess.js"></script>
     <script defer src="./src/piece-studio.js"></script>
-    <script defer src="./src/main.js?v=11"></script>
+    <script defer src="./src/main.js?v=12"></script>
   </body>
 </html>

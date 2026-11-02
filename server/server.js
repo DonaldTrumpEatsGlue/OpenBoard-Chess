@@ -6,6 +6,10 @@ const { WebSocketServer, WebSocket } = require('ws');
 const port = Number(process.env.OPENBOARD_PORT || process.env.PORT || 3001);
 const rooms = new Map();
 const roomLifetimeMs = 30 * 60 * 1000;
+const maxChatHistory = 100;
+const maxChatMessageLength = 300;
+const chatRateWindowMs = 10_000;
+const chatRateLimit = 5;
 const supabaseUrl = (process.env.SUPABASE_URL || '').replace(/\/+$/, '');
 const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || '';
 const allowedOrigins = (process.env.OPENBOARD_ALLOWED_ORIGINS || '')
@@ -114,6 +118,26 @@ function broadcastSpectators(room, payload) {
   for (const spectator of room.spectators) send(spectator.socket, payload);
 }
 
+function sendRoomChat(room, player, text) {
+  const channel = player.role === 'spectator' ? 'spectators' : 'players';
+  const message = {
+    type: 'chat-message',
+    channel,
+    name: player.identity.username,
+    text,
+    timestamp: Date.now(),
+  };
+  const history = channel === 'spectators' ? room.spectatorChat : room.playerChat;
+  history.push(message);
+  if (history.length > maxChatHistory) history.shift();
+
+  if (channel === 'spectators') {
+    for (const spectator of room.spectators) send(spectator.socket, message);
+  } else {
+    for (const playerSlot of Object.values(room.players)) send(playerSlot.socket, message);
+  }
+}
+
 function leaveRoom(player) {
   if (!player?.room) return;
   const room = player.room;
@@ -129,6 +153,7 @@ function leaveRoom(player) {
   if (slot?.socket === player.socket) slot.socket = null;
   player.room = null;
   player.color = null;
+  player.role = null;
   if (room.players.w.socket || room.players.b.socket) {
     broadcast(room, { type: 'opponent-left' });
   } else {
@@ -219,11 +244,14 @@ async function handleMessage(socket, player, rawMessage) {
         b: { socket: null, name: 'Black' },
       },
       spectators: new Set(),
+      playerChat: [],
+      spectatorChat: [],
       expiresAt: Date.now() + roomLifetimeMs,
     };
     rooms.set(code, room);
     player.room = room;
     player.color = 'w';
+    player.role = 'player';
     send(socket, {
       type: 'room-created',
       code,
@@ -265,6 +293,7 @@ async function handleMessage(socket, player, rawMessage) {
     room.expiresAt = Date.now() + roomLifetimeMs;
     player.room = room;
     player.color = 'b';
+    player.role = 'player';
     const players = { w: room.players.w.name, b: room.players.b.name };
     const gameStart = {
       type: 'game-start',
@@ -272,8 +301,17 @@ async function handleMessage(socket, player, rawMessage) {
       players,
       fen: room.chess.fen(),
       pgn: room.chess.pgn(),
+      playerChat: room.playerChat,
     };
-    broadcastSpectators(room, { ...gameStart, type: 'spectator-start', waiting: false });
+    broadcastSpectators(room, {
+      type: 'spectator-start',
+      code: room.code,
+      players,
+      fen: room.chess.fen(),
+      pgn: room.chess.pgn(),
+      waiting: false,
+      spectatorChat: room.spectatorChat,
+    });
     send(room.players.w.socket, { ...gameStart, color: 'w' });
     send(room.players.b.socket, { ...gameStart, color: 'b' });
     return;
@@ -311,13 +349,47 @@ async function handleMessage(socket, player, rawMessage) {
       waiting: !(room.players.w.socket?.readyState === WebSocket.OPEN
         && room.players.b.socket?.readyState === WebSocket.OPEN),
       spectators: room.spectators.size,
+      spectatorChat: room.spectatorChat,
     });
     broadcast(room, { type: 'spectator-count', count: room.spectators.size });
     return;
   }
 
   const room = player.room;
-  if (!room || player.role === 'spectator' || !player.color || room.players[player.color]?.socket !== socket) {
+  if (!room) {
+    send(socket, { type: 'error', message: 'Join or create a room before sending game actions.' });
+    return;
+  }
+
+  if (message.type === 'chat-send') {
+    const isSpectator = player.role === 'spectator' && room.spectators.has(player);
+    const isPlayer = player.role === 'player' && player.color
+      && room.players[player.color]?.socket === socket;
+    if (!isSpectator && !isPlayer) {
+      send(socket, { type: 'error', message: 'Join the room before sending a chat message.' });
+      return;
+    }
+    if (typeof message.text !== 'string') {
+      send(socket, { type: 'error', message: 'Chat messages must be text.' });
+      return;
+    }
+    const text = message.text.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!text || text.length > maxChatMessageLength) {
+      send(socket, { type: 'error', message: `Chat messages must be 1–${maxChatMessageLength} characters.` });
+      return;
+    }
+    const now = Date.now();
+    player.chatTimestamps = (player.chatTimestamps || []).filter((timestamp) => now - timestamp < chatRateWindowMs);
+    if (player.chatTimestamps.length >= chatRateLimit) {
+      send(socket, { type: 'error', message: 'You are sending chat messages too quickly. Please wait a moment.' });
+      return;
+    }
+    player.chatTimestamps.push(now);
+    sendRoomChat(room, player, text);
+    return;
+  }
+
+  if (player.role === 'spectator' || !player.color || room.players[player.color]?.socket !== socket) {
     send(socket, { type: 'error', message: 'Join or create a room before sending game actions.' });
     return;
   }

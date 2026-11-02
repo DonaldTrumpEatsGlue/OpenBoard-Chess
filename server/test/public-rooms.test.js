@@ -69,6 +69,29 @@ function request(socket, message) {
   return response;
 }
 
+function waitForMessage(socket, predicate) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      socket.off('message', onMessage);
+      reject(new Error('Timed out waiting for the expected room message.'));
+    }, 3_000);
+    const onMessage = (data) => {
+      const message = JSON.parse(data.toString());
+      if (!predicate(message)) return;
+      clearTimeout(timeout);
+      socket.off('message', onMessage);
+      resolve(message);
+    };
+    socket.on('message', onMessage);
+  });
+}
+
+function sendAndWait(socket, payload, predicate) {
+  const response = waitForMessage(socket, predicate);
+  socket.send(JSON.stringify(payload));
+  return response;
+}
+
 before(async () => {
   authServer = http.createServer((request, response) => {
     response.setHeader('Content-Type', 'application/json');
@@ -357,5 +380,98 @@ test('spectators can watch live public games without taking player slots', async
     assert.equal(updatedListing.rooms[0].spectators, 0);
   } finally {
     for (const socket of [host, spectator, joiner, extraPlayer, browser]) socket.close();
+  }
+});
+
+test('player and spectator chats stay separate and preserve channel history', async () => {
+  const host = await connect(undefined, 'ChatHost');
+  const guest = await connect(undefined, 'ChatGuest');
+  const spectator = await connect(undefined, 'ChatSpectator');
+  const otherSpectator = await connect(undefined, 'OtherSpectator');
+  const lateSpectator = await connect(undefined, 'LateSpectator');
+  const hostMessages = [];
+  const guestMessages = [];
+  const capture = (messages) => (data) => messages.push(JSON.parse(data.toString()));
+
+  try {
+    const created = await request(host, { type: 'create-room', lobbyName: 'Chat Room' });
+    const earlyPlayerChat = await sendAndWait(host, {
+      type: 'chat-send',
+      text: 'Before the second player joins',
+    }, (message) => message.type === 'chat-message');
+    assert.equal(earlyPlayerChat.channel, 'players');
+    assert.equal(earlyPlayerChat.name, 'ChatHost');
+
+    const hostStart = waitForMessage(host, (message) => message.type === 'game-start');
+    const guestStart = await request(guest, { type: 'join-room', code: created.code });
+    const playerStart = await hostStart;
+    assert.equal(guestStart.playerChat.length, 1);
+    assert.equal(guestStart.playerChat[0].text, 'Before the second player joins');
+    assert.equal(playerStart.playerChat.length, 1);
+    assert.equal(Object.hasOwn(guestStart, 'spectatorChat'), false);
+
+    const spectatorStart = await request(spectator, { type: 'spectate-room', code: created.code });
+    assert.equal(spectatorStart.spectatorChat.length, 0);
+    assert.equal(Object.hasOwn(spectatorStart, 'playerChat'), false);
+    await waitForMessage(spectator, (message) => message.type === 'spectator-count');
+
+    const otherStart = await request(otherSpectator, { type: 'spectate-room', code: created.code });
+    assert.equal(otherStart.spectatorChat.length, 0);
+    await waitForMessage(otherSpectator, (message) => message.type === 'spectator-count');
+
+    host.on('message', capture(hostMessages));
+    guest.on('message', capture(guestMessages));
+    const spectatorReply = waitForMessage(otherSpectator, (message) => message.type === 'chat-message');
+    const spectatorMessage = await sendAndWait(spectator, {
+      type: 'chat-send',
+      text: 'Only spectators should see this',
+    }, (message) => message.type === 'chat-message');
+    const spectatorPeerMessage = await spectatorReply;
+    assert.equal(spectatorMessage.channel, 'spectators');
+    assert.equal(spectatorPeerMessage.text, 'Only spectators should see this');
+
+    const guestPlayerReply = waitForMessage(guest, (message) => (
+      message.type === 'chat-message' && message.text === 'Only players should see this'
+    ));
+    const hostPlayerMessage = await sendAndWait(host, {
+      type: 'chat-send',
+      text: 'Only players should see this',
+    }, (message) => message.type === 'chat-message' && message.text === 'Only players should see this');
+    const guestPlayerMessage = await guestPlayerReply;
+    assert.equal(hostPlayerMessage.channel, 'players');
+    assert.equal(guestPlayerMessage.channel, 'players');
+    assert.equal(hostMessages.some((message) => message.channel === 'spectators'), false);
+    assert.equal(guestMessages.some((message) => message.channel === 'spectators'), false);
+
+    const lateStart = await request(lateSpectator, { type: 'spectate-room', code: created.code });
+    assert.equal(lateStart.spectatorChat.length, 1);
+    assert.equal(lateStart.spectatorChat[0].text, 'Only spectators should see this');
+    assert.equal(Object.hasOwn(lateStart, 'playerChat'), false);
+  } finally {
+    for (const socket of [host, guest, spectator, otherSpectator, lateSpectator]) socket.close();
+  }
+});
+
+test('room chat rejects empty and oversized messages and limits message bursts', async () => {
+  const host = await connect(undefined, 'RateLimitedPlayer');
+  try {
+    await request(host, { type: 'create-room', lobbyName: 'Chat Limits' });
+    const empty = await request(host, { type: 'chat-send', text: '   ' });
+    assert.equal(empty.type, 'error');
+    assert.match(empty.message, /1–300 characters/i);
+
+    const oversized = await request(host, { type: 'chat-send', text: 'x'.repeat(301) });
+    assert.equal(oversized.type, 'error');
+    assert.match(oversized.message, /1–300 characters/i);
+
+    for (let messageNumber = 1; messageNumber <= 5; messageNumber += 1) {
+      const message = await request(host, { type: 'chat-send', text: `Message ${messageNumber}` });
+      assert.equal(message.type, 'chat-message');
+    }
+    const rateLimited = await request(host, { type: 'chat-send', text: 'One too many' });
+    assert.equal(rateLimited.type, 'error');
+    assert.match(rateLimited.message, /too quickly/i);
+  } finally {
+    host.close();
   }
 });
