@@ -1463,7 +1463,7 @@ function updateOnlineSuggestionAvailability() {
     || onlineSpectating
     || gameResult
     || isGameOver()
-    || game.turn() !== playerColor;
+    || onlineSocket?.readyState !== WebSocket.OPEN;
 }
 
 function updateOnlineStatus(message) {
@@ -3091,9 +3091,9 @@ document.querySelector('#copy-fen').addEventListener('click', async () => {
 });
 
 document.querySelector('#suggest-move').addEventListener('click', () => {
-  if (onlineMode && (!onlineReady || onlineSpectating || game.turn() !== playerColor)) return;
+  if (onlineMode && (!onlineReady || onlineSpectating || onlineSocket?.readyState !== WebSocket.OPEN)) return;
   if (aiThinking || gameResult || isGameOver()) return;
-  if (!analysisMode && !puzzleMode && game.turn() !== playerColor) {
+  if (!onlineMode && !analysisMode && !puzzleMode && game.turn() !== playerColor) {
     gameMessage.textContent = 'Wait for your turn before requesting a suggestion.';
     return;
   }
@@ -3105,7 +3105,8 @@ document.querySelector('#suggest-move').addEventListener('click', () => {
     return;
   }
   suggestedMove = { from: suggestion.from, to: suggestion.to };
-  gameMessage.textContent = `Suggested move: ${suggestion.san} · ${suggestion.from} to ${suggestion.to}.`;
+  const suggestedSide = onlineMode ? `${game.turn() === 'w' ? 'White' : 'Black'}: ` : '';
+  gameMessage.textContent = `Suggested move: ${suggestedSide}${suggestion.san} · ${suggestion.from} to ${suggestion.to}.`;
   renderBoard();
 });
 
