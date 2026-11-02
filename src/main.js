@@ -134,6 +134,7 @@ let onlineSocket = null;
 let onlinePendingRequest = null;
 let onlineMode = false;
 let onlineReady = false;
+let onlineSpectating = false;
 let onlineIdentityVerified = false;
 let onlineRoomCode = null;
 let onlinePlayerName = '';
@@ -975,6 +976,7 @@ function recordMoveInsight(move, quality) {
 }
 
 function onSquareClick(square) {
+  if (onlineSpectating) return;
   const premoving = canQueuePremove();
   if ((aiThinking && !premoving) || gameResult || isGameOver()
     || (onlineMode && (!onlineReady || onlineSocket?.readyState !== WebSocket.OPEN))
@@ -1057,7 +1059,7 @@ function getPremoveMoves(square) {
 }
 
 function canQueuePremove() {
-  if (onlineMode) return onlineReady && game.turn() !== playerColor;
+  if (onlineMode) return !onlineSpectating && onlineReady && game.turn() !== playerColor;
   return aiThinking && !analysisMode && !puzzleMode && game.turn() !== playerColor;
 }
 
@@ -1083,6 +1085,7 @@ function askPromotion(from, to) {
 }
 
 function playMove(from, to, promotion = 'q') {
+  if (onlineSpectating) return;
   if (onlineMode && (!onlineReady || onlineSocket?.readyState !== WebSocket.OPEN || game.turn() !== playerColor)) return;
   const quality = analyzeMoveQuality({ from, to, promotion });
   let appliedMove;
@@ -1403,11 +1406,13 @@ function updateGameState() {
   if (gameResult) return;
   if (isCheckmate()) {
     gameMessage.textContent = onlineMode
-      ? game.turn() === playerColor ? 'Checkmate. Your opponent wins.' : 'Checkmate! You win!'
+      ? onlineSpectating
+        ? `Checkmate. ${game.turn() === 'w' ? 'White' : 'Black'} is checkmated.`
+        : game.turn() === playerColor ? 'Checkmate. Your opponent wins.' : 'Checkmate! You win!'
       : analysisMode
         ? `Checkmate. ${game.turn() === 'w' ? 'White' : 'Black'} is checkmated.`
         : game.turn() === 'w' ? 'Checkmate. The engine wins this game.' : 'Checkmate! You win!';
-    markGameResult(game.turn() === playerColor ? 'defeat' : 'victory');
+    markGameResult(onlineSpectating ? 'draw' : game.turn() === playerColor ? 'defeat' : 'victory');
   } else if (isStalemate()) {
     gameMessage.textContent = customRules.noDraws
       ? `${game.turn() === 'w' ? 'White' : 'Black'} has no legal moves. Stalemate counts as a loss in this ruleset.`
@@ -1426,10 +1431,14 @@ function updateGameState() {
     gameMessage.textContent = 'The engine is thinking…';
   } else if (isCheck()) {
     gameMessage.textContent = onlineMode
-      ? game.turn() === playerColor ? 'Check! Find a safe move.' : 'Your opponent is in check.'
+      ? onlineSpectating
+        ? `${game.turn() === 'w' ? 'White' : 'Black'} is in check.`
+        : game.turn() === playerColor ? 'Check! Find a safe move.' : 'Your opponent is in check.'
       : game.turn() === 'w' ? 'Check! Find a safe move.' : 'The engine is in check.';
   } else if (onlineMode) {
-    gameMessage.textContent = !onlineReady && onlineSocket?.readyState === WebSocket.OPEN
+    gameMessage.textContent = onlineSpectating
+      ? `Spectating · ${game.turn() === 'w' ? 'White' : 'Black'} to move.`
+      : !onlineReady && onlineSocket?.readyState === WebSocket.OPEN
       ? 'Waiting for another player to join.'
       : game.turn() === playerColor ? 'Your move.' : 'Your opponent is thinking.';
   } else {
@@ -1660,7 +1669,7 @@ function renderPublicRooms() {
     const empty = document.createElement('p');
     empty.className = 'public-room-empty';
     empty.textContent = publicRooms.some((room) => room.code === onlineRoomCode)
-      ? 'Your public game is listed for other players. Waiting for someone to join.'
+      ? 'Your public game is listed for other players to join or spectate.'
       : 'No open games right now. Create one and invite someone to join.';
     list.append(empty);
     return;
@@ -1675,21 +1684,25 @@ function renderPublicRooms() {
     const name = document.createElement('strong');
     name.textContent = room.name;
     const details = document.createElement('span');
-    details.textContent = `Waiting for a player · ${room.code}`;
-    const join = document.createElement('button');
-    join.className = 'primary-button';
-    join.type = 'button';
-    join.textContent = 'Join';
-    join.addEventListener('click', () => {
+    details.textContent = room.inProgress
+      ? `Live game · ${room.code} · ${room.spectators || 0} watching`
+      : `Waiting for a player · ${room.code}`;
+    const action = document.createElement('button');
+    action.className = room.inProgress ? 'secondary-button' : 'primary-button';
+    action.type = 'button';
+    action.textContent = room.inProgress ? 'Watch' : 'Join';
+    action.addEventListener('click', () => {
       const password = room.locked ? window.prompt(`Password for “${room.name}”`) : '';
       if (room.locked && password === null) return;
-      connectToOnlineRoom('join-public', room.code, password || '');
+      connectToOnlineRoom(room.inProgress ? 'watch' : 'join-public', room.code, password || '');
     });
     copy.append(name, details);
     if (room.host) {
-      details.textContent = `Hosted by @${room.host} · ${room.locked ? 'Password required · ' : ''}${room.code}`;
+      details.textContent = room.inProgress
+        ? `@${room.host} vs @${room.opponent || '…'} · ${room.spectators || 0} watching · ${room.code}`
+        : `Hosted by @${room.host} · ${room.locked ? 'Password required · ' : ''}${room.code}`;
     }
-    card.append(copy, join);
+    card.append(copy, action);
     list.append(card);
   }
 }
@@ -1750,22 +1763,25 @@ function isCustomVariantActive() {
     }));
 }
 
-function configureOnlineControls(active) {
+function configureOnlineControls(active, spectating = false) {
   document.querySelector('#play-color').disabled = active;
   document.querySelector('#time-control').disabled = active;
   document.querySelector('#difficulty').disabled = active;
   document.querySelector('#new-game').disabled = active;
   document.querySelector('#offer-draw').disabled = active || customRules.noDraws;
+  document.querySelector('#resign').disabled = active && spectating;
   document.querySelector('#flip').disabled = active;
   document.querySelector('#undo').disabled = active;
   document.querySelector('#redo').disabled = active;
   document.querySelector('#custom-rules-open').disabled = active;
   document.querySelector('#opponent-card').hidden = active;
-  document.querySelector('#opponent-name').textContent = active ? 'Friend' : bots[difficultySelect.value].name;
+  document.querySelector('#opponent-name').textContent = active
+    ? spectating ? 'Spectating' : 'Friend'
+    : bots[difficultySelect.value].name;
   document.querySelector('.panel-header .live-indicator').lastChild.textContent = active ? ' ONLINE' : ' LOCAL';
 }
 
-function setOnlineGameState(active) {
+function setOnlineGameState(active, spectating = false) {
   if (active && isCustomVariantActive()) {
     showMessage('Online games use standard chess', 'Reset your custom rules before joining a friend online. This room server currently handles orthodox chess only.');
     return false;
@@ -1775,6 +1791,7 @@ function setOnlineGameState(active) {
     onlinePreviousColor = playerColor;
   }
   onlineMode = active;
+  onlineSpectating = active && spectating;
   pendingPremove = null;
   selectedSquare = null;
   legalTargets = [];
@@ -1783,7 +1800,7 @@ function setOnlineGameState(active) {
   onlinePendingRequest = null;
   if (active) {
     timeControlSelect.value = '0';
-    configureOnlineControls(true);
+    configureOnlineControls(true, onlineSpectating);
   } else {
     if (onlinePreviousClock !== null) timeControlSelect.value = onlinePreviousClock;
     if (onlinePreviousColor !== null) {
@@ -1802,8 +1819,8 @@ function setOnlineGameState(active) {
 }
 
 function applyOnlineMove(message) {
-  if (message.color === playerColor || !onlineReady) return;
-  if (game.turn() === playerColor) {
+  if (!onlineReady || (!onlineSpectating && message.color === playerColor)) return;
+  if (message.color !== game.turn()) {
     updateOnlineStatus('The server sent a move out of turn. Rejoin this room to resynchronize.');
     return;
   }
@@ -1832,8 +1849,31 @@ function applyOnlineMove(message) {
   legalTargets = [];
   updateGameState();
   renderBoard();
-  updateOnlineStatus(`${message.san} played by your opponent.`);
-  playPendingPremove();
+  updateOnlineStatus(onlineSpectating
+    ? `${message.san} played by ${message.color === 'w' ? 'White' : 'Black'}.`
+    : `${message.san} played by your opponent.`);
+  if (!onlineSpectating) playPendingPremove();
+}
+
+function restoreOnlinePosition(message) {
+  startNewGame();
+  try {
+    if (typeof message.pgn === 'string' && message.pgn.trim()) {
+      if (!game.load_pgn(message.pgn)) throw new Error('The saved online game could not be loaded.');
+    } else if (typeof message.fen === 'string' && !game.load(message.fen)) {
+      throw new Error('The saved online position could not be loaded.');
+    }
+    configureStartingPosition();
+    updateGameState();
+    renderBoard();
+    return true;
+  } catch (error) {
+    console.error('Could not restore the online game position:', error);
+    onlineReady = false;
+    updateOnlineStatus('Could not restore this room position. Start a new room.');
+    renderBoard();
+    return false;
+  }
 }
 
 function handleOnlineMessage(socket, message) {
@@ -1864,7 +1904,7 @@ function handleOnlineMessage(socket, message) {
   if (message.type === 'public-rooms') {
     publicRooms = Array.isArray(message.rooms)
       ? message.rooms.filter((room) => typeof room?.code === 'string' && typeof room?.name === 'string')
-        .map((room) => ({ ...room, locked: Boolean(room.locked) }))
+        .map((room) => ({ ...room, locked: Boolean(room.locked), inProgress: Boolean(room.inProgress) }))
       : [];
     renderPublicRooms();
     const count = publicRooms.filter((room) => room.code !== onlineRoomCode).length;
@@ -1884,6 +1924,8 @@ function handleOnlineMessage(socket, message) {
         name: message.lobbyName,
         host: onlinePlayerName,
         locked: Boolean(message.locked),
+        inProgress: false,
+        spectators: 0,
       }, ...publicRooms.filter((room) => room.code !== onlineRoomCode)];
     }
     startNewGame();
@@ -1898,6 +1940,13 @@ function handleOnlineMessage(socket, message) {
     onlineRoomCode = message.code;
     onlineReady = true;
     playerColor = message.color === 'w' ? 'w' : 'b';
+    if (onlineSpectating) {
+      restoreOnlinePosition(message);
+      updateOnlineStatus(`Spectating ${message.players?.w || 'White'} vs ${message.players?.b || 'Black'}.`);
+      renderBoard();
+      onlineDialog.close();
+      return;
+    }
     if (message.players) {
       const otherName = message.players[playerColor === 'w' ? 'b' : 'w'];
       document.querySelector('#opponent-name').textContent = otherName;
@@ -1905,22 +1954,26 @@ function handleOnlineMessage(socket, message) {
     }
     playColorSelect.value = playerColor;
     flipped = playerColor === 'b';
-    startNewGame();
-    if (typeof message.pgn === 'string' && message.pgn.trim()) {
-      try {
-        if (!game.load_pgn(message.pgn)) throw new Error('The saved online game could not be loaded.');
-        configureStartingPosition();
-        updateGameState();
-        renderBoard();
-      } catch (error) {
-        console.error('Could not restore the online game position:', error);
-        onlineReady = false;
-        updateOnlineStatus('Could not restore this room position. Start a new room.');
-        renderBoard();
-        return;
-      }
-    }
+    if (!restoreOnlinePosition(message)) return;
     updateOnlineStatus(`Connected to room ${onlineRoomCode}. You are ${playerColor === 'w' ? 'White' : 'Black'}.`);
+    renderBoard();
+    onlineDialog.close();
+    return;
+  }
+  if (message.type === 'spectator-start') {
+    onlineRoomCode = message.code;
+    onlineReady = true;
+    playerColor = 'w';
+    playColorSelect.value = playerColor;
+    flipped = false;
+    if (message.players) {
+      document.querySelector('#opponent-name').textContent = 'Spectating';
+      document.querySelector('#bot-profile-name').textContent = `${message.players.w || 'White'} vs ${message.players.b || 'Black'}`;
+    }
+    if (!restoreOnlinePosition(message)) return;
+    updateOnlineStatus(message.waiting
+      ? `Watching room ${onlineRoomCode}. Waiting for the game to start.`
+      : `Spectating ${message.players?.w || 'White'} vs ${message.players?.b || 'Black'}.`);
     renderBoard();
     onlineDialog.close();
     return;
@@ -1930,6 +1983,12 @@ function handleOnlineMessage(socket, message) {
     return;
   }
   if (message.type === 'opponent-left') {
+    if (onlineSpectating) {
+      updateOnlineStatus('A player disconnected. The room remains open for a reconnect.');
+      gameMessage.textContent = 'A player disconnected.';
+      renderBoard();
+      return;
+    }
     onlineReady = false;
     pendingPremove = null;
     updateOnlineStatus('Your opponent disconnected. The room remains open for a reconnect.');
@@ -1938,6 +1997,13 @@ function handleOnlineMessage(socket, message) {
     return;
   }
   if (message.type === 'resigned') {
+    if (onlineSpectating) {
+      gameResult = true;
+      gameMessage.textContent = `${message.color === 'w' ? 'White' : 'Black'} resigned.`;
+      updateOnlineStatus(`${message.color === 'w' ? 'White' : 'Black'} resigned.`);
+      renderBoard();
+      return;
+    }
     if (message.color !== playerColor) {
       pendingPremove = null;
       markGameResult('victory');
@@ -1945,6 +2011,13 @@ function handleOnlineMessage(socket, message) {
       updateOnlineStatus('Your opponent resigned.');
       renderBoard();
     }
+    return;
+  }
+  if (message.type === 'room-ended') {
+    onlineReady = false;
+    updateOnlineStatus('The game ended because both players disconnected.');
+    gameMessage.textContent = 'The game is no longer active.';
+    renderBoard();
   }
 }
 
@@ -1998,9 +2071,9 @@ async function connectToOnlineRoom(action, roomCode = null, roomPassword = '') {
         ? document.querySelector('#online-lobby-password').value
         : '',
     };
-  } else if (action === 'join' || action === 'join-public') {
+  } else if (action === 'join' || action === 'join-public' || action === 'watch') {
     pendingRequest = {
-      type: action === 'join-public' ? 'join-public-room' : 'join-room',
+      type: action === 'join-public' ? 'join-public-room' : action === 'watch' ? 'spectate-room' : 'join-room',
       code: roomCode ?? document.querySelector('#online-room-code').value.trim(),
       password: roomPassword || (
         document.querySelector('#online-password-enabled').checked
@@ -2011,7 +2084,7 @@ async function connectToOnlineRoom(action, roomCode = null, roomPassword = '') {
   } else {
     pendingRequest = { type: 'list-public-rooms' };
   }
-  if (action !== 'browse' && !setOnlineGameState(true)) return;
+  if (action !== 'browse' && !setOnlineGameState(true, action === 'watch')) return;
   onlinePendingRequest = pendingRequest;
   updateOnlineStatus(action === 'browse' ? 'Connecting to the room server…' : 'Connecting to room server…');
   const socket = new WebSocket(endpoint);
@@ -2505,6 +2578,7 @@ document.querySelector('#online-host').addEventListener('click', () => connectTo
 document.querySelector('#online-create-public').addEventListener('click', () => connectToOnlineRoom('create-public'));
 document.querySelector('#online-refresh-rooms').addEventListener('click', requestPublicRooms);
 document.querySelector('#online-join').addEventListener('click', () => connectToOnlineRoom('join'));
+document.querySelector('#online-watch').addEventListener('click', () => connectToOnlineRoom('watch'));
 document.querySelector('#online-disconnect').addEventListener('click', disconnectOnlineGame);
 document.querySelector('#online-auth-submit').addEventListener('click', submitOnlineAuth);
 document.querySelector('#online-auth-mode').addEventListener('click', () => {
@@ -2555,6 +2629,7 @@ initializeAuthSession();
 window.addEventListener('beforeunload', () => onlineSocket?.close());
 
 document.querySelector('#resign').addEventListener('click', () => {
+  if (onlineSpectating) return;
   if (!game.history().length || isGameOver() || gameResult) return;
   if (onlineMode && onlineSocket?.readyState === WebSocket.OPEN) {
     onlineSocket.send(JSON.stringify({ type: 'resign' }));

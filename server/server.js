@@ -90,30 +90,55 @@ function getPublicRooms() {
   const now = Date.now();
   return [...rooms.values()]
     .filter((room) => room.isPublic && room.expiresAt > now
-      && room.players.w.socket?.readyState === WebSocket.OPEN
-      && (!room.players.b.socket || room.players.b.socket.readyState !== WebSocket.OPEN))
-    .map((room) => ({
-      code: room.code,
-      name: room.lobbyName,
-      host: room.players.w.name,
-      locked: Boolean(room.passwordHash),
-    }));
+      && room.players.w.socket?.readyState === WebSocket.OPEN)
+    .map((room) => {
+      const inProgress = Boolean(room.players.b.socket && room.players.b.socket.readyState === WebSocket.OPEN);
+      return {
+        code: room.code,
+        name: room.lobbyName,
+        host: room.players.w.name,
+        locked: Boolean(room.passwordHash),
+        inProgress,
+        ...(inProgress ? { opponent: room.players.b.name } : {}),
+        spectators: room.spectators.size,
+      };
+    });
 }
 
 function broadcast(room, payload) {
   for (const player of Object.values(room.players)) send(player.socket, payload);
+  for (const spectator of room.spectators) send(spectator.socket, payload);
+}
+
+function broadcastSpectators(room, payload) {
+  for (const spectator of room.spectators) send(spectator.socket, payload);
 }
 
 function leaveRoom(player) {
   if (!player?.room) return;
   const room = player.room;
+  if (player.role === 'spectator') {
+    room.spectators.delete(player);
+    player.room = null;
+    player.role = null;
+    room.expiresAt = Date.now() + roomLifetimeMs;
+    return;
+  }
   const slot = room.players[player.color];
   if (slot?.socket === player.socket) slot.socket = null;
   player.room = null;
+  player.color = null;
   if (room.players.w.socket || room.players.b.socket) {
     broadcast(room, { type: 'opponent-left' });
   } else {
     room.expiresAt = Date.now() + roomLifetimeMs;
+    for (const spectator of room.spectators) {
+      send(spectator.socket, { type: 'room-ended' });
+      spectator.room = null;
+      spectator.role = null;
+      spectator.socket.close(1000, 'Game ended.');
+    }
+    room.spectators.clear();
   }
 }
 
@@ -192,6 +217,7 @@ async function handleMessage(socket, player, rawMessage) {
         w: { socket, name: player.identity.username },
         b: { socket: null, name: 'Black' },
       },
+      spectators: new Set(),
       expiresAt: Date.now() + roomLifetimeMs,
     };
     rooms.set(code, room);
@@ -246,13 +272,50 @@ async function handleMessage(socket, player, rawMessage) {
       fen: room.chess.fen(),
       pgn: room.chess.pgn(),
     };
+    broadcastSpectators(room, { ...gameStart, type: 'spectator-start', waiting: false });
     send(room.players.w.socket, { ...gameStart, color: 'w' });
     send(room.players.b.socket, { ...gameStart, color: 'b' });
     return;
   }
 
+  if (message.type === 'spectate-room') {
+    const code = typeof message.code === 'string' ? message.code.trim().toUpperCase() : '';
+    const room = rooms.get(code);
+    if (!room || room.expiresAt < Date.now()) {
+      send(socket, { type: 'error', message: 'That invite code is not active.' });
+      return;
+    }
+    if (!roomPasswordMatches(room, message.password)) {
+      send(socket, { type: 'error', message: 'That lobby password is incorrect.' });
+      return;
+    }
+    if (![room.players.w, room.players.b].some((slot) => slot.socket?.readyState === WebSocket.OPEN)) {
+      send(socket, { type: 'error', message: 'That game is no longer active.' });
+      return;
+    }
+    if (player.room) leaveRoom(player);
+    player.room = room;
+    player.role = 'spectator';
+    room.spectators.add(player);
+    room.expiresAt = Date.now() + roomLifetimeMs;
+    send(socket, {
+      type: 'spectator-start',
+      code: room.code,
+      players: {
+        w: room.players.w.name,
+        b: room.players.b.name,
+      },
+      fen: room.chess.fen(),
+      pgn: room.chess.pgn(),
+      waiting: !(room.players.w.socket?.readyState === WebSocket.OPEN
+        && room.players.b.socket?.readyState === WebSocket.OPEN),
+      spectators: room.spectators.size,
+    });
+    return;
+  }
+
   const room = player.room;
-  if (!room || !player.color || room.players[player.color]?.socket !== socket) {
+  if (!room || player.role === 'spectator' || !player.color || room.players[player.color]?.socket !== socket) {
     send(socket, { type: 'error', message: 'Join or create a room before sending game actions.' });
     return;
   }
@@ -328,7 +391,7 @@ const websocketServer = new WebSocketServer({
 });
 
 websocketServer.on('connection', (socket) => {
-  const player = { socket, room: null, color: null, identity: null, authenticating: false };
+  const player = { socket, room: null, color: null, role: null, identity: null, authenticating: false };
   socket.on('message', (rawMessage) => {
     handleMessage(socket, player, rawMessage.toString()).catch((error) => {
       console.error('Online game request failed:', error);
@@ -342,7 +405,16 @@ websocketServer.on('connection', (socket) => {
 const cleanupTimer = setInterval(() => {
   const now = Date.now();
   for (const [code, room] of rooms) {
-    if (!room.players.w.socket && !room.players.b.socket && room.expiresAt <= now) rooms.delete(code);
+    if (!room.players.w.socket && !room.players.b.socket && room.expiresAt <= now) {
+      for (const spectator of room.spectators) {
+        send(spectator.socket, { type: 'room-ended' });
+        spectator.room = null;
+        spectator.role = null;
+        spectator.socket.close(1000, 'Room expired.');
+      }
+      room.spectators.clear();
+      rooms.delete(code);
+    }
   }
 }, 60_000);
 cleanupTimer.unref();

@@ -169,6 +169,8 @@ test('online actions require an account and use its reserved username without em
         name: 'Sunday Chess',
         host: 'ReservedOwner',
         locked: false,
+        inProgress: false,
+        spectators: 0,
       }]);
     } finally {
       browser.close();
@@ -182,6 +184,7 @@ test('optional lobby passwords block incorrect joins and allow the correct one',
   const host = await connect(undefined, 'LobbyOwner');
   const wrongGuest = await connect(undefined, 'WrongGuest');
   const guest = await connect(undefined, 'RightGuest');
+  const watcher = await connect(undefined, 'LobbyWatcher');
   try {
     const created = await request(host, {
       type: 'create-public-room',
@@ -199,6 +202,19 @@ test('optional lobby passwords block incorrect joins and allow the correct one',
       password: 'incorrect',
     });
     assert.match(denied.message, /password is incorrect/i);
+    const deniedWatch = await request(watcher, {
+      type: 'spectate-room',
+      code: created.code,
+      password: 'incorrect',
+    });
+    assert.match(deniedWatch.message, /password is incorrect/i);
+    const allowedWatch = await request(watcher, {
+      type: 'spectate-room',
+      code: created.code,
+      password: 'secret-room',
+    });
+    assert.equal(allowedWatch.type, 'spectator-start');
+    assert.equal(allowedWatch.waiting, true);
 
     const hostStart = once(host, 'message').then(([data]) => JSON.parse(data.toString()));
     const guestStart = request(guest, {
@@ -212,7 +228,7 @@ test('optional lobby passwords block incorrect joins and allow the correct one',
     assert.equal(guestGame.players.w, 'LobbyOwner');
     assert.equal(guestGame.players.b, 'RightGuest');
   } finally {
-    for (const socket of [host, wrongGuest, guest]) socket.close();
+    for (const socket of [host, wrongGuest, guest, watcher]) socket.close();
   }
 });
 
@@ -236,6 +252,8 @@ test('public room browser lists joinable games but not private invites or full g
       name: 'Public Lobby',
       host: 'PublicHost',
       locked: false,
+      inProgress: false,
+      spectators: 0,
     }]);
 
     const privateJoin = await request(joiner, {
@@ -259,8 +277,68 @@ test('public room browser lists joinable games but not private invites or full g
     assert.equal(joinerGame.players.b, 'RoomJoiner');
 
     const afterJoin = await request(browser, { type: 'list-public-rooms' });
-    assert.deepEqual(afterJoin.rooms, []);
+    assert.deepEqual(afterJoin.rooms, [{
+      code: publicRoom.code,
+      name: 'Public Lobby',
+      host: 'PublicHost',
+      locked: false,
+      inProgress: true,
+      opponent: 'RoomJoiner',
+      spectators: 0,
+    }]);
   } finally {
     for (const socket of [host, privateHost, browser, joiner]) socket.close();
+  }
+});
+
+test('spectators can watch live public games without taking player slots', async () => {
+  const host = await connect(undefined, 'SpectateHost');
+  const spectator = await connect(undefined, 'GameWatcher');
+  const joiner = await connect(undefined, 'SecondPlayer');
+  const extraPlayer = await connect(undefined, 'ExtraPlayer');
+  const browser = await connect(undefined, 'GameBrowser');
+
+  try {
+    const created = await request(host, { type: 'create-public-room', lobbyName: 'Live Match' });
+    const initialWatch = await request(spectator, { type: 'spectate-room', code: created.code });
+    assert.equal(initialWatch.type, 'spectator-start');
+    assert.equal(initialWatch.waiting, true);
+    assert.deepEqual(initialWatch.players, { w: 'SpectateHost', b: 'Black' });
+    assert.equal(initialWatch.fen, 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1');
+    assert.equal((await request(spectator, { type: 'move', from: 'e2', to: 'e4' })).type, 'error');
+
+    const spectatorStart = once(spectator, 'message').then(([data]) => JSON.parse(data.toString()));
+    const hostStart = once(host, 'message').then(([data]) => JSON.parse(data.toString()));
+    const joinerStart = request(joiner, { type: 'join-public-room', code: created.code });
+    const [watchUpdate, hostGame, joinerGame] = await Promise.all([spectatorStart, hostStart, joinerStart]);
+    assert.equal(watchUpdate.type, 'spectator-start');
+    assert.equal(watchUpdate.waiting, false);
+    assert.deepEqual(watchUpdate.players, { w: 'SpectateHost', b: 'SecondPlayer' });
+    assert.equal(hostGame.color, 'w');
+    assert.equal(joinerGame.color, 'b');
+
+    const liveUpdate = once(spectator, 'message').then(([data]) => JSON.parse(data.toString()));
+    const playerUpdate = once(joiner, 'message').then(([data]) => JSON.parse(data.toString()));
+    host.send(JSON.stringify({ type: 'move', from: 'e2', to: 'e4' }));
+    const [spectatorMove, joinerMove] = await Promise.all([liveUpdate, playerUpdate]);
+    assert.equal(spectatorMove.type, 'move');
+    assert.equal(spectatorMove.san, 'e4');
+    assert.equal(joinerMove.fen, spectatorMove.fen);
+
+    const listing = await request(browser, { type: 'list-public-rooms' });
+    assert.deepEqual(listing.rooms, [{
+      code: created.code,
+      name: 'Live Match',
+      host: 'SpectateHost',
+      locked: false,
+      inProgress: true,
+      opponent: 'SecondPlayer',
+      spectators: 1,
+    }]);
+    const fullRoom = await request(extraPlayer, { type: 'join-public-room', code: created.code });
+    assert.equal(fullRoom.type, 'error');
+    assert.match(fullRoom.message, /already has two players/i);
+  } finally {
+    for (const socket of [host, spectator, joiner, extraPlayer, browser]) socket.close();
   }
 });
