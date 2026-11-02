@@ -132,6 +132,7 @@ let audioUnlocked = false;
 let activeSound = null;
 let onlineSocket = null;
 let onlinePendingRequest = null;
+let onlineCreatePending = false;
 let onlineMode = false;
 let onlineReady = false;
 let onlineSpectating = false;
@@ -1786,11 +1787,19 @@ function configureOnlineControls(active, spectating = false) {
   document.querySelector('#undo').disabled = active;
   document.querySelector('#redo').disabled = active;
   document.querySelector('#custom-rules-open').disabled = active;
+  document.querySelector('#suggest-move').disabled = active;
   document.querySelector('#opponent-card').hidden = active;
   document.querySelector('#opponent-name').textContent = active
     ? spectating ? 'Spectating' : 'Friend'
     : bots[difficultySelect.value].name;
   document.querySelector('.panel-header .live-indicator').lastChild.textContent = active ? ' ONLINE' : ' LOCAL';
+}
+
+function setOnlineCreatePending(pending) {
+  onlineCreatePending = pending;
+  const disabled = pending || (onlineMode && Boolean(onlineRoomCode));
+  document.querySelector('#online-host').disabled = disabled;
+  document.querySelector('#online-create-public').disabled = disabled;
 }
 
 function renderOnlineChat(channel) {
@@ -1860,6 +1869,8 @@ function setOnlineGameState(active, spectating = false) {
   }
   onlineMode = active;
   onlineSpectating = active && spectating;
+  setOnlineCreatePending(onlineCreatePending);
+  if (active) suggestedMove = null;
   configureOnlineChat(active, onlineSpectating);
   pendingPremove = null;
   selectedSquare = null;
@@ -1948,6 +1959,7 @@ function restoreOnlinePosition(message) {
 function handleOnlineMessage(socket, message) {
   if (socket !== onlineSocket || !message || typeof message.type !== 'string') return;
   if (message.type === 'error') {
+    if (onlineCreatePending) setOnlineCreatePending(false);
     if (onlineMode) gameMessage.textContent = message.message || 'The room server rejected that action.';
     if (!onlineIdentityVerified) {
       onlinePendingRequest = null;
@@ -1982,7 +1994,9 @@ function handleOnlineMessage(socket, message) {
     return;
   }
   if (message.type === 'room-created') {
+    setOnlineCreatePending(false);
     onlineRoomCode = message.code;
+    setOnlineCreatePending(false);
     playerColor = message.color;
     playColorSelect.value = playerColor;
     flipped = false;
@@ -2115,6 +2129,15 @@ function handleOnlineMessage(socket, message) {
 }
 
 async function connectToOnlineRoom(action, roomCode = null, roomPassword = '') {
+  const isCreateAction = action === 'create' || action === 'create-public';
+  if (onlineCreatePending) {
+    updateOnlineStatus('Lobby creation is already in progress. Please wait for it to finish.');
+    return;
+  }
+  if (isCreateAction && onlineMode && onlineRoomCode) {
+    updateOnlineStatus(`You already have room ${onlineRoomCode} open. Disconnect from it before creating another lobby.`);
+    return;
+  }
   if (activeBoardSize !== 8 && action !== 'browse') {
     updateOnlineStatus('Online rooms currently use the standard 8×8 board. Select 8×8 in Custom rules before creating or joining a room.');
     return;
@@ -2123,6 +2146,7 @@ async function connectToOnlineRoom(action, roomCode = null, roomPassword = '') {
     requestPublicRooms();
     return;
   }
+  if (isCreateAction) setOnlineCreatePending(true);
   if (onlineSocket) {
     onlineSocket.close();
     onlineSocket = null;
@@ -2131,6 +2155,7 @@ async function connectToOnlineRoom(action, roomCode = null, roomPassword = '') {
   try {
     const session = await getValidAuthSession();
     if (!session?.access_token) {
+      if (isCreateAction) setOnlineCreatePending(false);
       updateOnlineStatus('Create an account and sign in before using online play.');
       document.querySelector('#online-email').focus();
       return;
@@ -2140,19 +2165,22 @@ async function connectToOnlineRoom(action, roomCode = null, roomPassword = '') {
     if (!['ws:', 'wss:'].includes(endpoint.protocol)) throw new Error('Use a ws:// or wss:// server URL.');
     if (!endpoint.pathname || endpoint.pathname === '/') endpoint.pathname = '/ws';
   } catch (error) {
+    if (isCreateAction) setOnlineCreatePending(false);
     updateOnlineStatus(error.message || 'Enter a valid online room server URL.');
     return;
   }
   let pendingRequest;
-  if (action === 'create' || action === 'create-public') {
+  if (isCreateAction) {
     const lobbyName = document.querySelector('#online-lobby-name').value.trim();
     if (!lobbyName) {
+      setOnlineCreatePending(false);
       updateOnlineStatus('Enter a lobby name before creating it.');
       document.querySelector('#online-lobby-name').focus();
       return;
     }
     if (document.querySelector('#online-password-enabled').checked
       && !document.querySelector('#online-lobby-password').value) {
+      setOnlineCreatePending(false);
       updateOnlineStatus('Enter a lobby password or turn off password protection.');
       document.querySelector('#online-lobby-password').focus();
       return;
@@ -2177,7 +2205,10 @@ async function connectToOnlineRoom(action, roomCode = null, roomPassword = '') {
   } else {
     pendingRequest = { type: 'list-public-rooms' };
   }
-  if (action !== 'browse' && !setOnlineGameState(true, action === 'watch')) return;
+  if (action !== 'browse' && !setOnlineGameState(true, action === 'watch')) {
+    if (isCreateAction) setOnlineCreatePending(false);
+    return;
+  }
   onlinePendingRequest = pendingRequest;
   updateOnlineStatus(action === 'browse' ? 'Connecting to the room server…' : 'Connecting to room server…');
   const socket = new WebSocket(endpoint);
@@ -2198,9 +2229,11 @@ async function connectToOnlineRoom(action, roomCode = null, roomPassword = '') {
   });
   socket.addEventListener('error', () => {
     connectionFailed = true;
+    if (isCreateAction) setOnlineCreatePending(false);
     updateOnlineStatus('Could not reach the online room server. It may be waking from its free hosting sleep period; try again in a minute.');
   });
   socket.addEventListener('close', () => {
+    if (isCreateAction) setOnlineCreatePending(false);
     if (socket !== onlineSocket) return;
     onlineReady = false;
     updateOnlineChatAvailability();
@@ -2991,7 +3024,8 @@ document.querySelector('#copy-fen').addEventListener('click', async () => {
 });
 
 document.querySelector('#suggest-move').addEventListener('click', () => {
-  if (aiThinking || gameResult || isGameOver() || (onlineMode && (!onlineReady || game.turn() !== playerColor))) return;
+  if (onlineMode) return;
+  if (aiThinking || gameResult || isGameOver()) return;
   if (!analysisMode && !puzzleMode && !onlineMode && game.turn() !== playerColor) {
     gameMessage.textContent = 'Wait for your turn before requesting a suggestion.';
     return;

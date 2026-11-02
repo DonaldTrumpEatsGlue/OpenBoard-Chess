@@ -215,6 +215,19 @@ async function handleMessage(socket, player, rawMessage) {
   }
 
   if (message.type === 'create-room' || message.type === 'create-public-room') {
+    const existingRoom = [...rooms.values()].find((room) => (
+      [room.players.w, room.players.b].some((roomPlayer) => (
+        roomPlayer.accountId === player.identity.id
+        && roomPlayer.socket?.readyState === WebSocket.OPEN
+      ))
+    ));
+    if (existingRoom) {
+      send(socket, {
+        type: 'error',
+        message: `You are already playing in room ${existingRoom.code}. Leave that room before creating another.`,
+      });
+      return;
+    }
     const lobbyName = normalizeLobbyName(message.lobbyName);
     const roomPassword = message.password === undefined ? '' : message.password;
     if (!lobbyName) {
@@ -236,8 +249,8 @@ async function handleMessage(socket, player, rawMessage) {
       passwordHash: passwordSalt ? hashRoomPassword(roomPassword, passwordSalt) : null,
       chess: new Chess(),
       players: {
-        w: { socket, name: player.identity.username },
-        b: { socket: null, name: 'Black' },
+        w: { socket, name: player.identity.username, accountId: player.identity.id },
+        b: { socket: null, name: 'Black', accountId: null },
       },
       spectators: new Set(),
       playerChat: [],
@@ -288,6 +301,7 @@ async function handleMessage(socket, player, rawMessage) {
     if (player.room) leaveRoom(player);
     room.players.b.socket = socket;
     room.players.b.name = player.identity.username;
+    room.players.b.accountId = player.identity.id;
     room.expiresAt = Date.now() + roomLifetimeMs;
     player.room = room;
     player.color = 'b';

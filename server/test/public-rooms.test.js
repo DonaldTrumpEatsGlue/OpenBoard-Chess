@@ -55,9 +55,13 @@ function createAccount(username, verified = false) {
 }
 
 async function connect(origin, username = 'Host') {
+  const token = createAccount(username);
+  return connectWithAccessToken(token, username, origin);
+}
+
+async function connectWithAccessToken(token, username, origin) {
   const socket = new WebSocket(endpoint, origin ? { origin } : {});
   await once(socket, 'open');
-  const token = createAccount(username);
   const authenticated = request(socket, { type: 'authenticate', accessToken: token });
   assert.deepEqual(await authenticated, { type: 'authenticated', username });
   return socket;
@@ -200,6 +204,40 @@ test('online actions require an account and use its reserved username without em
     }
   } finally {
     host.close();
+  }
+});
+
+test('one account cannot create multiple active rooms from repeated or parallel requests', async () => {
+  const token = createAccount('SingleRoomOwner');
+  const host = await connectWithAccessToken(token, 'SingleRoomOwner');
+  const secondConnection = await connectWithAccessToken(token, 'SingleRoomOwner');
+  try {
+    const created = await request(host, {
+      type: 'create-public-room',
+      lobbyName: 'Only Room',
+    });
+    assert.equal(created.type, 'room-created');
+
+    const repeatedCreate = await request(host, {
+      type: 'create-public-room',
+      lobbyName: 'Duplicate Room',
+    });
+    assert.equal(repeatedCreate.type, 'error');
+    assert.match(repeatedCreate.message, new RegExp(created.code));
+
+    const parallelCreate = await request(secondConnection, {
+      type: 'create-room',
+      lobbyName: 'Second Connection Room',
+    });
+    assert.equal(parallelCreate.type, 'error');
+    assert.match(parallelCreate.message, new RegExp(created.code));
+
+    const listing = await request(secondConnection, { type: 'list-public-rooms' });
+    assert.equal(listing.rooms.length, 1);
+    assert.equal(listing.rooms[0].code, created.code);
+  } finally {
+    host.close();
+    secondConnection.close();
   }
 });
 
