@@ -121,19 +121,35 @@
             </div>
           </section>
 
-          <section class="online-chat" id="online-chat" aria-labelledby="online-chat-title" hidden>
-            <div class="online-chat-heading">
-              <h3 id="online-chat-title">Players chat</h3>
-              <span id="online-chat-audience">Only you and the other player can see this</span>
-            </div>
-            <ol class="online-chat-messages" id="online-chat-messages" aria-live="polite" aria-relevant="additions" role="log">
-              <li class="online-chat-empty">No messages yet.</li>
-            </ol>
-            <form class="online-chat-form" id="online-chat-form">
-              <label class="sr-only" for="online-chat-input">Message to the room chat</label>
-              <input id="online-chat-input" maxlength="300" autocomplete="off" placeholder="Write a message…" />
-              <button class="primary-button" id="online-chat-send" type="submit">Send</button>
-            </form>
+          <section class="online-chats" id="online-chats" aria-label="Online room chats" hidden>
+            <section class="online-chat" aria-labelledby="online-player-chat-title">
+              <div class="online-chat-heading">
+                <h3 id="online-player-chat-title">Players chat</h3>
+                <span>Both players and spectators can read this chat</span>
+              </div>
+              <ol class="online-chat-messages" id="online-player-chat-messages" aria-live="polite" aria-relevant="additions" role="log">
+                <li class="online-chat-empty">No messages yet.</li>
+              </ol>
+              <form class="online-chat-form" id="online-player-chat-form">
+                <label class="sr-only" for="online-player-chat-input">Message to players chat</label>
+                <input id="online-player-chat-input" maxlength="300" autocomplete="off" placeholder="Message the players…" />
+                <button class="primary-button" id="online-player-chat-send" type="submit">Send</button>
+              </form>
+            </section>
+            <section class="online-chat" aria-labelledby="online-spectator-chat-title">
+              <div class="online-chat-heading">
+                <h3 id="online-spectator-chat-title">Spectator chat</h3>
+                <span>Both players and spectators can read this chat</span>
+              </div>
+              <ol class="online-chat-messages" id="online-spectator-chat-messages" aria-live="polite" aria-relevant="additions" role="log">
+                <li class="online-chat-empty">No messages yet.</li>
+              </ol>
+              <form class="online-chat-form" id="online-spectator-chat-form">
+                <label class="sr-only" for="online-spectator-chat-input">Message to spectator chat</label>
+                <input id="online-spectator-chat-input" maxlength="300" autocomplete="off" placeholder="Message the spectators…" />
+                <button class="primary-button" id="online-spectator-chat-send" type="submit">Send</button>
+              </form>
+            </section>
           </section>
 
           <div class="panel-footer">
@@ -354,6 +370,6 @@
     <script defer src="./vendor/chess.js"></script>
     <script defer src="./src/large-board-chess.js"></script>
     <script defer src="./src/piece-studio.js"></script>
-    <script defer src="./src/main.js?v=12"></script>
+    <script defer src="./src/main.js?v=13"></script>
   </body>
 </html>

@@ -135,7 +135,7 @@ let onlinePendingRequest = null;
 let onlineMode = false;
 let onlineReady = false;
 let onlineSpectating = false;
-let onlineChatHistory = [];
+let onlineChatHistory = { players: [], spectators: [] };
 let onlineIdentityVerified = false;
 let onlineRoomCode = null;
 let onlinePlayerName = '';
@@ -1793,17 +1793,18 @@ function configureOnlineControls(active, spectating = false) {
   document.querySelector('.panel-header .live-indicator').lastChild.textContent = active ? ' ONLINE' : ' LOCAL';
 }
 
-function renderOnlineChat() {
-  const list = document.querySelector('#online-chat-messages');
+function renderOnlineChat(channel) {
+  const list = document.querySelector(`#online-${channel === 'players' ? 'player' : 'spectator'}-chat-messages`);
+  const messages = onlineChatHistory[channel];
   list.replaceChildren();
-  if (!onlineChatHistory.length) {
+  if (!messages.length) {
     const empty = document.createElement('li');
     empty.className = 'online-chat-empty';
     empty.textContent = 'No messages yet.';
     list.append(empty);
     return;
   }
-  for (const message of onlineChatHistory) {
+  for (const message of messages) {
     const item = document.createElement('li');
     item.className = 'online-chat-message';
     const name = document.createElement('strong');
@@ -1816,35 +1817,36 @@ function renderOnlineChat() {
   list.scrollTop = list.scrollHeight;
 }
 
-function setOnlineChatHistory(messages) {
-  onlineChatHistory = Array.isArray(messages)
-    ? messages.filter((message) => typeof message?.name === 'string' && typeof message?.text === 'string')
-      .slice(-100)
-    : [];
-  renderOnlineChat();
+function setOnlineChatHistory(histories) {
+  onlineChatHistory = {
+    players: Array.isArray(histories?.players)
+      ? histories.players.filter((message) => typeof message?.name === 'string' && typeof message?.text === 'string').slice(-100)
+      : [],
+    spectators: Array.isArray(histories?.spectators)
+      ? histories.spectators.filter((message) => typeof message?.name === 'string' && typeof message?.text === 'string').slice(-100)
+      : [],
+  };
+  renderOnlineChat('players');
+  renderOnlineChat('spectators');
 }
 
 function configureOnlineChat(active, spectating = false) {
-  const chat = document.querySelector('#online-chat');
-  const input = document.querySelector('#online-chat-input');
-  const title = document.querySelector('#online-chat-title');
-  const audience = document.querySelector('#online-chat-audience');
-  title.textContent = spectating ? 'Spectator chat' : 'Players chat';
-  audience.textContent = spectating
-    ? 'Only spectators in this room can see this'
-    : 'Only the two players can see this';
-  input.placeholder = spectating ? 'Message the spectators…' : 'Message the players…';
-  input.setAttribute('aria-label', spectating ? 'Message to spectator chat' : 'Message to players chat');
-  chat.hidden = !active;
-  if (!active) setOnlineChatHistory([]);
+  document.querySelector('#online-chats').hidden = !active;
+  document.querySelector('#online-player-chat-form').hidden = spectating;
+  document.querySelector('#online-spectator-chat-form').hidden = !spectating;
+  if (!active) setOnlineChatHistory(null);
   updateOnlineChatAvailability();
 }
 
 function updateOnlineChatAvailability() {
   const enabled = onlineMode && Boolean(onlineRoomCode)
     && onlineSocket?.readyState === WebSocket.OPEN;
-  document.querySelector('#online-chat-input').disabled = !enabled;
-  document.querySelector('#online-chat-send').disabled = !enabled;
+  for (const selector of ['#online-player-chat-input', '#online-spectator-chat-input']) {
+    document.querySelector(selector).disabled = !enabled;
+  }
+  for (const selector of ['#online-player-chat-send', '#online-spectator-chat-send']) {
+    document.querySelector(selector).disabled = !enabled;
+  }
 }
 
 function setOnlineGameState(active, spectating = false) {
@@ -1986,7 +1988,7 @@ function handleOnlineMessage(socket, message) {
     flipped = false;
     document.querySelector('#online-invite-code').textContent = onlineRoomCode;
     document.querySelector('#online-invite').hidden = false;
-    setOnlineChatHistory(message.playerChat);
+    setOnlineChatHistory({ players: message.playerChat, spectators: message.spectatorChat });
     updateOnlineChatAvailability();
     if (message.isPublic) {
       publicRooms = [{
@@ -2011,7 +2013,7 @@ function handleOnlineMessage(socket, message) {
     onlineReady = true;
     playerColor = message.color === 'w' ? 'w' : 'b';
     if (onlineSpectating) {
-      setOnlineChatHistory(message.spectatorChat);
+      setOnlineChatHistory({ players: message.playerChat, spectators: message.spectatorChat });
       restoreOnlinePosition(message);
       updateOnlineStatus(`Spectating ${message.players?.w || 'White'} vs ${message.players?.b || 'Black'}.`);
       renderBoard();
@@ -2023,7 +2025,7 @@ function handleOnlineMessage(socket, message) {
       document.querySelector('#opponent-name').textContent = otherName;
       document.querySelector('#bot-profile-name').textContent = otherName;
     }
-    setOnlineChatHistory(message.playerChat);
+    setOnlineChatHistory({ players: message.playerChat, spectators: message.spectatorChat });
     updateOnlineChatAvailability();
     playColorSelect.value = playerColor;
     flipped = playerColor === 'b';
@@ -2043,7 +2045,7 @@ function handleOnlineMessage(socket, message) {
       document.querySelector('#opponent-name').textContent = 'Spectating';
       document.querySelector('#bot-profile-name').textContent = `${message.players.w || 'White'} vs ${message.players.b || 'Black'}`;
     }
-    setOnlineChatHistory(message.spectatorChat);
+    setOnlineChatHistory({ players: message.playerChat, spectators: message.spectatorChat });
     updateOnlineChatAvailability();
     if (!restoreOnlinePosition(message)) return;
     const watching = `${message.spectators || 1} ${message.spectators === 1 ? 'spectator' : 'spectators'}`;
@@ -2062,11 +2064,10 @@ function handleOnlineMessage(socket, message) {
     return;
   }
   if (message.type === 'chat-message') {
-    const expectedChannel = onlineSpectating ? 'spectators' : 'players';
-    if (message.channel !== expectedChannel) return;
-    onlineChatHistory.push(message);
-    onlineChatHistory = onlineChatHistory.slice(-100);
-    renderOnlineChat();
+    if (message.channel !== 'players' && message.channel !== 'spectators') return;
+    onlineChatHistory[message.channel].push(message);
+    onlineChatHistory[message.channel] = onlineChatHistory[message.channel].slice(-100);
+    renderOnlineChat(message.channel);
     return;
   }
   if (message.type === 'move') {
@@ -2673,18 +2674,20 @@ document.querySelector('#online-refresh-rooms').addEventListener('click', reques
 document.querySelector('#online-join').addEventListener('click', () => connectToOnlineRoom('join'));
 document.querySelector('#online-watch').addEventListener('click', () => connectToOnlineRoom('watch'));
 document.querySelector('#online-disconnect').addEventListener('click', disconnectOnlineGame);
-document.querySelector('#online-chat-form').addEventListener('submit', (event) => {
-  event.preventDefault();
-  const input = document.querySelector('#online-chat-input');
-  const text = input.value.trim();
-  if (!text) return;
-  if (!onlineMode || !onlineRoomCode || onlineSocket?.readyState !== WebSocket.OPEN) {
-    updateOnlineStatus('Connect to a room before sending a chat message.');
-    return;
-  }
-  onlineSocket.send(JSON.stringify({ type: 'chat-send', text }));
-  input.value = '';
-});
+for (const channel of ['player', 'spectator']) {
+  document.querySelector(`#online-${channel}-chat-form`).addEventListener('submit', (event) => {
+    event.preventDefault();
+    const input = document.querySelector(`#online-${channel}-chat-input`);
+    const text = input.value.trim();
+    if (!text) return;
+    if (!onlineMode || !onlineRoomCode || onlineSocket?.readyState !== WebSocket.OPEN) {
+      updateOnlineStatus('Connect to a room before sending a chat message.');
+      return;
+    }
+    onlineSocket.send(JSON.stringify({ type: 'chat-send', text }));
+    input.value = '';
+  });
+}
 document.querySelector('#online-auth-submit').addEventListener('click', submitOnlineAuth);
 document.querySelector('#online-auth-mode').addEventListener('click', () => {
   authMode = authMode === 'signup' ? 'signin' : 'signup';

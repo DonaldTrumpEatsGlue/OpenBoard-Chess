@@ -383,7 +383,7 @@ test('spectators can watch live public games without taking player slots', async
   }
 });
 
-test('player and spectator chats stay separate and preserve channel history', async () => {
+test('players and spectators see both chat channels and preserve separate histories', async () => {
   const host = await connect(undefined, 'ChatHost');
   const guest = await connect(undefined, 'ChatGuest');
   const spectator = await connect(undefined, 'ChatSpectator');
@@ -407,20 +407,28 @@ test('player and spectator chats stay separate and preserve channel history', as
     const playerStart = await hostStart;
     assert.equal(guestStart.playerChat.length, 1);
     assert.equal(guestStart.playerChat[0].text, 'Before the second player joins');
+    assert.deepEqual(guestStart.spectatorChat, []);
     assert.equal(playerStart.playerChat.length, 1);
-    assert.equal(Object.hasOwn(guestStart, 'spectatorChat'), false);
+    assert.deepEqual(playerStart.spectatorChat, []);
 
     const spectatorStart = await request(spectator, { type: 'spectate-room', code: created.code });
+    assert.equal(spectatorStart.playerChat.length, 1);
     assert.equal(spectatorStart.spectatorChat.length, 0);
-    assert.equal(Object.hasOwn(spectatorStart, 'playerChat'), false);
     await waitForMessage(spectator, (message) => message.type === 'spectator-count');
 
     const otherStart = await request(otherSpectator, { type: 'spectate-room', code: created.code });
     assert.equal(otherStart.spectatorChat.length, 0);
+    assert.equal(otherStart.playerChat.length, 1);
     await waitForMessage(otherSpectator, (message) => message.type === 'spectator-count');
 
     host.on('message', capture(hostMessages));
     guest.on('message', capture(guestMessages));
+    const hostSpectatorMessage = waitForMessage(host, (message) => (
+      message.type === 'chat-message' && message.text === 'Only spectators should see this'
+    ));
+    const guestSpectatorMessage = waitForMessage(guest, (message) => (
+      message.type === 'chat-message' && message.text === 'Only spectators should see this'
+    ));
     const spectatorReply = waitForMessage(otherSpectator, (message) => message.type === 'chat-message');
     const spectatorMessage = await sendAndWait(spectator, {
       type: 'chat-send',
@@ -429,8 +437,16 @@ test('player and spectator chats stay separate and preserve channel history', as
     const spectatorPeerMessage = await spectatorReply;
     assert.equal(spectatorMessage.channel, 'spectators');
     assert.equal(spectatorPeerMessage.text, 'Only spectators should see this');
+    assert.equal((await hostSpectatorMessage).channel, 'spectators');
+    assert.equal((await guestSpectatorMessage).channel, 'spectators');
 
     const guestPlayerReply = waitForMessage(guest, (message) => (
+      message.type === 'chat-message' && message.text === 'Only players should see this'
+    ));
+    const spectatorPlayerMessage = waitForMessage(spectator, (message) => (
+      message.type === 'chat-message' && message.text === 'Only players should see this'
+    ));
+    const otherSpectatorPlayerMessage = waitForMessage(otherSpectator, (message) => (
       message.type === 'chat-message' && message.text === 'Only players should see this'
     ));
     const hostPlayerMessage = await sendAndWait(host, {
@@ -440,13 +456,15 @@ test('player and spectator chats stay separate and preserve channel history', as
     const guestPlayerMessage = await guestPlayerReply;
     assert.equal(hostPlayerMessage.channel, 'players');
     assert.equal(guestPlayerMessage.channel, 'players');
-    assert.equal(hostMessages.some((message) => message.channel === 'spectators'), false);
-    assert.equal(guestMessages.some((message) => message.channel === 'spectators'), false);
+    assert.equal((await spectatorPlayerMessage).channel, 'players');
+    assert.equal((await otherSpectatorPlayerMessage).channel, 'players');
+    assert.equal(hostMessages.some((message) => message.channel === 'spectators'), true);
+    assert.equal(guestMessages.some((message) => message.channel === 'spectators'), true);
 
     const lateStart = await request(lateSpectator, { type: 'spectate-room', code: created.code });
     assert.equal(lateStart.spectatorChat.length, 1);
     assert.equal(lateStart.spectatorChat[0].text, 'Only spectators should see this');
-    assert.equal(Object.hasOwn(lateStart, 'playerChat'), false);
+    assert.equal(lateStart.playerChat.length, 2);
   } finally {
     for (const socket of [host, guest, spectator, otherSpectator, lateSpectator]) socket.close();
   }

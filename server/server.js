@@ -131,11 +131,7 @@ function sendRoomChat(room, player, text) {
   history.push(message);
   if (history.length > maxChatHistory) history.shift();
 
-  if (channel === 'spectators') {
-    for (const spectator of room.spectators) send(spectator.socket, message);
-  } else {
-    for (const playerSlot of Object.values(room.players)) send(playerSlot.socket, message);
-  }
+  broadcast(room, message);
 }
 
 function leaveRoom(player) {
@@ -260,6 +256,8 @@ async function handleMessage(socket, player, rawMessage) {
       isPublic: room.isPublic,
       lobbyName: room.lobbyName,
       locked: Boolean(room.passwordHash),
+      playerChat: room.playerChat,
+      spectatorChat: room.spectatorChat,
     });
     return;
   }
@@ -302,6 +300,7 @@ async function handleMessage(socket, player, rawMessage) {
       fen: room.chess.fen(),
       pgn: room.chess.pgn(),
       playerChat: room.playerChat,
+      spectatorChat: room.spectatorChat,
     };
     broadcastSpectators(room, {
       type: 'spectator-start',
@@ -349,6 +348,7 @@ async function handleMessage(socket, player, rawMessage) {
       waiting: !(room.players.w.socket?.readyState === WebSocket.OPEN
         && room.players.b.socket?.readyState === WebSocket.OPEN),
       spectators: room.spectators.size,
+      playerChat: room.playerChat,
       spectatorChat: room.spectatorChat,
     });
     broadcast(room, { type: 'spectator-count', count: room.spectators.size });
