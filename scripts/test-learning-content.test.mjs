@@ -36,7 +36,21 @@ test('beginner lessons have usable multiple-choice checks', () => {
     for (const square of lesson.highlightSquares) {
       assert.match(square, /^[a-h][1-8]$/, `Invalid highlighted square for ${lesson.title}: ${square}`);
     }
+    assert.ok(lesson.moves?.length, `Missing step-by-step demonstration for ${lesson.title}`);
+    for (const san of lesson.moves) {
+      assert.ok(game.move(san), `Illegal demonstration move "${san}" for ${lesson.title}`);
+    }
   }
+  const checkmate = lessons.find((lesson) => lesson.title === 'The goal of chess');
+  const mateGame = new Chess();
+  mateGame.load(checkmate.fen);
+  checkmate.moves.forEach((san) => mateGame.move(san));
+  assert.equal(mateGame.in_checkmate(), true, 'Goal lesson should demonstrate checkmate');
+  const stalemate = lessons.find((lesson) => lesson.title === 'Stalemate and draws');
+  const stalemateGame = new Chess();
+  stalemateGame.load(stalemate.fen);
+  stalemate.moves.forEach((san) => stalemateGame.move(san));
+  assert.equal(stalemateGame.in_stalemate(), true, 'Draw lesson should demonstrate stalemate');
 });
 
 test('the rule guide covers all special moves and common game endings', () => {

@@ -132,6 +132,10 @@ let tutorialLessonIndex = 0;
 let tutorialProgress = 0;
 let tutorialDemoGame = null;
 let tutorialDemoHighlights = [];
+let tutorialDemoStartFen = '';
+let tutorialDemoMoves = [];
+let tutorialDemoStepIndex = 0;
+let tutorialPlaybackTimer = null;
 const learningContent = window.openboardLearningContent;
 const puzzlePositions = learningContent.puzzles;
 let clock = { w: 0, b: 0 };
@@ -884,7 +888,8 @@ function renderBoard() {
   boardElement.replaceChildren();
   const gameOver = tutorialDemoGame ? displayGame.game_over() : isGameOver();
   const currentCheck = tutorialDemoGame ? displayGame.in_check() : isCheck();
-  const lastMoveTo = displayGame.history({ verbose: true }).at(-1)?.to;
+  const lastMove = displayGame.history({ verbose: true }).at(-1);
+  const lastMoveTo = lastMove?.to;
 
   rows.forEach((rank, rowIndex) => {
     cols.forEach((file, colIndex) => {
@@ -897,7 +902,9 @@ function renderBoard() {
       button.dataset.square = square;
       button.setAttribute('role', 'gridcell');
       button.setAttribute('aria-label', `${square}${piece ? `, ${piece.color === 'w' ? 'white' : 'black'} ${customIdentity?.name ?? piece.type}` : ''}`);
-      if (tutorialDemoHighlights.includes(square)) button.classList.add('tutorial-highlight');
+      if (tutorialDemoHighlights.includes(square) || square === lastMove?.from || square === lastMove?.to) {
+        button.classList.add('tutorial-highlight');
+      }
       if (suggestedMove?.from === square) button.classList.add('suggested-from');
       if (suggestedMove?.to === square) button.classList.add('suggested-to');
 
@@ -4985,14 +4992,19 @@ function startDailyPuzzle() {
 }
 
 function renderBeginnerLesson() {
+  stopTutorialPlayback();
   const lesson = learningContent.lessons[tutorialLessonIndex];
+  tutorialDemoStartFen = lesson.fen;
+  tutorialDemoMoves = lesson.moves;
+  tutorialDemoStepIndex = 0;
   tutorialDemoGame = new Chess();
-  if (!lesson.fen || !tutorialDemoGame.load(lesson.fen)) {
+  if (!tutorialDemoStartFen || !tutorialDemoMoves?.length || !tutorialDemoGame.load(tutorialDemoStartFen)) {
     tutorialDemoGame = null;
-    throw new Error(`The chess demonstration for "${lesson.title}" has an invalid position.`);
+    throw new Error(`The chess demonstration for "${lesson.title}" is missing a valid starting position or moves.`);
   }
   tutorialDemoHighlights = lesson.highlightSquares || [];
   renderBoard();
+  updateTutorialPlaybackControls();
   document.querySelector('#tutorial-progress').max = learningContent.lessons.length;
   document.querySelector('#tutorial-progress').value = tutorialProgress;
   document.querySelector('#tutorial-step-label').textContent =
@@ -5001,7 +5013,7 @@ function renderBeginnerLesson() {
   document.querySelector('#tutorial-lesson-text').textContent = lesson.text;
   document.querySelector('#tutorial-question').textContent = lesson.question;
   document.querySelector('#tutorial-demo-note').textContent =
-    `Look at the highlighted squares on the chessboard. ${lesson.demoNote}`;
+    `Follow the highlighted moves on the chessboard. ${lesson.demoNote}`;
   document.querySelector('#tutorial-feedback').textContent = tutorialLessonIndex < tutorialProgress
     ? 'You completed this lesson before. Review it or move on.'
     : '';
@@ -5046,10 +5058,74 @@ function renderBeginnerLesson() {
     : 'Next lesson';
 }
 
+function updateTutorialPlaybackControls() {
+  const back = document.querySelector('#tutorial-step-back');
+  const forward = document.querySelector('#tutorial-step-forward');
+  const play = document.querySelector('#tutorial-play');
+  const playing = Boolean(tutorialPlaybackTimer);
+  back.disabled = tutorialDemoStepIndex === 0;
+  forward.disabled = tutorialDemoStepIndex >= tutorialDemoMoves.length;
+  play.disabled = tutorialDemoMoves.length === 0;
+  play.textContent = playing ? 'Pause' : tutorialDemoStepIndex >= tutorialDemoMoves.length ? 'Replay' : 'Play';
+  play.setAttribute('aria-label', playing ? 'Pause demonstration' : 'Play demonstration');
+  play.setAttribute('aria-pressed', String(playing));
+  const lastMove = tutorialDemoGame?.history({ verbose: true }).at(-1);
+  const position = tutorialDemoStepIndex === 0
+    ? 'Starting position'
+    : `Move ${tutorialDemoStepIndex} of ${tutorialDemoMoves.length} · ${lastMove?.san || ''}`;
+  document.querySelector('#tutorial-position').textContent = position;
+}
+
+function stopTutorialPlayback() {
+  if (tutorialPlaybackTimer) clearInterval(tutorialPlaybackTimer);
+  tutorialPlaybackTimer = null;
+  const play = document.querySelector('#tutorial-play');
+  if (play) {
+    play.textContent = tutorialDemoStepIndex >= tutorialDemoMoves.length ? 'Replay' : 'Play';
+    play.setAttribute('aria-label', tutorialDemoStepIndex >= tutorialDemoMoves.length ? 'Replay demonstration' : 'Play demonstration');
+    play.setAttribute('aria-pressed', 'false');
+  }
+}
+
+function setTutorialDemoStep(stepIndex, keepPlaying = false) {
+  if (!keepPlaying) stopTutorialPlayback();
+  tutorialDemoGame = new Chess();
+  if (!tutorialDemoGame.load(tutorialDemoStartFen)) {
+    throw new Error(`The starting position for "${learningContent.lessons[tutorialLessonIndex].title}" could not be loaded.`);
+  }
+  tutorialDemoStepIndex = Math.max(0, Math.min(tutorialDemoMoves.length, stepIndex));
+  for (let index = 0; index < tutorialDemoStepIndex; index += 1) {
+    const move = tutorialDemoGame.move(tutorialDemoMoves[index]);
+    if (!move) {
+      throw new Error(`Invalid tutorial move "${tutorialDemoMoves[index]}" in "${learningContent.lessons[tutorialLessonIndex].title}".`);
+    }
+  }
+  renderBoard();
+  updateTutorialPlaybackControls();
+}
+
+function startTutorialPlayback() {
+  if (tutorialPlaybackTimer) return;
+  if (tutorialDemoStepIndex >= tutorialDemoMoves.length) setTutorialDemoStep(0);
+  if (!tutorialDemoMoves.length) return;
+  const speed = Number(document.querySelector('#tutorial-speed').value);
+  tutorialPlaybackTimer = setInterval(() => {
+    const nextStep = tutorialDemoStepIndex + 1;
+    setTutorialDemoStep(nextStep, true);
+    if (tutorialDemoStepIndex >= tutorialDemoMoves.length) stopTutorialPlayback();
+    updateTutorialPlaybackControls();
+  }, 1000 / speed);
+  updateTutorialPlaybackControls();
+}
+
 function restoreTutorialBoard() {
   if (!tutorialDemoGame) return;
+  stopTutorialPlayback();
   tutorialDemoGame = null;
   tutorialDemoHighlights = [];
+  tutorialDemoStartFen = '';
+  tutorialDemoMoves = [];
+  tutorialDemoStepIndex = 0;
   renderBoard();
 }
 
@@ -5100,6 +5176,7 @@ document.querySelector('#tutorial-dialog').addEventListener('cancel', (event) =>
   closeBeginnerTutorial();
 });
 document.querySelector('#tutorial-ask-question').addEventListener('click', () => {
+  stopTutorialPlayback();
   const choices = document.querySelector('#tutorial-choices');
   choices.querySelectorAll('button').forEach((button) => { button.disabled = false; });
   document.querySelector('#tutorial-question-feedback').textContent = '';
@@ -5111,6 +5188,28 @@ document.querySelector('#tutorial-question-close').addEventListener('click', () 
 });
 document.querySelector('#tutorial-question-back').addEventListener('click', () => {
   document.querySelector('#tutorial-question-dialog').close();
+});
+document.querySelector('#tutorial-step-back').addEventListener('click', () => {
+  setTutorialDemoStep(tutorialDemoStepIndex - 1);
+});
+document.querySelector('#tutorial-step-forward').addEventListener('click', () => {
+  setTutorialDemoStep(tutorialDemoStepIndex + 1);
+});
+document.querySelector('#tutorial-play').addEventListener('click', () => {
+  if (tutorialPlaybackTimer) {
+    stopTutorialPlayback();
+    updateTutorialPlaybackControls();
+  } else {
+    startTutorialPlayback();
+  }
+});
+document.querySelector('#tutorial-speed').addEventListener('input', (event) => {
+  const speed = Number(event.currentTarget.value);
+  document.querySelector('#tutorial-speed-value').textContent = `${speed}×`;
+  if (tutorialPlaybackTimer) {
+    stopTutorialPlayback();
+    startTutorialPlayback();
+  }
 });
 document.querySelector('#tutorial-previous').addEventListener('click', () => {
   if (tutorialLessonIndex === 0) return;

@@ -9,7 +9,7 @@
     <meta name="theme-color" content="#17231f" />
     <meta name="description" content="A free, original chess game with a built-in local AI opponent." />
     <title>Openboard — Play Chess</title>
-    <link rel="stylesheet" href="./src/style.css?v=45" />
+    <link rel="stylesheet" href="./src/style.css?v=46" />
   </head>
   <body>
     <div id="app">
@@ -372,6 +372,18 @@
         </header>
         <progress id="tutorial-progress" max="12" value="0"></progress>
         <p class="tutorial-step-label" id="tutorial-step-label"></p>
+        <div class="tutorial-player" aria-label="Lesson demonstration controls">
+          <div class="tutorial-player-controls">
+            <button class="secondary-button" id="tutorial-step-back" type="button" aria-label="Step backward">← Back</button>
+            <button class="primary-button" id="tutorial-play" type="button" aria-label="Play demonstration" aria-pressed="false">Play</button>
+            <button class="secondary-button" id="tutorial-step-forward" type="button" aria-label="Step forward">Forward →</button>
+          </div>
+          <output class="tutorial-position" id="tutorial-position" aria-live="polite"></output>
+          <label class="tutorial-speed-control" for="tutorial-speed">
+            <span>Playback speed <output id="tutorial-speed-value" for="tutorial-speed">1×</output></span>
+            <input id="tutorial-speed" type="range" min="0.5" max="2" step="0.25" value="1" />
+          </label>
+        </div>
         <div class="tutorial-lesson-copy">
           <h3 id="tutorial-lesson-title"></h3>
           <p id="tutorial-lesson-text"></p>
@@ -610,6 +622,6 @@
     <script defer src="./src/large-board-chess.js"></script>
     <script defer src="./src/piece-studio.js"></script>
     <script defer src="./src/learning-content.js?v=45"></script>
-    <script defer src="./src/main.js?v=46"></script>
+    <script defer src="./src/main.js?v=47"></script>
   </body>
 </html>
