@@ -353,6 +353,34 @@
         </div>
         <p class="studio-status" id="history-status" role="status" aria-live="polite"></p>
         <button class="secondary-button" id="history-signin" type="button" hidden>Sign in to load online matches</button>
+        <section class="history-replay" id="history-replay" aria-label="Game replay" hidden>
+          <div class="history-replay-header">
+            <div><p class="eyebrow">GAME REPLAY</p><h3 id="history-replay-title"></h3></div>
+            <button class="secondary-button" id="history-replay-close" type="button">Back to matches</button>
+          </div>
+          <div class="board-frame history-replay-frame">
+            <div class="board history-replay-board" id="history-replay-board" role="grid" aria-label="Game replay board"></div>
+          </div>
+          <p class="history-replay-position" id="history-replay-position" aria-live="polite"></p>
+          <input class="history-replay-seek" id="history-replay-seek" type="range" min="0" max="0" value="0" aria-label="Replay move" />
+          <div class="history-replay-controls">
+            <button class="secondary-button" id="history-replay-first" type="button" aria-label="Go to start" title="Go to start">|◀</button>
+            <button class="secondary-button" id="history-replay-previous" type="button" aria-label="Previous move" title="Previous move">◀</button>
+            <button class="primary-button" id="history-replay-play" type="button" aria-label="Play replay" title="Play replay">▶</button>
+            <button class="secondary-button" id="history-replay-next" type="button" aria-label="Next move" title="Next move">▶|</button>
+            <button class="secondary-button" id="history-replay-last" type="button" aria-label="Go to end" title="Go to end">|▶</button>
+            <label for="history-replay-speed">Speed</label>
+            <select id="history-replay-speed" aria-label="Replay speed">
+              <option value="2000">0.5×</option>
+              <option value="1000" selected>1×</option>
+              <option value="500">2×</option>
+              <option value="250">4×</option>
+            </select>
+            <button class="secondary-button" id="history-replay-flip" type="button" aria-label="Flip board" title="Flip board">⇅</button>
+          </div>
+          <div class="history-replay-moves" id="history-replay-moves" aria-label="Game moves"></div>
+          <p class="history-replay-error" id="history-replay-error" role="status" aria-live="polite"></p>
+        </section>
         <ol class="history-list" id="history-list"></ol>
       </div>
     </dialog>

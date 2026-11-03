@@ -170,6 +170,12 @@ let activeSocialPanel = '';
 let activeSocialTab = 'friends';
 let activeSocialConversation = null;
 let activeHistoryType = 'offline';
+let historyReplayGame = null;
+let historyReplayInitialFen = '';
+let historyReplayMoves = [];
+let historyReplayIndex = 0;
+let historyReplayTimer = null;
+let historyReplayFlipped = false;
 let profileChallengeUsername = '';
 let joiningGameChallengeId = '';
 let currentViewedProfile = null;
@@ -3068,6 +3074,7 @@ async function refreshSocialOverview() {
 function renderGameHistory(matches, type) {
   const list = document.querySelector('#history-list');
   list.replaceChildren();
+  closeHistoryReplay();
   if (!matches.length) {
     const empty = document.createElement('li');
     empty.className = 'history-empty';
@@ -3108,6 +3115,12 @@ function renderGameHistory(matches, type) {
     meta.textContent = `${type === 'offline' ? 'Offline' : 'Online'} · ${termination} · ${resultText}`;
     item.append(header, meta);
     if (typeof match.pgn === 'string' && match.pgn.trim()) {
+      const review = document.createElement('button');
+      review.className = 'primary-button history-review-button';
+      review.type = 'button';
+      review.textContent = 'Review game on board';
+      review.addEventListener('click', () => openHistoryReplay(match, title.textContent));
+      item.append(review);
       const details = document.createElement('details');
       const summary = document.createElement('summary');
       summary.textContent = 'View moves (PGN)';
@@ -3120,7 +3133,207 @@ function renderGameHistory(matches, type) {
   }
 }
 
+function stopHistoryReplay() {
+  if (historyReplayTimer !== null) {
+    clearInterval(historyReplayTimer);
+    historyReplayTimer = null;
+  }
+}
+
+function closeHistoryReplay() {
+  stopHistoryReplay();
+  const replay = document.querySelector('#history-replay');
+  if (replay) replay.hidden = true;
+  const list = document.querySelector('#history-list');
+  if (list) list.hidden = false;
+  historyReplayGame = null;
+  historyReplayInitialFen = '';
+  historyReplayMoves = [];
+  historyReplayIndex = 0;
+  historyReplayFlipped = false;
+}
+
+function renderHistoryReplayBoard() {
+  const board = document.querySelector('#history-replay-board');
+  const size = historyReplayGame.board().length;
+  const rows = [...Array(size).keys()];
+  const cols = [...Array(size).keys()];
+  if (historyReplayFlipped) {
+    rows.reverse();
+    cols.reverse();
+  }
+  board.style.setProperty('--board-size', size);
+  board.replaceChildren();
+  const lastMove = historyReplayIndex > 0 ? historyReplayMoves[historyReplayIndex - 1] : null;
+  rows.forEach((rank, rowIndex) => {
+    cols.forEach((file, colIndex) => {
+      const square = `${String.fromCharCode(97 + file)}${size - rank}`;
+      const piece = historyReplayGame.get(square);
+      const cell = document.createElement('button');
+      cell.type = 'button';
+      cell.className = `square ${(rank + file) % 2 === 0 ? 'light' : 'dark'}`;
+      cell.dataset.square = square;
+      cell.disabled = true;
+      cell.setAttribute('role', 'gridcell');
+      cell.setAttribute('aria-label', `${square}${piece ? `, ${piece.color === 'w' ? 'white' : 'black'} ${piece.type}` : ''}`);
+      if (lastMove?.from === square || lastMove?.to === square) cell.classList.add('last-move');
+      if (colIndex === 0) {
+        const rankLabel = document.createElement('span');
+        rankLabel.className = `coordinate rank-coordinate ${(rank + file) % 2 === 0 ? 'on-light' : 'on-dark'}`;
+        rankLabel.textContent = String(size - rank);
+        cell.append(rankLabel);
+      }
+      if (rowIndex === size - 1) {
+        const fileLabel = document.createElement('span');
+        fileLabel.className = `coordinate file-coordinate ${(rank + file) % 2 === 0 ? 'on-light' : 'on-dark'}`;
+        fileLabel.textContent = String.fromCharCode(97 + file);
+        cell.append(fileLabel);
+      }
+      if (piece) {
+        const pieceElement = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        pieceElement.setAttribute('class', `piece ${piece.color === 'w' ? 'white-piece' : 'black-piece'}`);
+        pieceElement.setAttribute('viewBox', '0 0 100 100');
+        pieceElement.setAttribute('focusable', 'false');
+        pieceElement.setAttribute('aria-hidden', 'true');
+        const symbol = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        symbol.setAttribute('x', '50');
+        symbol.setAttribute('y', '82');
+        symbol.setAttribute('text-anchor', 'middle');
+        symbol.setAttribute('font-family', pieceTheme.fontFamily);
+        symbol.textContent = pieceTheme.symbols[piece.color][piece.type];
+        pieceElement.append(symbol);
+        cell.append(pieceElement);
+      }
+      board.append(cell);
+    });
+  });
+}
+
+function renderHistoryReplayMoves() {
+  const moves = document.querySelector('#history-replay-moves');
+  moves.replaceChildren();
+  for (let index = 0; index < historyReplayMoves.length; index += 2) {
+    const row = document.createElement('div');
+    row.className = 'history-replay-move-row';
+    const number = document.createElement('span');
+    number.className = 'history-replay-move-number';
+    number.textContent = `${Math.floor(index / 2) + 1}.`;
+    row.append(number);
+    for (let offset = 0; offset < 2 && index + offset < historyReplayMoves.length; offset += 1) {
+      const ply = index + offset + 1;
+      const move = historyReplayMoves[index + offset];
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = move.san;
+      button.className = 'history-replay-move';
+      button.setAttribute('aria-label', `${ply % 2 ? 'White' : 'Black'} move ${Math.ceil(ply / 2)}: ${move.san}`);
+      if (historyReplayIndex === ply) button.classList.add('active');
+      button.addEventListener('click', () => setHistoryReplayPosition(ply));
+      row.append(button);
+    }
+    moves.append(row);
+  }
+}
+
+function renderHistoryReplay() {
+  renderHistoryReplayBoard();
+  const position = document.querySelector('#history-replay-position');
+  if (historyReplayIndex === 0) {
+    position.textContent = 'Starting position';
+  } else {
+    const move = historyReplayMoves[historyReplayIndex - 1];
+    position.textContent = `Move ${Math.ceil(historyReplayIndex / 2)} · ${move.color === 'w' ? 'White' : 'Black'} played ${move.san}`;
+  }
+  const seek = document.querySelector('#history-replay-seek');
+  seek.max = String(historyReplayMoves.length);
+  seek.value = String(historyReplayIndex);
+  document.querySelector('#history-replay-first').disabled = historyReplayIndex === 0;
+  document.querySelector('#history-replay-previous').disabled = historyReplayIndex === 0;
+  document.querySelector('#history-replay-next').disabled = historyReplayIndex === historyReplayMoves.length;
+  document.querySelector('#history-replay-last').disabled = historyReplayIndex === historyReplayMoves.length;
+  const play = document.querySelector('#history-replay-play');
+  play.textContent = historyReplayTimer === null ? '▶' : 'Ⅱ';
+  play.setAttribute('aria-label', historyReplayTimer === null ? 'Play replay' : 'Pause replay');
+  play.title = historyReplayTimer === null ? 'Play replay' : 'Pause replay';
+  play.disabled = historyReplayMoves.length === 0 || historyReplayIndex === historyReplayMoves.length;
+  renderHistoryReplayMoves();
+}
+
+function setHistoryReplayPosition(index) {
+  stopHistoryReplay();
+  historyReplayIndex = Math.max(0, Math.min(historyReplayMoves.length, index));
+  document.querySelector('#history-replay-error').textContent = '';
+  const fullGame = new Chess(historyReplayInitialFen);
+  for (let moveIndex = 0; moveIndex < historyReplayIndex; moveIndex += 1) {
+    const move = historyReplayMoves[moveIndex];
+    if (!fullGame.move({ from: move.from, to: move.to, promotion: move.promotion })) {
+      throw new Error(`Could not replay move ${moveIndex + 1} (${move.san}).`);
+    }
+  }
+  historyReplayGame = fullGame;
+  renderHistoryReplay();
+}
+
+function openHistoryReplay(match, label) {
+  stopHistoryReplay();
+  historyReplayMoves = [];
+  historyReplayGame = null;
+  historyReplayInitialFen = '';
+  historyReplayIndex = 0;
+  document.querySelector('#history-replay-title').textContent = label;
+  document.querySelector('#history-replay-error').textContent = '';
+  const replayGame = new Chess();
+  if (!replayGame.load_pgn(match.pgn)) {
+    const error = document.querySelector('#history-replay-error');
+    error.textContent = 'This saved game contains moves that could not be replayed.';
+    document.querySelector('#history-replay').hidden = false;
+    document.querySelector('#history-list').hidden = true;
+    return;
+  }
+  historyReplayMoves = replayGame.history({ verbose: true });
+  while (replayGame.history().length) replayGame.undo();
+  historyReplayGame = replayGame;
+  historyReplayInitialFen = replayGame.fen();
+  historyReplayIndex = 0;
+  historyReplayFlipped = false;
+  document.querySelector('#history-replay-title').textContent = label;
+  document.querySelector('#history-replay-error').textContent = '';
+  document.querySelector('#history-replay').hidden = false;
+  document.querySelector('#history-list').hidden = true;
+  renderHistoryReplay();
+}
+
+function playHistoryReplay() {
+  if (historyReplayTimer !== null) {
+    stopHistoryReplay();
+    renderHistoryReplay();
+    return;
+  }
+  if (historyReplayIndex >= historyReplayMoves.length) setHistoryReplayPosition(0);
+  const interval = Number(document.querySelector('#history-replay-speed').value);
+  historyReplayTimer = setInterval(() => {
+    if (historyReplayIndex >= historyReplayMoves.length) {
+      stopHistoryReplay();
+      renderHistoryReplay();
+      return;
+    }
+    const move = historyReplayMoves[historyReplayIndex];
+    if (!historyReplayGame.move({ from: move.from, to: move.to, promotion: move.promotion })) {
+      stopHistoryReplay();
+      document.querySelector('#history-replay-error').textContent =
+        `Could not replay move ${historyReplayIndex + 1} (${move.san}).`;
+      renderHistoryReplay();
+      return;
+    }
+    historyReplayIndex += 1;
+    if (historyReplayIndex === historyReplayMoves.length) stopHistoryReplay();
+    renderHistoryReplay();
+  }, interval);
+  renderHistoryReplay();
+}
+
 async function loadGameHistory(type = activeHistoryType) {
+  closeHistoryReplay();
   activeHistoryType = type;
   document.querySelectorAll('[data-history-kind]').forEach((button) => {
     const active = button.dataset.historyKind === type;
@@ -4577,6 +4790,25 @@ document.querySelector('#challenge-schedule-toggle').addEventListener('click', (
 });
 document.querySelector('#challenge-schedule-form').addEventListener('submit', sendScheduledProfileChallenge);
 document.querySelector('#history-close').addEventListener('click', () => document.querySelector('#history-dialog').close());
+document.querySelector('#history-dialog').addEventListener('close', closeHistoryReplay);
+document.querySelector('#history-replay-close').addEventListener('click', closeHistoryReplay);
+document.querySelector('#history-replay-first').addEventListener('click', () => setHistoryReplayPosition(0));
+document.querySelector('#history-replay-previous').addEventListener('click', () => setHistoryReplayPosition(historyReplayIndex - 1));
+document.querySelector('#history-replay-next').addEventListener('click', () => setHistoryReplayPosition(historyReplayIndex + 1));
+document.querySelector('#history-replay-last').addEventListener('click', () => setHistoryReplayPosition(historyReplayMoves.length));
+document.querySelector('#history-replay-play').addEventListener('click', playHistoryReplay);
+document.querySelector('#history-replay-seek').addEventListener('input', (event) => {
+  setHistoryReplayPosition(Number(event.currentTarget.value));
+});
+document.querySelector('#history-replay-speed').addEventListener('change', () => {
+  if (historyReplayTimer === null) return;
+  stopHistoryReplay();
+  playHistoryReplay();
+});
+document.querySelector('#history-replay-flip').addEventListener('click', () => {
+  historyReplayFlipped = !historyReplayFlipped;
+  renderHistoryReplayBoard();
+});
 document.querySelectorAll('[data-history-kind]').forEach((button) => {
   button.addEventListener('click', () => void loadGameHistory(button.dataset.historyKind));
 });
