@@ -76,6 +76,30 @@ create table if not exists public.user_blocks (
   constraint user_blocks_distinct_users check (blocker_id <> blocked_id)
 );
 
+create table if not exists public.game_challenges (
+  id uuid primary key default gen_random_uuid(),
+  sender_id uuid not null references public.profiles (id) on delete cascade,
+  recipient_id uuid not null references public.profiles (id) on delete cascade,
+  challenge_type text not null check (challenge_type in ('now', 'scheduled')),
+  room_code text,
+  scheduled_at timestamptz,
+  status text not null default 'pending' check (status in ('pending', 'accepted', 'declined', 'expired')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  expires_at timestamptz not null,
+  constraint game_challenges_distinct_users check (sender_id <> recipient_id),
+  constraint game_challenges_details check (
+    (challenge_type = 'now' and room_code is not null and room_code ~ '^[A-Z0-9]{6}$' and scheduled_at is null)
+    or (challenge_type = 'scheduled' and room_code is null and scheduled_at is not null)
+  )
+);
+
+create unique index if not exists game_challenges_one_pending_direction
+  on public.game_challenges (sender_id, recipient_id)
+  where status = 'pending';
+create index if not exists game_challenges_inbox
+  on public.game_challenges (recipient_id, created_at desc);
+
 create table if not exists public.direct_messages (
   id uuid primary key default gen_random_uuid(),
   sender_id uuid not null references public.profiles (id) on delete cascade,
@@ -92,12 +116,31 @@ create index if not exists direct_messages_unread
   on public.direct_messages (recipient_id, sender_id, created_at desc)
   where read_at is null;
 
+create table if not exists public.online_game_history (
+  id uuid primary key,
+  room_code text not null,
+  white_id uuid not null references public.profiles (id) on delete cascade,
+  black_id uuid not null references public.profiles (id) on delete cascade,
+  result text not null check (result in ('1-0', '0-1', '1/2-1/2')),
+  termination text not null check (termination in ('checkmate', 'resignation', 'draw')),
+  pgn text not null check (char_length(pgn) <= 100000),
+  created_at timestamptz not null default now(),
+  constraint online_game_history_distinct_players check (white_id <> black_id)
+);
+
+create index if not exists online_game_history_white_recent
+  on public.online_game_history (white_id, created_at desc);
+create index if not exists online_game_history_black_recent
+  on public.online_game_history (black_id, created_at desc);
+
 alter table public.friend_requests enable row level security;
 alter table public.friendships enable row level security;
 alter table public.direct_messages enable row level security;
 alter table public.user_blocks enable row level security;
-revoke all on public.friend_requests, public.friendships, public.direct_messages, public.user_blocks from public, anon, authenticated;
-grant select, insert, update, delete on public.friend_requests, public.friendships, public.direct_messages, public.user_blocks to service_role;
+alter table public.game_challenges enable row level security;
+alter table public.online_game_history enable row level security;
+revoke all on public.friend_requests, public.friendships, public.direct_messages, public.user_blocks, public.game_challenges, public.online_game_history from public, anon, authenticated;
+grant select, insert, update, delete on public.friend_requests, public.friendships, public.direct_messages, public.user_blocks, public.game_challenges, public.online_game_history to service_role;
 
 create or replace function public.openboard_social_overview(p_user_id uuid)
 returns jsonb
@@ -191,8 +234,177 @@ as $$
       select jsonb_agg(block.blocker_id)
       from public.user_blocks as block
       where block.blocked_id = p_user_id
+    ), '[]'::jsonb),
+    'challengeNotifications', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', challenge.id,
+        'senderId', challenge.sender_id,
+        'senderUsername', sender.username,
+        'senderCountryCode', sender.country_code,
+        'senderAvatarData', sender.avatar_data,
+        'recipientId', challenge.recipient_id,
+        'recipientUsername', recipient.username,
+        'recipientCountryCode', recipient.country_code,
+        'recipientAvatarData', recipient.avatar_data,
+        'challengeType', challenge.challenge_type,
+        'roomCode', challenge.room_code,
+        'scheduledAt', challenge.scheduled_at,
+        'status', challenge.status,
+        'createdAt', challenge.created_at,
+        'isIncoming', challenge.recipient_id = p_user_id
+      ) order by challenge.created_at desc)
+      from public.game_challenges as challenge
+      join public.profiles as sender on sender.id = challenge.sender_id
+      join public.profiles as recipient on recipient.id = challenge.recipient_id
+      where (challenge.sender_id = p_user_id or challenge.recipient_id = p_user_id)
+        and (
+          (challenge.status = 'pending' and challenge.expires_at > now())
+          or (challenge.updated_at >= now() - interval '30 days')
+        )
     ), '[]'::jsonb)
   )
+$$;
+
+create or replace function public.openboard_create_game_challenge(
+  p_sender_id uuid,
+  p_username_key text,
+  p_challenge_type text,
+  p_room_code text,
+  p_scheduled_at timestamptz
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  recipient public.profiles%rowtype;
+  inserted_challenge public.game_challenges%rowtype;
+  v_user_low uuid;
+  v_user_high uuid;
+  v_expires_at timestamptz;
+begin
+  select * into recipient from public.profiles where username_key = lower(p_username_key);
+  if recipient.id is null then
+    raise exception 'No player was found with that username.';
+  end if;
+  if recipient.id = p_sender_id then
+    raise exception 'You cannot challenge yourself.';
+  end if;
+  if exists (
+    select 1 from public.user_blocks as block
+    where (block.blocker_id = p_sender_id and block.blocked_id = recipient.id)
+      or (block.blocker_id = recipient.id and block.blocked_id = p_sender_id)
+  ) then
+    raise exception 'This player cannot receive a challenge.';
+  end if;
+  if p_challenge_type = 'now' then
+    if p_room_code is null or p_room_code !~ '^[A-Z0-9]{6}$' or p_scheduled_at is not null then
+      raise exception 'Create a valid private room before sending a play-now challenge.';
+    end if;
+    v_expires_at := now() + interval '24 hours';
+  elsif p_challenge_type = 'scheduled' then
+    if p_room_code is not null or p_scheduled_at is null or p_scheduled_at <= now() then
+      raise exception 'Choose a future date and time for the scheduled challenge.';
+    end if;
+    v_expires_at := p_scheduled_at + interval '1 day';
+  else
+    raise exception 'Choose play now or schedule a challenge.';
+  end if;
+
+  v_user_low := least(p_sender_id, recipient.id);
+  v_user_high := greatest(p_sender_id, recipient.id);
+  perform pg_advisory_xact_lock(hashtextextended(v_user_low::text || ':' || v_user_high::text, 0));
+  update public.game_challenges
+  set status = 'expired', updated_at = now()
+  where sender_id = p_sender_id and recipient_id = recipient.id
+    and status = 'pending' and expires_at <= now();
+
+  select * into inserted_challenge
+  from public.game_challenges
+  where sender_id = p_sender_id and recipient_id = recipient.id and status = 'pending'
+  limit 1;
+  if inserted_challenge.id is not null then
+    return jsonb_build_object('status', 'already_pending', 'id', inserted_challenge.id);
+  end if;
+
+  insert into public.game_challenges (
+    sender_id, recipient_id, challenge_type, room_code, scheduled_at, expires_at
+  )
+  values (
+    p_sender_id, recipient.id, p_challenge_type, p_room_code, p_scheduled_at, v_expires_at
+  )
+  returning * into inserted_challenge;
+  return jsonb_build_object('status', 'sent', 'id', inserted_challenge.id);
+end;
+$$;
+
+create or replace function public.openboard_respond_game_challenge(
+  p_user_id uuid,
+  p_challenge_id uuid,
+  p_accept boolean
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  challenge public.game_challenges%rowtype;
+  v_status text;
+begin
+  select * into challenge
+  from public.game_challenges
+  where id = p_challenge_id and recipient_id = p_user_id and status = 'pending'
+  for update;
+  if challenge.id is null then
+    raise exception 'That challenge is no longer available.';
+  end if;
+  if exists (
+    select 1 from public.user_blocks as block
+    where (block.blocker_id = p_user_id and block.blocked_id = challenge.sender_id)
+      or (block.blocker_id = challenge.sender_id and block.blocked_id = p_user_id)
+  ) then
+    raise exception 'That challenge is no longer available.';
+  end if;
+  if challenge.expires_at <= now() then
+    update public.game_challenges set status = 'expired', updated_at = now() where id = challenge.id;
+    raise exception 'That challenge has expired.';
+  end if;
+
+  v_status := case when p_accept then 'accepted' else 'declined' end;
+  update public.game_challenges
+  set status = v_status, updated_at = now()
+  where id = challenge.id;
+  return jsonb_build_object('status', v_status);
+end;
+$$;
+
+create or replace function public.openboard_load_online_game_history(p_user_id uuid)
+returns jsonb
+language sql
+security definer
+set search_path = ''
+as $$
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'id', game.id,
+    'createdAt', game.created_at,
+    'opponentUsername', case when game.white_id = p_user_id then black.username else white.username end,
+    'playerColor', case when game.white_id = p_user_id then 'w' else 'b' end,
+    'result', game.result,
+    'termination', game.termination,
+    'pgn', game.pgn,
+    'roomCode', game.room_code
+  ) order by game.created_at desc), '[]'::jsonb)
+  from (
+    select *
+    from public.online_game_history
+    where white_id = p_user_id or black_id = p_user_id
+    order by created_at desc
+    limit 100
+  ) as game
+  join public.profiles as white on white.id = game.white_id
+  join public.profiles as black on black.id = game.black_id
 $$;
 
 create or replace function public.openboard_send_friend_request(p_sender_id uuid, p_username_key text)
@@ -403,11 +615,17 @@ end;
 $$;
 
 revoke all on function public.openboard_social_overview(uuid) from public, anon, authenticated;
+revoke all on function public.openboard_create_game_challenge(uuid, text, text, text, timestamptz) from public, anon, authenticated;
+revoke all on function public.openboard_respond_game_challenge(uuid, uuid, boolean) from public, anon, authenticated;
+revoke all on function public.openboard_load_online_game_history(uuid) from public, anon, authenticated;
 revoke all on function public.openboard_send_friend_request(uuid, text) from public, anon, authenticated;
 revoke all on function public.openboard_respond_friend_request(uuid, uuid, boolean) from public, anon, authenticated;
 revoke all on function public.openboard_send_direct_message(uuid, text, text) from public, anon, authenticated;
 revoke all on function public.openboard_load_direct_messages(uuid, uuid) from public, anon, authenticated;
 grant execute on function public.openboard_social_overview(uuid) to service_role;
+grant execute on function public.openboard_create_game_challenge(uuid, text, text, text, timestamptz) to service_role;
+grant execute on function public.openboard_respond_game_challenge(uuid, uuid, boolean) to service_role;
+grant execute on function public.openboard_load_online_game_history(uuid) to service_role;
 grant execute on function public.openboard_send_friend_request(uuid, text) to service_role;
 grant execute on function public.openboard_respond_friend_request(uuid, uuid, boolean) to service_role;
 grant execute on function public.openboard_send_direct_message(uuid, text, text) to service_role;
@@ -518,6 +736,11 @@ begin
     delete from public.friend_requests
     where (sender_id = p_user_id and recipient_id = target.id)
       or (sender_id = target.id and recipient_id = p_user_id);
+    update public.game_challenges
+    set status = 'expired', updated_at = now()
+    where status = 'pending'
+      and ((sender_id = p_user_id and recipient_id = target.id)
+        or (sender_id = target.id and recipient_id = p_user_id));
   else
     delete from public.user_blocks where blocker_id = p_user_id and blocked_id = target.id;
   end if;
@@ -531,10 +754,15 @@ revoke all on function public.openboard_block_user(uuid, text, boolean) from pub
 grant execute on function public.openboard_update_profile(uuid, text, text, text) to service_role;
 grant execute on function public.openboard_block_user(uuid, text, boolean) to service_role;
 
+drop function if exists public.settle_openboard_rated_game(uuid, uuid, numeric);
 create or replace function public.settle_openboard_rated_game(
   p_white_id uuid,
   p_black_id uuid,
-  p_white_score numeric
+  p_white_score numeric,
+  p_game_id uuid,
+  p_room_code text,
+  p_pgn text,
+  p_termination text
 )
 returns jsonb
 language plpgsql
@@ -550,10 +778,32 @@ declare
   new_black_rating integer;
   white_result text;
   black_result text;
+  inserted_game_id uuid;
 begin
   if p_white_id is null or p_black_id is null or p_white_id = p_black_id
-    or p_white_score not in (0, 0.5, 1) then
+    or p_white_score is null or p_white_score not in (0, 0.5, 1)
+    or p_game_id is null
+    or p_room_code is null or p_room_code !~ '^[A-Z0-9]{6}$'
+    or p_pgn is null or char_length(p_pgn) > 100000
+    or p_termination is null or p_termination not in ('checkmate', 'resignation', 'draw') then
     raise exception 'invalid_rated_game';
+  end if;
+
+  insert into public.online_game_history (id, room_code, white_id, black_id, result, termination, pgn)
+  values (
+    p_game_id,
+    p_room_code,
+    p_white_id,
+    p_black_id,
+    case when p_white_score = 1 then '1-0'
+      when p_white_score = 0 then '0-1' else '1/2-1/2' end,
+    p_termination,
+    p_pgn
+  )
+  on conflict (id) do nothing
+  returning id into inserted_game_id;
+  if inserted_game_id is null then
+    return jsonb_build_object('duplicate', true);
   end if;
 
   perform id
@@ -598,8 +848,8 @@ begin
 end;
 $$;
 
-revoke all on function public.settle_openboard_rated_game(uuid, uuid, numeric) from public, anon, authenticated;
-grant execute on function public.settle_openboard_rated_game(uuid, uuid, numeric) to service_role;
+revoke all on function public.settle_openboard_rated_game(uuid, uuid, numeric, uuid, text, text, text) from public, anon, authenticated;
+grant execute on function public.settle_openboard_rated_game(uuid, uuid, numeric, uuid, text, text, text) to service_role;
 
 create or replace function public.claim_openboard_username()
 returns trigger

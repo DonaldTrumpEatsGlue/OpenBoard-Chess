@@ -411,7 +411,7 @@ function makeAuthorizationHeader(accessToken) {
   return `${scheme} ${accessToken}`;
 }
 
-async function recordOnlineResult(room, whiteScore) {
+async function recordOnlineResult(room, whiteScore, termination) {
   if (room.ratingSettlementStarted) return;
   room.ratingSettlementStarted = true;
   try {
@@ -429,6 +429,10 @@ async function recordOnlineResult(room, whiteScore) {
         p_white_id: room.players.w.accountId,
         p_black_id: room.players.b.accountId,
         p_white_score: whiteScore,
+        p_game_id: room.gameId,
+        p_room_code: room.code,
+        p_pgn: room.chess.pgn(),
+        p_termination: termination,
       }),
       signal: AbortSignal.timeout(5000),
     });
@@ -650,6 +654,7 @@ async function handleMessage(socket, player, rawMessage) {
       isPublic: message.type === 'create-public-room',
       passwordSalt,
       passwordHash: passwordSalt ? hashRoomPassword(roomPassword, passwordSalt) : null,
+      gameId: crypto.randomUUID(),
       chess: new Chess(),
       players: {
         w: {
@@ -729,6 +734,7 @@ async function handleMessage(socket, player, rawMessage) {
     if (player.room) leaveRoom(player);
     if (!reconnectColor && room.players[color].accountId) {
       room.chess = new Chess();
+      room.gameId = crypto.randomUUID();
       room.gameEnded = false;
       room.ratingSettlementStarted = false;
     }
@@ -905,7 +911,7 @@ async function handleMessage(socket, player, rawMessage) {
       const whiteScore = room.chess.in_checkmate()
         ? room.chess.turn() === 'w' ? 0 : 1
         : 0.5;
-      await recordOnlineResult(room, whiteScore);
+      await recordOnlineResult(room, whiteScore, room.chess.in_checkmate() ? 'checkmate' : 'draw');
     }
     return;
   }
@@ -918,7 +924,7 @@ async function handleMessage(socket, player, rawMessage) {
     room.gameEnded = true;
     broadcast(room, { type: 'resigned', color: player.color });
     if (room.chess.history().length) {
-      await recordOnlineResult(room, player.color === 'w' ? 0 : 1);
+      await recordOnlineResult(room, player.color === 'w' ? 0 : 1, 'resignation');
     } else {
       broadcast(room, { type: 'rating-not-counted' });
     }
@@ -962,6 +968,45 @@ const server = http.createServer(async (request, response) => {
 
       if (request.method === 'GET' && requestUrl.pathname === '/social/overview') {
         result = await callSocialRpc('openboard_social_overview', { p_user_id: identity.id });
+      } else if (request.method === 'GET' && requestUrl.pathname === '/social/history/online') {
+        result = await callSocialRpc('openboard_load_online_game_history', { p_user_id: identity.id });
+      } else if (request.method === 'POST' && requestUrl.pathname === '/social/challenges') {
+        const body = await readJsonBody(request);
+        const username = typeof body?.username === 'string' ? body.username.trim() : '';
+        const challengeType = body?.challengeType;
+        const roomCode = typeof body?.roomCode === 'string' ? body.roomCode.trim().toUpperCase() : null;
+        const scheduledAt = typeof body?.scheduledAt === 'string' ? new Date(body.scheduledAt) : null;
+        if (!/^[A-Za-z0-9_]{3,20}$/.test(username)
+          || !['now', 'scheduled'].includes(challengeType)
+          || (challengeType === 'now'
+            && (!roomCode || !/^[A-Z0-9]{6}$/.test(roomCode) || body?.scheduledAt != null))
+          || (challengeType === 'scheduled'
+            && (body?.roomCode != null || !scheduledAt || Number.isNaN(scheduledAt.getTime())
+              || scheduledAt.getTime() < Date.now() + 60_000))) {
+          sendSocialResponse(response, 400, { message: 'Choose a player and provide a valid play-now or future scheduled challenge.' });
+          return;
+        }
+        result = await callSocialRpc('openboard_create_game_challenge', {
+          p_sender_id: identity.id,
+          p_username_key: username.toLowerCase(),
+          p_challenge_type: challengeType,
+          p_room_code: roomCode,
+          p_scheduled_at: scheduledAt?.toISOString() || null,
+        });
+        sendSocialResponse(response, 200, result);
+        return;
+      } else if (request.method === 'POST' && requestUrl.pathname === '/social/challenges/respond') {
+        const body = await readJsonBody(request);
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body?.challengeId || '')
+          || typeof body?.accept !== 'boolean') {
+          sendSocialResponse(response, 400, { message: 'Choose a valid challenge and response.' });
+          return;
+        }
+        result = await callSocialRpc('openboard_respond_game_challenge', {
+          p_user_id: identity.id,
+          p_challenge_id: body.challengeId,
+          p_accept: body.accept,
+        });
       } else if (request.method === 'POST' && requestUrl.pathname === '/social/friends/request') {
         const body = await readJsonBody(request);
         const username = typeof body?.username === 'string' ? body.username.trim() : '';

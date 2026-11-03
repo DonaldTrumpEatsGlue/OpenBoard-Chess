@@ -156,13 +156,16 @@ let socialOverview = {
   friends: [],
   incomingRequests: [],
   outgoingRequests: [],
+  challengeNotifications: [],
   blockedUsers: [],
   blockedBy: [],
 };
 let activeSocialPanel = '';
 let activeSocialTab = 'friends';
 let activeSocialConversation = null;
+let activeHistoryType = 'offline';
 let profileChallengeUsername = '';
+let joiningGameChallengeId = '';
 let currentViewedProfile = null;
 let pendingAvatarData = null;
 let onlinePreviousClock = null;
@@ -179,6 +182,7 @@ const supabaseAnonKey = document.querySelector('meta[name="openboard-supabase-an
 const authSessionStorageKey = 'openboard-auth-session';
 const onlineRoomStorageKey = 'openboard-last-online-room';
 const offlineRatingStorageKey = 'openboard-offline-ratings';
+const offlineGameHistoryStoragePrefix = 'openboard-game-history-offline';
 const playableBoardSizes = [8, 10, 12, 14, 16, 18, 20];
 let authSession = null;
 let authUsername = '';
@@ -262,6 +266,33 @@ function recordOfflineRating(score) {
     localStorage.setItem(offlineRatingStorageKey, JSON.stringify(offlineRatings));
   } catch (error) {
     console.error('Could not save your offline rating estimate:', error);
+  }
+}
+
+function offlineGameHistoryStorageKey() {
+  return `${offlineGameHistoryStoragePrefix}-${offlineRatingKey()}`;
+}
+
+function recordOfflineMatch(score, termination) {
+  if (onlineMode || onlineSpectating || analysisMode || puzzleMode || !game.history().length) return;
+  const result = score === 1 ? 'win' : score === 0 ? 'loss' : 'draw';
+  const storageKey = offlineGameHistoryStorageKey();
+  let matches = [];
+  try {
+    const savedMatches = JSON.parse(localStorage.getItem(storageKey) || '[]');
+    if (Array.isArray(savedMatches)) matches = savedMatches;
+    matches.unshift({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      createdAt: new Date().toISOString(),
+      opponent: difficultySelect.selectedOptions[0]?.textContent || 'Computer',
+      playerColor,
+      result,
+      termination,
+      pgn: game.pgn(),
+    });
+    localStorage.setItem(storageKey, JSON.stringify(matches.slice(0, 100)));
+  } catch (error) {
+    console.error('Could not save your offline match history:', error);
   }
 }
 
@@ -1520,7 +1551,7 @@ function updateGameState() {
         ? `Checkmate. ${game.turn() === 'w' ? 'White' : 'Black'} is checkmated.`
         : game.turn() === 'w' ? 'Checkmate. The engine wins this game.' : 'Checkmate! You win!';
     const humanScore = onlineSpectating ? 0.5 : game.turn() === playerColor ? 0 : 1;
-    markGameResult(onlineSpectating ? 'draw' : humanScore === 0 ? 'defeat' : 'victory', humanScore);
+    markGameResult(onlineSpectating ? 'draw' : humanScore === 0 ? 'defeat' : 'victory', humanScore, 'checkmate');
   } else if (isStalemate()) {
     gameMessage.textContent = customRules.noDraws
       ? `${game.turn() === 'w' ? 'White' : 'Black'} has no legal moves. Stalemate counts as a loss in this ruleset.`
@@ -1528,16 +1559,16 @@ function updateGameState() {
     const humanScore = customRules.noDraws
       ? game.turn() === playerColor ? 0 : 1
       : 0.5;
-    markGameResult(humanScore === 0 ? 'defeat' : humanScore === 1 ? 'victory' : 'draw', humanScore);
+    markGameResult(humanScore === 0 ? 'defeat' : humanScore === 1 ? 'victory' : 'draw', humanScore, 'draw');
   } else if (isThreefoldRepetition()) {
     gameMessage.textContent = 'Draw by threefold repetition.';
-    markGameResult('draw', 0.5);
+    markGameResult('draw', 0.5, 'draw');
   } else if (isInsufficientMaterial()) {
     gameMessage.textContent = 'Draw by insufficient material.';
-    markGameResult('draw', 0.5);
+    markGameResult('draw', 0.5, 'draw');
   } else if (isDraw()) {
     gameMessage.textContent = 'The game is a draw.';
-    markGameResult('draw', 0.5);
+    markGameResult('draw', 0.5, 'draw');
   } else if (aiThinking) {
     gameMessage.textContent = 'The engine is thinking…';
   } else if (isCheck()) {
@@ -1629,7 +1660,14 @@ function clearAuthSession() {
   authSession = null;
   authUsername = '';
   onlineIdentityVerified = false;
-  socialOverview = { friends: [], incomingRequests: [], outgoingRequests: [] };
+  socialOverview = {
+    friends: [],
+    incomingRequests: [],
+    outgoingRequests: [],
+    challengeNotifications: [],
+    blockedUsers: [],
+    blockedBy: [],
+  };
   updateSocialBadges();
   localStorage.removeItem(authSessionStorageKey);
   updateAccountUI();
@@ -1736,7 +1774,10 @@ function renderProfileActions(profile, isOwnProfile) {
   const actions = document.querySelector('#profile-actions');
   actions.hidden = isOwnProfile || !profile.username;
   if (actions.hidden) return;
-  const friend = socialOverview.friends.some((entry) => entry.id === profile.id);
+  const friend = socialOverview.friends.some((entry) => (
+    (profile.id && entry.id === profile.id)
+    || entry.username.toLowerCase() === profile.username.toLowerCase()
+  ));
   const outgoingRequest = socialOverview.outgoingRequests.some((entry) => (
     entry.username.toLowerCase() === profile.username.toLowerCase()
   ));
@@ -1745,6 +1786,11 @@ function renderProfileActions(profile, isOwnProfile) {
   ));
   const blocked = socialOverview.blockedUsers.some((entry) => entry.id === profile.id);
   const blockedBy = socialOverview.blockedBy.includes(profile.id);
+  const outgoingChallenge = socialOverview.challengeNotifications.some((challenge) => (
+    !challenge.isIncoming
+    && challenge.status === 'pending'
+    && challenge.recipientUsername.toLowerCase() === profile.username.toLowerCase()
+  ));
   const addButton = document.querySelector('#profile-add-friend');
   addButton.disabled = friend || outgoingRequest || blocked || blockedBy;
   addButton.textContent = friend ? 'Friends' : outgoingRequest ? 'Request sent' : blockedBy ? 'Unavailable' : 'Add friend';
@@ -1752,7 +1798,9 @@ function renderProfileActions(profile, isOwnProfile) {
     addButton.disabled = blocked || blockedBy;
     addButton.textContent = 'Accept request';
   }
-  document.querySelector('#profile-challenge').disabled = blocked || blockedBy;
+  const challengeButton = document.querySelector('#profile-challenge');
+  challengeButton.disabled = blocked || blockedBy || outgoingChallenge;
+  challengeButton.textContent = outgoingChallenge ? 'Challenge pending' : 'Challenge';
   const blockButton = document.querySelector('#profile-block');
   blockButton.disabled = blockedBy;
   blockButton.textContent = blocked ? 'Unblock' : blockedBy ? 'Unavailable' : 'Block';
@@ -1810,16 +1858,19 @@ async function challengeProfilePlayer() {
   }
   if (!currentViewedProfile?.username) return;
   profileChallengeUsername = currentViewedProfile.username;
-  document.querySelector('#online-status').textContent =
-    `Create a private lobby to challenge @${profileChallengeUsername}. The invite code will be copied for you.`;
-  openOnlineDialog('friends');
+  document.querySelector('#challenge-title').textContent = `Challenge @${profileChallengeUsername}`;
+  document.querySelector('#challenge-description').textContent =
+    'Play now to create a private room and send an inbox invite, or schedule a game for later.';
+  document.querySelector('#challenge-status').textContent = '';
+  document.querySelector('#challenge-schedule-form').hidden = true;
+  document.querySelector('#challenge-scheduled-at').value = '';
+  document.querySelector('#challenge-dialog').showModal();
 }
 
 async function sendProfileChallengeInvite(roomCode) {
   const username = profileChallengeUsername;
   profileChallengeUsername = '';
   if (!username) return;
-  const invitation = `I challenge you to an Openboard game! Open Play Online and join with invite code ${roomCode}.`;
   let copied = false;
   try {
     await navigator.clipboard.writeText(roomCode);
@@ -1827,20 +1878,98 @@ async function sendProfileChallengeInvite(roomCode) {
   } catch (error) {
     console.warn('Could not copy the challenge invite code:', error);
   }
-  const copyMessage = copied ? `Invite code ${roomCode} was copied.` : `Invite code: ${roomCode}.`;
-  const isFriend = socialOverview.friends.some((friend) => (
-    friend.username.toLowerCase() === username.toLowerCase()
-  ));
-  if (isFriend) {
-    try {
-      await requestSocialApi('/social/messages', 'POST', { username, text: invitation });
-      showMessage('Challenge sent', `A private-game invitation was sent to @${username}. ${copyMessage}`);
+  try {
+    const result = await requestSocialApi('/social/challenges', 'POST', {
+      username,
+      challengeType: 'now',
+      roomCode,
+    });
+    await refreshSocialOverview();
+    const copyMessage = copied ? 'The room code was also copied.' : `Room code: ${roomCode}.`;
+    if (result.status === 'already_pending') {
+      showMessage('Challenge already sent', `There is already a pending challenge to @${username}. ${copyMessage}`);
       return;
-    } catch (error) {
-      console.error('Could not send the challenge message:', error);
     }
+    showMessage('Challenge sent', `A play-now challenge was sent to @${username}'s inbox. ${copyMessage}`);
+  } catch (error) {
+    console.error('Could not send the challenge notification:', error);
+    showMessage('Challenge notification failed', `The private room ${roomCode} was created, but the inbox notification could not be sent: ${error.message || 'unknown error'}`);
   }
-  showMessage('Challenge ready', `Your private lobby is ready for @${username}. ${copyMessage} Share it with them so they can join.`);
+}
+
+async function sendScheduledProfileChallenge(event) {
+  event.preventDefault();
+  const username = profileChallengeUsername;
+  if (!username) return;
+  const scheduledAt = new Date(document.querySelector('#challenge-scheduled-at').value);
+  if (Number.isNaN(scheduledAt.getTime()) || scheduledAt.getTime() < Date.now() + 60_000) {
+    document.querySelector('#challenge-status').textContent = 'Choose a time at least one minute in the future.';
+    return;
+  }
+  const submit = document.querySelector('#challenge-schedule-submit');
+  submit.disabled = true;
+  document.querySelector('#challenge-status').textContent = 'Sending scheduled challenge…';
+  try {
+    const result = await requestSocialApi('/social/challenges', 'POST', {
+      username,
+      challengeType: 'scheduled',
+      scheduledAt: scheduledAt.toISOString(),
+    });
+    await refreshSocialOverview();
+    if (result.status === 'already_pending') {
+      document.querySelector('#challenge-status').textContent =
+        `You already have a pending challenge to @${username}.`;
+      return;
+    }
+    profileChallengeUsername = '';
+    document.querySelector('#challenge-dialog').close();
+    if (currentViewedProfile) renderProfileActions(currentViewedProfile, false);
+    showMessage('Scheduled challenge sent', `@${username} has a scheduled game notification in their inbox for ${scheduledAt.toLocaleString()}.`);
+  } catch (error) {
+    console.error('Could not send scheduled challenge:', error);
+    document.querySelector('#challenge-status').textContent = error.message || 'Could not send the scheduled challenge.';
+  } finally {
+    submit.disabled = false;
+  }
+}
+
+async function respondToGameChallenge(challengeId, accept) {
+  try {
+    await requestSocialApi('/social/challenges/respond', 'POST', { challengeId, accept });
+    await refreshSocialOverview();
+    document.querySelector('#social-panel-status').textContent =
+      accept ? 'Scheduled challenge accepted.' : 'Challenge declined.';
+  } catch (error) {
+    console.error('Could not respond to challenge:', error);
+    document.querySelector('#social-panel-status').textContent = error.message || 'Could not respond to the challenge.';
+  }
+}
+
+function joinGameChallenge(challenge) {
+  if (onlineMode || onlineSocket?.readyState === WebSocket.CONNECTING) {
+    showMessage('Online game in progress', 'Leave your current online room before joining this challenge.');
+    return;
+  }
+  joiningGameChallengeId = challenge.id;
+  document.querySelector('#online-room-code').value = challenge.roomCode;
+  document.querySelector('#online-password-enabled').checked = false;
+  document.querySelector('#online-lobby-password').value = '';
+  openOnlineDialog('friends');
+  connectToOnlineRoom('join', challenge.roomCode);
+}
+
+async function acknowledgeJoinedGameChallenge() {
+  const challengeId = joiningGameChallengeId;
+  if (!challengeId) return;
+  joiningGameChallengeId = '';
+  try {
+    await requestSocialApi('/social/challenges/respond', 'POST', { challengeId, accept: true });
+    await refreshSocialOverview();
+  } catch (error) {
+    console.error('Joined the challenge room, but could not update the challenge notification:', error);
+    document.querySelector('#social-panel-status').textContent =
+      error.message || 'The game started, but the challenge status could not be updated.';
+  }
 }
 
 async function loadPlayerProfile(username = '') {
@@ -1861,6 +1990,7 @@ async function loadPlayerProfile(username = '') {
         friends: [],
         incomingRequests: [],
         outgoingRequests: [],
+        challengeNotifications: [],
         blockedUsers: [],
         blockedBy: [],
       };
@@ -2681,7 +2811,8 @@ function updateSocialBadges() {
   const badgeValues = {
     friends: requests,
     messages: unreadMessages,
-    notifications: requests + unreadMessages,
+    notifications: requests + unreadMessages + socialOverview.challengeNotifications
+      .filter((challenge) => challenge.isIncoming && challenge.status === 'pending').length,
   };
   for (const [name, count] of Object.entries(badgeValues)) {
     const badge = document.querySelector(`[data-social-badge="${name}"]`);
@@ -2841,9 +2972,10 @@ function renderSocialNotifications() {
     ...socialOverview.friends
       .filter((friend) => Number(friend.unreadCount) > 0)
       .map((friend) => ({ type: 'message', item: friend })),
+    ...socialOverview.challengeNotifications.map((challenge) => ({ type: 'challenge', item: challenge })),
   ];
   if (!notifications.length) {
-    appendSocialEmpty(list, 'You are all caught up. New friend requests and unread messages will appear here.');
+    appendSocialEmpty(list, 'You are all caught up. Friend requests, messages, and game challenges will appear here.');
     return;
   }
   for (const notification of notifications) {
@@ -2851,15 +2983,49 @@ function renderSocialNotifications() {
     const row = document.createElement('li');
     row.className = 'social-list-item';
     const request = notification.type === 'request';
-    const description = request
+    const challenge = notification.type === 'challenge';
+    const username = challenge
+      ? item.isIncoming ? item.senderUsername : item.recipientUsername
+      : item.username;
+    const countryCode = challenge
+      ? item.isIncoming ? item.senderCountryCode : item.recipientCountryCode
+      : item.countryCode;
+    const avatarData = challenge
+      ? item.isIncoming ? item.senderAvatarData : item.recipientAvatarData
+      : item.avatarData;
+    let description = request
       ? 'Sent you a friend request'
       : `${item.unreadCount} unread ${Number(item.unreadCount) === 1 ? 'message' : 'messages'}`;
-    row.append(createSocialAvatar(item.username, item.avatarData), createSocialUserCopy(item.username, item.countryCode, description));
+    if (challenge) {
+      if (item.status === 'pending' && item.challengeType === 'scheduled') {
+        const scheduledDate = new Date(item.scheduledAt);
+        const formattedDate = Number.isNaN(scheduledDate.getTime())
+          ? 'scheduled time unavailable'
+          : scheduledDate.toLocaleString();
+        description = item.isIncoming
+          ? `Scheduled a game with you for ${formattedDate}`
+          : `Scheduled challenge to @${username} · ${formattedDate}`;
+      } else if (item.status === 'pending') {
+        description = item.isIncoming
+          ? 'Challenged you to play now'
+          : `Play-now challenge sent to @${username}`;
+      } else {
+        description = `Challenge ${item.status}`;
+      }
+    }
+    row.append(createSocialAvatar(username, avatarData), createSocialUserCopy(username, countryCode, description));
     const actions = document.createElement('span');
     actions.className = 'social-item-actions';
-    if (request) {
+    if (challenge && item.status === 'pending' && item.isIncoming) {
+      if (item.challengeType === 'now') {
+        actions.append(createSocialAction('Join game', () => joinGameChallenge(item), true));
+      } else {
+        actions.append(createSocialAction('Accept', () => respondToGameChallenge(item.id, true), true));
+      }
+      actions.append(createSocialAction('Decline', () => respondToGameChallenge(item.id, false)));
+    } else if (request) {
       actions.append(createSocialAction('Accept', () => respondToFriendRequest(item.id, true), true));
-    } else {
+    } else if (notification.type === 'message') {
       actions.append(createSocialAction('Reply', () => openSocialConversation(item.id), true));
     }
     row.append(actions);
@@ -2874,6 +3040,7 @@ async function refreshSocialOverview() {
     friends: Array.isArray(overview.friends) ? overview.friends : [],
     incomingRequests: Array.isArray(overview.incomingRequests) ? overview.incomingRequests : [],
     outgoingRequests: Array.isArray(overview.outgoingRequests) ? overview.outgoingRequests : [],
+    challengeNotifications: Array.isArray(overview.challengeNotifications) ? overview.challengeNotifications : [],
     blockedUsers: Array.isArray(overview.blockedUsers) ? overview.blockedUsers : [],
     blockedBy: Array.isArray(overview.blockedBy) ? overview.blockedBy : [],
   };
@@ -2882,6 +3049,110 @@ async function refreshSocialOverview() {
   renderSocialRequests();
   renderSocialConversations();
   renderSocialNotifications();
+}
+
+function renderGameHistory(matches, type) {
+  const list = document.querySelector('#history-list');
+  list.replaceChildren();
+  if (!matches.length) {
+    const empty = document.createElement('li');
+    empty.className = 'history-empty';
+    empty.textContent = type === 'offline'
+      ? 'No offline matches have been saved on this browser yet.'
+      : 'No online matches have been saved to your account yet.';
+    list.append(empty);
+    return;
+  }
+  for (const match of matches) {
+    const item = document.createElement('li');
+    item.className = 'history-match';
+    const header = document.createElement('div');
+    header.className = 'history-match-heading';
+    const title = document.createElement('strong');
+    const result = type === 'offline'
+      ? match.result
+      : match.result === '1/2-1/2'
+        ? 'draw'
+        : (match.result === '1-0') === (match.playerColor === 'w') ? 'win' : 'loss';
+    title.textContent = `${result[0].toUpperCase()}${result.slice(1)} · ${type === 'offline'
+      ? match.opponent || 'Computer'
+      : `@${match.opponentUsername}`}`;
+    const timestamp = new Date(match.createdAt);
+    const date = document.createElement('span');
+    date.textContent = Number.isNaN(timestamp.getTime()) ? 'Date unavailable' : timestamp.toLocaleString();
+    header.append(title, date);
+    const meta = document.createElement('p');
+    meta.className = 'history-match-meta';
+    const resultText = type === 'offline' ? result : match.result;
+    const termination = match.termination === 'checkmate'
+      ? 'Checkmate'
+      : match.termination === 'resignation'
+        ? 'Resignation'
+        : match.termination === 'time'
+          ? 'Time'
+          : 'Draw';
+    meta.textContent = `${type === 'offline' ? 'Offline' : 'Online'} · ${termination} · ${resultText}`;
+    item.append(header, meta);
+    if (typeof match.pgn === 'string' && match.pgn.trim()) {
+      const details = document.createElement('details');
+      const summary = document.createElement('summary');
+      summary.textContent = 'View moves (PGN)';
+      const pgn = document.createElement('pre');
+      pgn.textContent = match.pgn;
+      details.append(summary, pgn);
+      item.append(details);
+    }
+    list.append(item);
+  }
+}
+
+async function loadGameHistory(type = activeHistoryType) {
+  activeHistoryType = type;
+  document.querySelectorAll('[data-history-kind]').forEach((button) => {
+    const active = button.dataset.historyKind === type;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', String(active));
+  });
+  const status = document.querySelector('#history-status');
+  const signInButton = document.querySelector('#history-signin');
+  signInButton.hidden = true;
+  if (type === 'offline') {
+    try {
+      const saved = JSON.parse(localStorage.getItem(offlineGameHistoryStorageKey()) || '[]');
+      if (!Array.isArray(saved)) throw new Error('Saved offline match history has an invalid format.');
+      renderGameHistory(saved.filter((match) => match && typeof match.pgn === 'string'), type);
+      status.textContent = 'Offline matches are stored in this browser and are separate from online matches.';
+    } catch (error) {
+      console.error('Could not load offline match history:', error);
+      status.textContent = error.message || 'Could not load offline match history.';
+      document.querySelector('#history-list').replaceChildren();
+    }
+    return;
+  }
+  if (!authSession?.access_token) {
+    status.textContent = 'Sign in to load online matches saved to your account.';
+    document.querySelector('#history-list').replaceChildren();
+    signInButton.hidden = false;
+    return;
+  }
+  status.textContent = 'Loading online matches…';
+  try {
+    const matches = await requestSocialApi('/social/history/online');
+    renderGameHistory(Array.isArray(matches) ? matches : [], type);
+    status.textContent = 'Online matches are saved to your account and are separate from offline matches.';
+  } catch (error) {
+    console.error('Could not load online match history:', error);
+    status.textContent = error.message || 'Could not load online match history.';
+    document.querySelector('#history-list').replaceChildren();
+  }
+}
+
+function openGameHistory() {
+  if (!document.querySelector('#history-dialog').open) {
+    activeHistoryType = 'offline';
+    document.querySelector('#history-dialog').showModal();
+  }
+  void loadGameHistory(activeHistoryType);
 }
 
 async function refreshSocialPanel() {
@@ -3054,7 +3325,7 @@ function runSidebarAction(action) {
   else if (action === 'analysis') document.querySelector('#analysis-open').click();
   else if (action === 'suggest') document.querySelector('#suggest-move').click();
   else if (action === 'variants') customRulesDialog.showModal();
-  else if (action === 'history') document.querySelector('.moves-section').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  else if (action === 'history') openGameHistory();
   else if (action === 'opening-notes') document.querySelector('.game-insights').scrollIntoView({ behavior: 'smooth', block: 'center' });
   else if (action === 'settings') {
     renderSoundSettings();
@@ -3420,6 +3691,7 @@ function handleOnlineMessage(socket, message) {
     if (!restoreOnlinePosition(message)) return;
     updateOnlineStatus(`Connected to room ${onlineRoomCode}. You are ${playerColor === 'w' ? 'White' : 'Black'}.`);
     renderBoard();
+    void acknowledgeJoinedGameChallenge();
     onlineDialog.close();
     return;
   }
@@ -3685,10 +3957,14 @@ function finishDisconnectOnlineGame(socket = onlineSocket) {
   startNewGame();
 }
 
-function markGameResult(soundEvent = 'draw', humanScore = null) {
+function markGameResult(soundEvent = 'draw', humanScore = null, termination = 'draw') {
   if (gameResult) return;
   gameResult = true;
-  if (humanScore !== null) recordOfflineRating(humanScore);
+  const score = humanScore ?? (soundEvent === 'victory' ? 1 : soundEvent === 'defeat' ? 0 : 0.5);
+  if (!onlineMode && !onlineSpectating) {
+    recordOfflineRating(score);
+    recordOfflineMatch(score, termination);
+  }
   stopActiveSound();
   playSound(soundEvent);
 }
@@ -3780,7 +4056,7 @@ function tickClock() {
     playSound('clock-warning');
   }
   if (clock[activeColor] === 0) {
-      markGameResult(activeColor === playerColor ? 'defeat' : 'victory', activeColor === playerColor ? 0 : 1);
+      markGameResult(activeColor === playerColor ? 'defeat' : 'victory', activeColor === playerColor ? 0 : 1, 'time');
     gameMessage.textContent = activeColor === playerColor ? 'Time expired. You lose on time.' : 'The opponent ran out of time. You win!';
     renderBoard();
   }
@@ -4205,18 +4481,34 @@ document.querySelector('#profile-add-friend').addEventListener('click', async ()
   const incoming = socialOverview.incomingRequests.find((request) => (
     request.username.toLowerCase() === currentViewedProfile.username.toLowerCase()
   ));
+  const alreadyFriend = socialOverview.friends.some((friend) => (
+    (currentViewedProfile.id && friend.id === currentViewedProfile.id)
+    || friend.username.toLowerCase() === currentViewedProfile.username.toLowerCase()
+  ));
+  if (!incoming && alreadyFriend) {
+    renderProfileActions(currentViewedProfile, false);
+    status.textContent = `You are already friends with @${currentViewedProfile.username}.`;
+    return;
+  }
   status.textContent = incoming ? 'Accepting friend request…' : 'Sending friend request…';
   try {
+    let result = { status: 'accepted' };
     if (incoming) {
       await requestSocialApi('/social/friends/respond', 'POST', { requestId: incoming.id, accept: true });
     } else {
-      await requestSocialApi('/social/friends/request', 'POST', { username: currentViewedProfile.username });
+      result = await requestSocialApi('/social/friends/request', 'POST', { username: currentViewedProfile.username });
     }
     await refreshSocialOverview();
     renderProfileActions(currentViewedProfile, false);
-    status.textContent = incoming
+    status.textContent = incoming || result.status === 'accepted'
       ? `You are now friends with @${currentViewedProfile.username}.`
-      : `Friend request sent to @${currentViewedProfile.username}.`;
+      : result.status === 'already_friends'
+        ? `You are already friends with @${currentViewedProfile.username}.`
+        : result.status === 'incoming'
+          ? `@${currentViewedProfile.username} already sent you a request. Open Friends → Requests to accept it.`
+          : result.status === 'pending'
+            ? `A friend request to @${currentViewedProfile.username} is already pending.`
+            : `Friend request sent to @${currentViewedProfile.username}.`;
   } catch (error) {
     console.error('Could not update profile friendship:', error);
     status.textContent = error.message || 'Could not update friend request.';
@@ -4249,6 +4541,32 @@ document.querySelector('#profile-block').addEventListener('click', async () => {
   }
 });
 document.querySelector('#profile-challenge').addEventListener('click', challengeProfilePlayer);
+document.querySelector('#challenge-close').addEventListener('click', () => {
+  profileChallengeUsername = '';
+  document.querySelector('#challenge-dialog').close();
+});
+document.querySelector('#challenge-play-now').addEventListener('click', () => {
+  if (!profileChallengeUsername) return;
+  const username = profileChallengeUsername;
+  document.querySelector('#challenge-dialog').close();
+  document.querySelector('#online-status').textContent =
+    `Create a private lobby to challenge @${username}. Their inbox will receive the join invitation.`;
+  openOnlineDialog('friends');
+});
+document.querySelector('#challenge-schedule-toggle').addEventListener('click', () => {
+  const form = document.querySelector('#challenge-schedule-form');
+  form.hidden = false;
+  const dateInput = document.querySelector('#challenge-scheduled-at');
+  const minDate = new Date(Date.now() + 60_000 - new Date().getTimezoneOffset() * 60_000);
+  dateInput.min = minDate.toISOString().slice(0, 16);
+  dateInput.focus();
+});
+document.querySelector('#challenge-schedule-form').addEventListener('submit', sendScheduledProfileChallenge);
+document.querySelector('#history-close').addEventListener('click', () => document.querySelector('#history-dialog').close());
+document.querySelectorAll('[data-history-kind]').forEach((button) => {
+  button.addEventListener('click', () => void loadGameHistory(button.dataset.historyKind));
+});
+document.querySelector('#history-signin').addEventListener('click', () => openAccountDialog('signin'));
 document.querySelector('#dock-country-save').addEventListener('click', async () => {
   const countryCode = document.querySelector('#dock-country-select').value;
   const status = document.querySelector('#dock-country-status');
@@ -4438,7 +4756,7 @@ document.querySelector('#resign').addEventListener('click', () => {
   if (onlineMode && onlineSocket?.readyState === WebSocket.OPEN) {
     onlineSocket.send(JSON.stringify({ type: 'resign' }));
   }
-  markGameResult('defeat', 0);
+  markGameResult('defeat', 0, 'resignation');
   gameMessage.textContent = onlineMode ? 'You resigned. Your opponent wins.' : 'You resigned. The opponent wins.';
   renderBoard();
 });
@@ -4452,7 +4770,7 @@ document.querySelector('#offer-draw').addEventListener('click', () => {
   const accepted = !onlineMode && Math.abs(materialBalance) < 150;
   showMessage('Draw offer', accepted ? 'The bot accepts your draw offer.' : 'The bot declines. The game continues.');
   if (accepted) {
-    markGameResult('draw', 0.5);
+    markGameResult('draw', 0.5, 'draw');
     gameMessage.textContent = 'Draw by agreement.';
     renderBoard();
   }

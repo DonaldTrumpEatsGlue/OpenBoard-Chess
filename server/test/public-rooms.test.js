@@ -20,6 +20,8 @@ const socialFriendRequests = [];
 const socialFriendships = [];
 const socialDirectMessages = [];
 const socialBlocks = [];
+const socialChallenges = [];
+const onlineGameHistory = [];
 let userIdCounter = 1;
 let socialIdCounter = 1;
 let profileSchemaMissingOptionalColumns = false;
@@ -309,6 +311,9 @@ before(async () => {
         '/rest/v1/rpc/openboard_set_profile_country',
         '/rest/v1/rpc/openboard_update_profile',
         '/rest/v1/rpc/openboard_block_user',
+        '/rest/v1/rpc/openboard_create_game_challenge',
+        '/rest/v1/rpc/openboard_respond_game_challenge',
+        '/rest/v1/rpc/openboard_load_online_game_history',
       ].includes(request.url)) {
       if (socialSchemaMissing) {
         response.writeHead(404).end(JSON.stringify({
@@ -321,7 +326,24 @@ before(async () => {
       for await (const chunk of request) rawBody += chunk;
       const body = JSON.parse(rawBody);
       let result;
-      if (request.url === '/rest/v1/rpc/openboard_social_overview') {
+      if (request.url === '/rest/v1/rpc/openboard_load_online_game_history') {
+        result = onlineGameHistory
+          .filter((entry) => entry.whiteId === body.p_user_id || entry.blackId === body.p_user_id)
+          .map((entry) => {
+            const opponentId = entry.whiteId === body.p_user_id ? entry.blackId : entry.whiteId;
+            const opponent = [...authUsers.values()].find((candidate) => candidate.id === opponentId);
+            return {
+              id: entry.id,
+              createdAt: entry.createdAt,
+              opponentUsername: opponent.username,
+              playerColor: entry.whiteId === body.p_user_id ? 'w' : 'b',
+              result: entry.result,
+              termination: entry.termination,
+              pgn: entry.pgn,
+              roomCode: entry.roomCode,
+            };
+          });
+      } else if (request.url === '/rest/v1/rpc/openboard_social_overview') {
         const friendIds = socialFriendships
           .filter(([low, high]) => low === body.p_user_id || high === body.p_user_id)
           .map(([low, high]) => low === body.p_user_id ? high : low);
@@ -373,7 +395,78 @@ before(async () => {
           blockedBy: socialBlocks
             .filter((entry) => entry.blockedId === body.p_user_id)
             .map((entry) => entry.blockerId),
+          challengeNotifications: socialChallenges
+            .filter((entry) => entry.senderId === body.p_user_id || entry.recipientId === body.p_user_id)
+            .map((entry) => {
+              const sender = [...authUsers.values()].find((candidate) => candidate.id === entry.senderId);
+              const recipient = [...authUsers.values()].find((candidate) => candidate.id === entry.recipientId);
+              return {
+                id: entry.id,
+                senderId: sender.id,
+                senderUsername: sender.username,
+                senderCountryCode: sender.country_code,
+                senderAvatarData: sender.avatar_data,
+                recipientId: recipient.id,
+                recipientUsername: recipient.username,
+                recipientCountryCode: recipient.country_code,
+                recipientAvatarData: recipient.avatar_data,
+                challengeType: entry.challengeType,
+                roomCode: entry.roomCode,
+                scheduledAt: entry.scheduledAt,
+                status: entry.status,
+                createdAt: entry.createdAt,
+                isIncoming: entry.recipientId === body.p_user_id,
+              };
+            }),
         };
+      } else if (request.url === '/rest/v1/rpc/openboard_create_game_challenge') {
+        const recipient = [...authUsers.values()].find((candidate) => (
+          candidate.username.toLowerCase() === body.p_username_key
+        ));
+        if (!recipient || recipient.id === body.p_sender_id) {
+          response.writeHead(400).end(JSON.stringify({ message: 'No player was found with that username.' }));
+          return;
+        }
+        if (socialBlocks.some((entry) => (
+          (entry.blockerId === body.p_sender_id && entry.blockedId === recipient.id)
+          || (entry.blockerId === recipient.id && entry.blockedId === body.p_sender_id)
+        ))) {
+          response.writeHead(400).end(JSON.stringify({ message: 'This player cannot receive a challenge.' }));
+          return;
+        }
+        const existing = socialChallenges.find((entry) => (
+          entry.senderId === body.p_sender_id
+          && entry.recipientId === recipient.id
+          && entry.status === 'pending'
+        ));
+        if (existing) {
+          result = { status: 'already_pending', id: existing.id };
+        } else {
+          const entry = {
+            id: nextSocialId(),
+            senderId: body.p_sender_id,
+            recipientId: recipient.id,
+            challengeType: body.p_challenge_type,
+            roomCode: body.p_room_code,
+            scheduledAt: body.p_scheduled_at,
+            status: 'pending',
+            createdAt: new Date().toISOString(),
+          };
+          socialChallenges.push(entry);
+          result = { status: 'sent', id: entry.id };
+        }
+      } else if (request.url === '/rest/v1/rpc/openboard_respond_game_challenge') {
+        const challenge = socialChallenges.find((entry) => (
+          entry.id === body.p_challenge_id
+          && entry.recipientId === body.p_user_id
+          && entry.status === 'pending'
+        ));
+        if (!challenge) {
+          response.writeHead(400).end(JSON.stringify({ message: 'That challenge is no longer available.' }));
+          return;
+        }
+        challenge.status = body.p_accept ? 'accepted' : 'declined';
+        result = { status: challenge.status };
       } else if (request.url === '/rest/v1/rpc/openboard_send_friend_request') {
         const recipient = [...authUsers.values()].find((candidate) => (
           candidate.username.toLowerCase() === body.p_username_key
@@ -525,6 +618,13 @@ before(async () => {
               socialFriendRequests.splice(index, 1);
             }
           }
+          for (const challenge of socialChallenges) {
+            if (challenge.status === 'pending'
+              && ((challenge.senderId === body.p_user_id && challenge.recipientId === target.id)
+                || (challenge.senderId === target.id && challenge.recipientId === body.p_user_id))) {
+              challenge.status = 'expired';
+            }
+          }
         } else if (!body.p_block && existing) {
           socialBlocks.splice(socialBlocks.indexOf(existing), 1);
         }
@@ -536,7 +636,12 @@ before(async () => {
     if (request.url === '/rest/v1/rpc/settle_openboard_rated_game') {
       let rawBody = '';
       for await (const chunk of request) rawBody += chunk;
-      const { p_white_id: whiteId, p_black_id: blackId, p_white_score: whiteScore } = JSON.parse(rawBody);
+      const requestBody = JSON.parse(rawBody);
+      const {
+        p_white_id: whiteId,
+        p_black_id: blackId,
+        p_white_score: whiteScore,
+      } = requestBody;
       const whiteEntry = [...authUsers.entries()].find(([, candidate]) => candidate.id === whiteId);
       const blackEntry = [...authUsers.entries()].find(([, candidate]) => candidate.id === blackId);
       if (!whiteEntry || !blackEntry) {
@@ -555,7 +660,17 @@ before(async () => {
       const blackResult = whiteScore === 0 ? 'win' : whiteScore === 1 ? 'loss' : 'draw';
       white[`online_${whiteResult === 'win' ? 'wins' : whiteResult === 'loss' ? 'losses' : 'draws'}`] += 1;
       black[`online_${blackResult === 'win' ? 'wins' : blackResult === 'loss' ? 'losses' : 'draws'}`] += 1;
-      ratedGameRequests.push(JSON.parse(rawBody));
+      ratedGameRequests.push(requestBody);
+      onlineGameHistory.push({
+        id: requestBody.p_game_id,
+        roomCode: requestBody.p_room_code,
+        whiteId,
+        blackId,
+        result: whiteScore === 1 ? '1-0' : whiteScore === 0 ? '0-1' : '1/2-1/2',
+        termination: requestBody.p_termination,
+        pgn: requestBody.p_pgn,
+        createdAt: new Date().toISOString(),
+      });
       response.writeHead(200).end(JSON.stringify({
         white: { username: white.username, online_elo: white.online_elo, online_games: white.online_games },
         black: { username: black.username, online_elo: black.online_elo, online_games: black.online_games },
@@ -714,9 +829,13 @@ test('database schema reserves usernames and keeps social data behind server-onl
   assert.match(schema, /create table if not exists public\.friend_requests/i);
   assert.match(schema, /create table if not exists public\.friendships/i);
   assert.match(schema, /create table if not exists public\.direct_messages/i);
+  assert.match(schema, /create table if not exists public\.online_game_history/i);
   assert.match(schema, /alter table public\.direct_messages enable row level security/i);
-  assert.match(schema, /revoke all on public\.friend_requests, public\.friendships, public\.direct_messages, public\.user_blocks from public, anon, authenticated/i);
+  assert.match(schema, /revoke all on public\.friend_requests, public\.friendships, public\.direct_messages, public\.user_blocks, public\.game_challenges, public\.online_game_history from public, anon, authenticated/i);
   assert.match(schema, /grant execute on function public\.openboard_social_overview\(uuid\) to service_role/i);
+  assert.match(schema, /openboard_create_game_challenge\(\s*p_sender_id uuid,\s*p_username_key text,\s*p_challenge_type text/i);
+  assert.match(schema, /openboard_respond_game_challenge\(\s*p_user_id uuid,\s*p_challenge_id uuid,\s*p_accept boolean\s*\)/i);
+  assert.match(schema, /openboard_load_online_game_history\(p_user_id uuid\)/i);
   assert.match(schema, /grant execute on function public\.openboard_send_direct_message\(uuid, text, text\) to service_role/i);
   assert.match(schema, /online_elo integer not null default 1200/i);
   assert.match(schema, /openboard_set_profile_country\(p_user_id uuid, p_country_code text\)/i);
@@ -961,6 +1080,16 @@ test('completed online games update both player ratings and records exactly once
     assert.equal(blackProfile.body.onlineGames, 1);
     assert.equal(blackProfile.body.onlineLosses, 1);
     assert.equal(ratedGameRequests.length, 1);
+    assert.equal(ratedGameRequests[0].p_room_code, room.code);
+    assert.match(ratedGameRequests[0].p_game_id, /^[0-9a-f-]{36}$/i);
+    assert.match(ratedGameRequests[0].p_pgn, /e4/);
+    assert.equal(ratedGameRequests[0].p_termination, 'resignation');
+    const whiteHistory = await getJson(socialUrl('/social/history/online'), whiteToken);
+    assert.equal(whiteHistory.status, 200);
+    assert.equal(whiteHistory.body[0].opponentUsername, 'RatingBlack');
+    assert.equal(whiteHistory.body[0].result, '1-0');
+    assert.equal(whiteHistory.body[0].playerColor, 'w');
+    assert.match(whiteHistory.body[0].pgn, /e4/);
   } finally {
     white.close();
     black.close();
@@ -1632,6 +1761,7 @@ test('social API protects friend requests and direct messages behind account aut
     friends: [],
     incomingRequests: [],
     outgoingRequests: [],
+    challengeNotifications: [],
     blockedUsers: [],
     blockedBy: [],
   });
@@ -1683,6 +1813,85 @@ test('social API protects friend requests and direct messages behind account aut
   assert.equal(senderFriends.body.friends.length, 1);
   assert.equal(senderFriends.body.friends[0].username, 'SocialRecipient');
   assert.equal(senderFriends.body.friends[0].countryCode, 'CA');
+
+  const duplicateFriendRequest = await postJson(
+    socialUrl('/social/friends/request'),
+    { username: 'SocialRecipient' },
+    undefined,
+    senderHeaders,
+  );
+  assert.equal(duplicateFriendRequest.status, 200);
+  assert.equal(duplicateFriendRequest.body.status, 'already_friends');
+  assert.equal((await getJson(socialUrl('/social/overview'), recipientToken)).body.incomingRequests.length, 0);
+
+  const invalidPlayNowChallenge = await postJson(
+    socialUrl('/social/challenges'),
+    { username: 'SocialRecipient', challengeType: 'now', roomCode: 'bad' },
+    undefined,
+    senderHeaders,
+  );
+  assert.equal(invalidPlayNowChallenge.status, 400);
+
+  const playNowChallenge = await postJson(
+    socialUrl('/social/challenges'),
+    { username: 'SocialRecipient', challengeType: 'now', roomCode: 'A1B2C3' },
+    undefined,
+    senderHeaders,
+  );
+  assert.equal(playNowChallenge.status, 200, JSON.stringify(playNowChallenge.body));
+  assert.equal(playNowChallenge.body.status, 'sent');
+  const duplicateChallenge = await postJson(
+    socialUrl('/social/challenges'),
+    { username: 'SocialRecipient', challengeType: 'now', roomCode: 'D4E5F6' },
+    undefined,
+    senderHeaders,
+  );
+  assert.equal(duplicateChallenge.body.status, 'already_pending');
+  const recipientChallengeInbox = await getJson(socialUrl('/social/overview'), recipientToken);
+  assert.equal(recipientChallengeInbox.body.challengeNotifications.length, 1);
+  assert.equal(recipientChallengeInbox.body.challengeNotifications[0].senderUsername, 'SocialSender');
+  assert.equal(recipientChallengeInbox.body.challengeNotifications[0].challengeType, 'now');
+  assert.equal(recipientChallengeInbox.body.challengeNotifications[0].roomCode, 'A1B2C3');
+  const acceptedPlayNowChallenge = await postJson(
+    socialUrl('/social/challenges/respond'),
+    { challengeId: playNowChallenge.body.id, accept: true },
+    undefined,
+    recipientHeaders,
+  );
+  assert.deepEqual(acceptedPlayNowChallenge.body, { status: 'accepted' });
+  const senderChallengeInboxAfterAccept = await getJson(socialUrl('/social/overview'), senderToken);
+  assert.equal(senderChallengeInboxAfterAccept.body.challengeNotifications.find((entry) => (
+    entry.id === playNowChallenge.body.id
+  )).status, 'accepted');
+
+  const pastScheduledChallenge = await postJson(
+    socialUrl('/social/challenges'),
+    { username: 'SocialDecliner', challengeType: 'scheduled', scheduledAt: new Date(Date.now() - 60_000).toISOString() },
+    undefined,
+    senderHeaders,
+  );
+  assert.equal(pastScheduledChallenge.status, 400);
+
+  const scheduleTime = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  const scheduledChallenge = await postJson(
+    socialUrl('/social/challenges'),
+    { username: 'SocialDecliner', challengeType: 'scheduled', scheduledAt: scheduleTime },
+    undefined,
+    senderHeaders,
+  );
+  assert.equal(scheduledChallenge.status, 200, JSON.stringify(scheduledChallenge.body));
+  assert.equal(scheduledChallenge.body.status, 'sent');
+  const declinedChallenge = await postJson(
+    socialUrl('/social/challenges/respond'),
+    { challengeId: scheduledChallenge.body.id, accept: false },
+    undefined,
+    declinerHeaders,
+  );
+  assert.deepEqual(declinedChallenge.body, { status: 'declined' });
+  const senderChallengeInbox = await getJson(socialUrl('/social/overview'), senderToken);
+  assert.equal(senderChallengeInbox.body.challengeNotifications.find((entry) => (
+    entry.id === scheduledChallenge.body.id
+  )).status, 'declined');
 
   const deniedMessage = await postJson(
     socialUrl('/social/messages'),
