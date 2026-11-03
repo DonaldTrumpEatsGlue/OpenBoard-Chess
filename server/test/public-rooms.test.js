@@ -188,12 +188,14 @@ function socialUrl(pathname) {
 
 function waitForMessage(socket, predicate) {
   return new Promise((resolve, reject) => {
+    let lastMessage;
     const timeout = setTimeout(() => {
       socket.off('message', onMessage);
-      reject(new Error('Timed out waiting for the expected room message.'));
+      reject(new Error(`Timed out waiting for the expected room message. Last message: ${JSON.stringify(lastMessage)}`));
     }, 10_000);
     const onMessage = (data) => {
       const message = JSON.parse(data.toString());
+      lastMessage = message;
       if (!predicate(message)) return;
       clearTimeout(timeout);
       socket.off('message', onMessage);
@@ -1067,17 +1069,10 @@ test('completed online games update both player ratings and records exactly once
     await Promise.all([whiteMove, blackMove]);
 
     const whiteResigned = waitForMessage(white, (message) => message.type === 'resigned');
-    const blackResigned = waitForMessage(black, (message) => message.type === 'resigned');
     const whiteUpdated = waitForMessage(white, (message) => message.type === 'rating-updated');
     const blackUpdated = waitForMessage(black, (message) => message.type === 'rating-updated');
     black.send(JSON.stringify({ type: 'resign' }));
-    const [whiteResignedMessage, blackResignedMessage] = await Promise.all([whiteResigned, blackResigned]);
-    assert.equal(whiteResignedMessage.color, 'b');
-    assert.equal(blackResignedMessage.color, 'b');
-    await Promise.all([whiteUpdated, blackUpdated]);
-    const endedMove = await request(black, { type: 'move', from: 'e7', to: 'e5' });
-    assert.equal(endedMove.type, 'error');
-    assert.match(endedMove.message, /already ended/i);
+    await Promise.all([whiteResigned, whiteUpdated, blackUpdated]);
 
     const whiteProfileUrl = new URL(endpoint);
     whiteProfileUrl.protocol = 'http:';
@@ -1128,6 +1123,247 @@ test('unplayed online games do not change player ratings', async () => {
     black.send(JSON.stringify({ type: 'resign' }));
     await Promise.all([notRated, blackResigned]);
     assert.equal(ratedGameRequests.length, ratingRequestCount);
+  } finally {
+    white.close();
+    black.close();
+  }
+});
+
+test('completed players must both agree to rematch and alternate colors without overwriting results', async () => {
+  const white = await connect(undefined, 'RematchPlayerOne');
+  const black = await connect(undefined, 'RematchPlayerTwo');
+  const resultCount = ratedGameRequests.length;
+  try {
+    const room = await request(white, { type: 'create-room', lobbyName: 'Rematch room' });
+    const whiteStart = waitForMessage(white, (message) => message.type === 'game-start');
+    const blackStart = request(black, { type: 'join-room', code: room.code });
+    await Promise.all([whiteStart, blackStart]);
+
+    const firstMoveWhite = waitForMessage(white, (message) => message.type === 'move');
+    const firstMoveBlack = waitForMessage(black, (message) => message.type === 'move');
+    white.send(JSON.stringify({ type: 'move', from: 'e2', to: 'e4' }));
+    await Promise.all([firstMoveWhite, firstMoveBlack]);
+
+    const whiteResigned = waitForMessage(white, (message) => message.type === 'resigned');
+    const blackResigned = waitForMessage(black, (message) => message.type === 'resigned');
+    const oldGameEnded = waitForMessage(white, (message) => message.type === 'game-ended');
+    const firstRatingSaved = waitForMessage(white, (message) => message.type === 'rating-updated');
+    black.send(JSON.stringify({ type: 'resign' }));
+    const [, , endedGame] = await Promise.all([whiteResigned, blackResigned, oldGameEnded, firstRatingSaved]);
+    const originalGameId = endedGame.gameId;
+    const oldPgn = ratedGameRequests.at(-1).p_pgn;
+    assert.match(oldPgn, /e4/);
+
+    let offerToBlack = waitForMessage(black, (message) => message.type === 'rematch-offered');
+    const requested = await sendAndWait(white, {
+      type: 'rematch-request',
+      gameId: originalGameId,
+    }, (message) => message.type === 'rematch-waiting');
+    let offer = await offerToBlack;
+    assert.equal(requested.requestId, offer.requestId);
+    assert.equal(offer.gameId, originalGameId);
+
+    const cancelledByRequester = waitForMessage(white, (message) => message.type === 'rematch-request-cancelled');
+    const cancelledForOpponent = waitForMessage(black, (message) => message.type === 'rematch-cancelled');
+    white.send(JSON.stringify({
+      type: 'rematch-cancel',
+      requestId: requested.requestId,
+      gameId: originalGameId,
+    }));
+    await Promise.all([cancelledByRequester, cancelledForOpponent]);
+    offerToBlack = waitForMessage(black, (message) => message.type === 'rematch-offered');
+    const requestAgain = await sendAndWait(white, {
+      type: 'rematch-request',
+      gameId: originalGameId,
+    }, (message) => message.type === 'rematch-waiting');
+    offer = await offerToBlack;
+    assert.notEqual(requestAgain.requestId, requested.requestId);
+
+    const duplicate = await request(white, { type: 'rematch-request', gameId: originalGameId });
+    assert.equal(duplicate.type, 'error');
+
+    const whiteAccepted = waitForMessage(white, (message) => message.type === 'rematch-accepted');
+    const blackAccepted = waitForMessage(black, (message) => message.type === 'rematch-accepted');
+    const whiteRematch = waitForMessage(white, (message) => message.type === 'game-start' && message.rematch);
+    const blackRematch = waitForMessage(black, (message) => message.type === 'game-start' && message.rematch);
+    black.send(JSON.stringify({
+      type: 'rematch-response',
+      requestId: requestAgain.requestId,
+      gameId: originalGameId,
+      accept: true,
+    }));
+    await Promise.all([whiteAccepted, blackAccepted]);
+    const [whitePosition, blackPosition] = await Promise.all([whiteRematch, blackRematch]);
+    assert.equal(whitePosition.color, 'b');
+    assert.equal(blackPosition.color, 'w');
+    assert.equal(whitePosition.fen, blackPosition.fen);
+    assert.deepEqual(whitePosition.moves, []);
+    assert.notEqual(whitePosition.gameId, originalGameId);
+    assert.equal(ratedGameRequests.length, resultCount + 1);
+    assert.equal(ratedGameRequests.at(-1).p_pgn, oldPgn);
+
+    const secondMove = waitForMessage(black, (message) => message.type === 'move');
+    const secondMovePeer = waitForMessage(white, (message) => message.type === 'move');
+    black.send(JSON.stringify({ type: 'move', from: 'e2', to: 'e4' }));
+    await Promise.all([secondMove, secondMovePeer]);
+    const secondResign = waitForMessage(white, (message) => message.type === 'resigned');
+    const secondResignPeer = waitForMessage(black, (message) => message.type === 'resigned');
+    const secondRatingSaved = waitForMessage(black, (message) => message.type === 'rating-updated');
+    white.send(JSON.stringify({ type: 'resign' }));
+    await Promise.all([secondResign, secondResignPeer, secondRatingSaved]);
+
+    const secondOffer = waitForMessage(white, (message) => message.type === 'rematch-offered');
+    const secondRequest = await sendAndWait(black, {
+      type: 'rematch-request',
+      gameId: blackPosition.gameId,
+    }, (message) => message.type === 'rematch-waiting');
+    assert.equal((await secondOffer).requestId, secondRequest.requestId);
+    const declined = waitForMessage(black, (message) => message.type === 'rematch-declined');
+    const declineConfirmed = waitForMessage(white, (message) => message.type === 'rematch-declined-confirmed');
+    white.send(JSON.stringify({
+      type: 'rematch-response',
+      requestId: secondRequest.requestId,
+      gameId: blackPosition.gameId,
+      accept: false,
+    }));
+    await Promise.all([declined, declineConfirmed]);
+    assert.equal(ratedGameRequests.length, resultCount + 2);
+  } finally {
+    white.close();
+    black.close();
+  }
+});
+
+test('a pending rematch is cancelled when a player returns to menu or disconnects', async () => {
+  const cases = [
+    { leaving: 'menu', expected: 'opponent-returned-to-menu' },
+    { leaving: 'disconnect', expected: 'rematch-opponent-disconnected' },
+  ];
+  for (const [index, scenario] of cases.entries()) {
+    const white = await connect(undefined, `RematchLeaveWhite${index}`);
+    const black = await connect(undefined, `RematchLeaveBlack${index}`);
+    try {
+      const room = await request(white, { type: 'create-room', lobbyName: 'Rematch departure' });
+      const whiteStart = waitForMessage(white, (message) => message.type === 'game-start');
+      const [initialPosition] = await Promise.all([
+        whiteStart,
+        request(black, { type: 'join-room', code: room.code }),
+      ]);
+      const whiteResigned = waitForMessage(white, (message) => message.type === 'resigned');
+      const blackResigned = waitForMessage(black, (message) => message.type === 'resigned');
+      white.send(JSON.stringify({ type: 'resign' }));
+      await Promise.all([whiteResigned, blackResigned]);
+      const offer = waitForMessage(black, (message) => message.type === 'rematch-offered');
+      const requestSent = await sendAndWait(white, {
+        type: 'rematch-request',
+        gameId: initialPosition.gameId,
+      }, (message) => message.type === 'rematch-waiting');
+      const rematch = await offer;
+      assert.equal(requestSent.requestId, rematch.requestId);
+      const departure = waitForMessage(black, (message) => message.type === scenario.expected);
+      if (scenario.leaving === 'menu') {
+        await request(white, { type: 'leave-room' });
+      } else {
+        white.close();
+      }
+      await departure;
+    } finally {
+      white.close();
+      black.close();
+    }
+  }
+});
+
+test('checkmate ends the online room and rejects further moves', async () => {
+  const white = await connect(undefined, 'MateTestWhite');
+  const black = await connect(undefined, 'MateTestBlack');
+  try {
+    const room = await request(white, { type: 'create-room', lobbyName: 'Checkmate test' });
+    const whiteStart = waitForMessage(white, (message) => message.type === 'game-start');
+    await Promise.all([
+      whiteStart,
+      request(black, { type: 'join-room', code: room.code }),
+    ]);
+
+    const line = [
+      [white, 'f2', 'f3'],
+      [black, 'e7', 'e5'],
+      [white, 'g2', 'g4'],
+    ];
+    for (const [socket, from, to] of line) {
+      const peer = socket === white ? black : white;
+      const ownMove = waitForMessage(socket, (message) => message.type === 'move');
+      const peerMove = waitForMessage(peer, (message) => message.type === 'move');
+      socket.send(JSON.stringify({ type: 'move', from, to }));
+      await Promise.all([ownMove, peerMove]);
+    }
+
+    const whiteMate = waitForMessage(white, (message) => message.type === 'game-ended');
+    const blackMate = waitForMessage(black, (message) => message.type === 'game-ended');
+    const whiteFinish = waitForMessage(white, (message) => message.type === 'move'
+      && message.gameOver);
+    const blackFinish = waitForMessage(black, (message) => message.type === 'move'
+      && message.gameOver);
+    black.send(JSON.stringify({ type: 'move', from: 'd8', to: 'h4' }));
+    const [whiteEnded, blackEnded, whiteFinalMove, blackFinalMove] = await Promise.all([
+      whiteMate, blackMate, whiteFinish, blackFinish,
+    ]);
+    assert.equal(whiteEnded.termination, 'checkmate');
+    assert.equal(blackEnded.whiteScore, 0);
+    assert.equal(whiteFinalMove.fen, blackFinalMove.fen);
+    assert.equal(whiteFinalMove.gameOver, true);
+
+    const rejected = await request(white, { type: 'move', from: 'e2', to: 'e4' });
+    assert.equal(rejected.type, 'error');
+    assert.match(rejected.message, /already ended/i);
+    const rejoined = await sendAndWait(white, { type: 'leave-room' }, (message) => message.type === 'left-room');
+    assert.equal(rejoined.type, 'left-room');
+  } finally {
+    white.close();
+    black.close();
+  }
+});
+
+test('threefold repetition ends the online game as a draw', async () => {
+  const white = await connect(undefined, 'RepetitionTestWhite');
+  const black = await connect(undefined, 'RepetitionTestBlack');
+  try {
+    const room = await request(white, { type: 'create-room', lobbyName: 'Repetition test' });
+    const whiteStart = waitForMessage(white, (message) => message.type === 'game-start');
+    await Promise.all([
+      whiteStart,
+      request(black, { type: 'join-room', code: room.code }),
+    ]);
+
+    const line = [
+      [white, 'g1', 'f3'],
+      [black, 'g8', 'f6'],
+      [white, 'f3', 'g1'],
+      [black, 'f6', 'g8'],
+      [white, 'g1', 'f3'],
+      [black, 'g8', 'f6'],
+      [white, 'f3', 'g1'],
+      [black, 'f6', 'g8'],
+    ];
+    let whiteEnded;
+    let blackEnded;
+    for (const [index, [socket, from, to]] of line.entries()) {
+      const peer = socket === white ? black : white;
+      const ownMove = waitForMessage(socket, (message) => message.type === 'move');
+      const peerMove = waitForMessage(peer, (message) => message.type === 'move');
+      if (index === line.length - 1) {
+        whiteEnded = waitForMessage(white, (message) => message.type === 'game-ended');
+        blackEnded = waitForMessage(black, (message) => message.type === 'game-ended');
+      }
+      socket.send(JSON.stringify({ type: 'move', from, to }));
+      await Promise.all([ownMove, peerMove]);
+    }
+
+    const [whiteResult, blackResult] = await Promise.all([whiteEnded, blackEnded]);
+    assert.equal(whiteResult.termination, 'threefold');
+    assert.equal(whiteResult.whiteScore, 0.5);
+    assert.equal(blackResult.gameId, whiteResult.gameId);
+    assert.equal(blackResult.termination, 'threefold');
   } finally {
     white.close();
     black.close();

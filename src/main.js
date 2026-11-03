@@ -26,6 +26,9 @@ const socialPanel = document.querySelector('#social-panel');
 const onlineLeaveDialog = document.querySelector('#online-leave-dialog');
 const onlineOpponentLeftDialog = document.querySelector('#online-opponent-left-dialog');
 const onlineDrawOfferDialog = document.querySelector('#online-draw-offer-dialog');
+const resignConfirmDialog = document.querySelector('#resign-confirm-dialog');
+const gameOverDialog = document.querySelector('#game-over-dialog');
+const rematchOfferDialog = document.querySelector('#rematch-offer-dialog');
 const pieceTheme = window.OpenboardPieceThemes.classic;
 const soundManifest = window.OpenboardSoundManifest;
 const defaultAudioSettings = {
@@ -246,6 +249,10 @@ let pendingAvatarData = null;
 let onlinePreviousClock = null;
 let onlinePreviousColor = null;
 let onlinePreviousRules = null;
+let currentOnlineGameId = null;
+let pendingRematchRequestId = null;
+let rematchRequestPending = false;
+let resignationPending = false;
 let customRulesDialogContext = 'game';
 let publicRooms = [];
 let publicRoomsTimer = null;
@@ -365,7 +372,8 @@ function offlineGameHistoryStorageKey() {
 }
 
 function recordOfflineMatch(score, termination) {
-  if (onlineMode || onlineSpectating || analysisMode || puzzleMode || practiceGame || !game.history().length) return;
+  if (onlineMode || onlineSpectating || analysisMode || puzzleMode || practiceGame
+    || (!game.history().length && termination !== 'resignation')) return;
   const result = score === 1 ? 'win' : score === 0 ? 'loss' : 'draw';
   const storageKey = offlineGameHistoryStorageKey();
   let matches = [];
@@ -1740,16 +1748,16 @@ function updateGameState() {
     const humanScore = customRules.noDraws
       ? game.turn() === playerColor ? 0 : 1
       : 0.5;
-    markGameResult(humanScore === 0 ? 'defeat' : humanScore === 1 ? 'victory' : 'draw', humanScore, 'draw');
+    markGameResult(humanScore === 0 ? 'defeat' : humanScore === 1 ? 'victory' : 'draw', humanScore, 'stalemate');
   } else if (isThreefoldRepetition()) {
     gameMessage.textContent = 'Draw by threefold repetition.';
-    markGameResult('draw', 0.5, 'draw');
+    markGameResult('draw', 0.5, 'threefold');
   } else if (isInsufficientMaterial()) {
     gameMessage.textContent = 'Draw by insufficient material.';
-    markGameResult('draw', 0.5, 'draw');
-  } else if (isDraw()) {
-    gameMessage.textContent = 'The game is a draw.';
-    markGameResult('draw', 0.5, 'draw');
+    markGameResult('draw', 0.5, 'insufficient');
+  } else if (!customRules.noDraws && Number(game.fen().split(' ')[4]) >= 100) {
+    gameMessage.textContent = 'Draw by the 50-move rule.';
+    markGameResult('draw', 0.5, 'fiftyMove');
   } else if (aiThinking) {
     gameMessage.textContent = 'The engine is thinking…';
   } else if (isCheck()) {
@@ -4015,7 +4023,7 @@ function updateOnlineChatAvailability() {
   }
 }
 
-function setOnlineGameState(active, spectating = false) {
+function setOnlineGameState(active, spectating = false, preserveVariant = false) {
   if (active && !onlinePreviousRules) onlinePreviousRules = JSON.parse(JSON.stringify(customRules));
   if (active && onlinePreviousClock === null) {
     onlinePreviousClock = timeControlSelect.value;
@@ -4045,7 +4053,7 @@ function setOnlineGameState(active, spectating = false) {
     configureOnlineControls(true, onlineSpectating);
   } else {
     if (onlinePreviousRules) {
-      customRules = onlinePreviousRules;
+      if (!preserveVariant) customRules = onlinePreviousRules;
       onlinePreviousRules = null;
       populateCustomRulesForm();
       updateCustomRulesSummary();
@@ -4211,6 +4219,12 @@ function handleOnlineMessage(socket, message) {
   if (socket !== onlineSocket || !message || typeof message.type !== 'string') return;
   if (message.type === 'error') {
     if (onlineCreatePending) setOnlineCreatePending(false);
+    if (resignationPending) resignationPending = false;
+    if (rematchRequestPending) {
+      rematchRequestPending = false;
+      document.querySelector('#game-over-rematch').disabled = false;
+      document.querySelector('#game-over-rematch').textContent = 'Rematch';
+    }
     if (onlineMode) gameMessage.textContent = message.message || 'The room server rejected that action.';
     if (!onlineIdentityVerified) {
       onlinePendingRequest = null;
@@ -4260,6 +4274,7 @@ function handleOnlineMessage(socket, message) {
       return;
     }
     onlineRoomCode = message.code;
+    currentOnlineGameId = message.gameId || null;
     saveOnlineRoomCode(onlineRoomCode);
     playerColor = message.color;
     playColorSelect.value = playerColor;
@@ -4298,6 +4313,14 @@ function handleOnlineMessage(socket, message) {
   }
   if (message.type === 'game-start') {
     onlineRoomCode = message.code;
+    currentOnlineGameId = message.gameId || null;
+    if (message.rematch) {
+      if (gameOverDialog.open) gameOverDialog.close();
+      if (rematchOfferDialog.open) rematchOfferDialog.close();
+      pendingRematchRequestId = null;
+      rematchRequestPending = false;
+      updateOnlineStatus('Rematch accepted. Starting a new game with colors switched.');
+    }
     updateSpectatorCount(message.spectators);
     saveOnlineRoomCode(onlineRoomCode);
     if (onlineOpponentLeftDialog.open) onlineOpponentLeftDialog.close();
@@ -4308,6 +4331,7 @@ function handleOnlineMessage(socket, message) {
       renderSpectatorPlayers(message.players, message.playerCountries);
       setOnlineChatHistory({ players: message.playerChat, spectators: message.spectatorChat });
       restoreOnlinePosition(message);
+      if (message.gameOver) finishOnlineGameFromServer(message);
       updateOnlineStatus(`Spectating ${message.players?.w || 'White'} vs ${message.players?.b || 'Black'}.`);
       renderBoard();
       onlineDialog.close();
@@ -4331,6 +4355,7 @@ function handleOnlineMessage(socket, message) {
     playColorSelect.value = playerColor;
     flipped = playerColor === 'b';
     if (!restoreOnlinePosition(message)) return;
+    if (message.gameOver) finishOnlineGameFromServer(message);
     updateOnlineStatus(`Connected to room ${onlineRoomCode}. You are ${playerColor === 'w' ? 'White' : 'Black'}.`);
     renderBoard();
     void acknowledgeJoinedGameChallenge();
@@ -4348,6 +4373,7 @@ function handleOnlineMessage(socket, message) {
     setOnlineChatHistory({ players: message.playerChat, spectators: message.spectatorChat });
     updateOnlineChatAvailability();
     if (!restoreOnlinePosition(message)) return;
+    if (message.gameOver) finishOnlineGameFromServer(message);
     const watching = `${message.spectators || 1} ${message.spectators === 1 ? 'spectator' : 'spectators'}`;
     updateOnlineStatus(message.waiting
       ? `Watching room ${onlineRoomCode}. Waiting for the game to start · ${watching}.`
@@ -4375,6 +4401,78 @@ function handleOnlineMessage(socket, message) {
   }
   if (message.type === 'rating-not-counted') {
     updateOnlineStatus('Game ended before the first move, so it was not rated.');
+    return;
+  }
+  if (message.type === 'game-ended') {
+    if (message.gameId !== currentOnlineGameId) return;
+    finishOnlineGameFromServer(message);
+    return;
+  }
+  if (message.type === 'rematch-waiting') {
+    pendingRematchRequestId = message.requestId;
+    rematchRequestPending = false;
+    document.querySelector('#game-over-rematch').disabled = false;
+    document.querySelector('#game-over-rematch').textContent = 'Cancel Request';
+    setGameOverStatus('Rematch requested. Waiting for your opponent...');
+    return;
+  }
+  if (message.type === 'rematch-offered') {
+    pendingRematchRequestId = message.requestId;
+    document.querySelector('#rematch-offer-message').textContent =
+      `${message.name || 'Your opponent'} wants a rematch. Accept to start a new game with colors switched.`;
+    if (!rematchOfferDialog.open) rematchOfferDialog.showModal();
+    setGameOverStatus('Your opponent requested a rematch.');
+    return;
+  }
+  if (message.type === 'rematch-request-cancelled') {
+    pendingRematchRequestId = null;
+    rematchRequestPending = false;
+    document.querySelector('#game-over-rematch').textContent = 'Rematch';
+    setGameOverStatus('Rematch request cancelled.');
+    return;
+  }
+  if (message.type === 'rematch-declined') {
+    pendingRematchRequestId = null;
+    rematchRequestPending = false;
+    document.querySelector('#game-over-rematch').textContent = 'Rematch';
+    setGameOverStatus('Your opponent declined the rematch.');
+    return;
+  }
+  if (message.type === 'rematch-declined-confirmed') {
+    pendingRematchRequestId = null;
+    rematchRequestPending = false;
+    if (rematchOfferDialog.open) rematchOfferDialog.close();
+    setGameOverStatus('You declined the rematch.');
+    return;
+  }
+  if (message.type === 'rematch-expired') {
+    pendingRematchRequestId = null;
+    rematchRequestPending = false;
+    document.querySelector('#game-over-rematch').disabled = false;
+    document.querySelector('#game-over-rematch').textContent = 'Rematch';
+    document.querySelector('#rematch-accept').disabled = false;
+    document.querySelector('#rematch-decline').disabled = false;
+    if (rematchOfferDialog.open) rematchOfferDialog.close();
+    setGameOverStatus('The rematch request expired without a response.');
+    return;
+  }
+  if (message.type === 'rematch-cancelled' || message.type === 'rematch-opponent-left'
+    || message.type === 'rematch-opponent-disconnected' || message.type === 'opponent-returned-to-menu'
+    || message.type === 'opponent-disconnected') {
+    pendingRematchRequestId = null;
+    rematchRequestPending = false;
+    document.querySelector('#game-over-rematch').textContent = 'Rematch';
+    if (rematchOfferDialog.open) rematchOfferDialog.close();
+    setGameOverStatus(message.message || (message.type === 'opponent-returned-to-menu'
+      ? 'Your opponent returned to the menu.'
+      : 'Your opponent disconnected.'));
+    return;
+  }
+  if (message.type === 'rematch-accepted') {
+    pendingRematchRequestId = null;
+    rematchRequestPending = false;
+    if (rematchOfferDialog.open) rematchOfferDialog.close();
+    setGameOverStatus('Your opponent accepted. Starting the rematch...');
     return;
   }
   if (message.type === 'draw-offer-sent') {
@@ -4444,17 +4542,13 @@ function handleOnlineMessage(socket, message) {
       return;
     }
     pendingPremove = null;
-    if (message.color === playerColor) {
-      markGameResult('defeat', 0, 'resignation');
-      gameMessage.textContent = 'You resigned. Your opponent wins.';
-      updateOnlineStatus('You resigned. Your opponent wins.');
-      renderBoard();
-    } else {
-      markGameResult('victory');
-      gameMessage.textContent = 'Your opponent resigned. You win!';
-      updateOnlineStatus('Your opponent resigned.');
-      renderBoard();
-    }
+    const youResigned = message.color === playerColor;
+    markGameResult(youResigned ? 'defeat' : 'victory', youResigned ? 0 : 1, 'resignation');
+    gameMessage.textContent = youResigned
+      ? 'You resigned. Your opponent wins.'
+      : 'Your opponent resigned. You win!';
+    updateOnlineStatus(gameMessage.textContent);
+    renderBoard();
     return;
   }
   if (message.type === 'room-ended') {
@@ -4601,7 +4695,7 @@ function disconnectOnlineGame() {
   finishDisconnectOnlineGame(socket);
 }
 
-function finishDisconnectOnlineGame(socket = onlineSocket) {
+function finishDisconnectOnlineGame(socket = onlineSocket, preserveCompletedGame = false) {
   if (socket !== onlineSocket) return;
   if (onlineLeaveTimeout !== null) {
     window.clearTimeout(onlineLeaveTimeout);
@@ -4614,6 +4708,7 @@ function finishDisconnectOnlineGame(socket = onlineSocket) {
   document.querySelector('#online-leave-confirm').disabled = false;
   onlineSocket = null;
   onlineRoomCode = null;
+  currentOnlineGameId = null;
   onlineReady = false;
   onlineIdentityVerified = false;
   onlinePendingRequest = null;
@@ -4621,10 +4716,95 @@ function finishDisconnectOnlineGame(socket = onlineSocket) {
   localStorage.removeItem(onlineRoomStorageKey);
   setOnlineCreatePending(false);
   if (socket?.readyState === WebSocket.OPEN) socket.close(1000, 'Left the online lobby.');
-  setOnlineGameState(false);
+  setOnlineGameState(false, false, preserveCompletedGame);
   document.querySelector('#online-invite').hidden = true;
   updateOnlineStatus('Disconnected. You are back on the main chess screen.');
-  startNewGame();
+  if (!preserveCompletedGame) startNewGame();
+  else document.querySelector('#menu-toggle').click();
+}
+
+function gameOverDetails(score, termination) {
+  const outcomes = {
+    checkmate: [
+      ['Victory', 'Checkmate!', 'Congratulations! You successfully checkmated your opponent.'],
+      ['Defeat', 'Checkmate', 'Your king was checkmated. Review the game and try again.'],
+    ],
+    resignation: [
+      ['Victory', 'Opponent Resigned', 'Your opponent resigned the game. You win!'],
+      ['Defeat', 'You Resigned', 'You resigned the game. Better luck next time!'],
+    ],
+    stalemate: [
+      ['Draw', 'Stalemate', 'Neither player is in check, but the player to move has no legal moves.'],
+      ['Defeat', 'Stalemate', 'Your custom rules count stalemate as a loss.'],
+    ],
+    threefold: [
+      ['Draw', 'Threefold Repetition', 'The same position occurred three times, so the game is drawn.'],
+      ['Draw', 'Threefold Repetition', 'The same position occurred three times, so the game is drawn.'],
+    ],
+    fiftyMove: [
+      ['Draw', '50-Move Rule', 'Fifty moves passed without a pawn move or capture.'],
+      ['Draw', '50-Move Rule', 'Fifty moves passed without a pawn move or capture.'],
+    ],
+    insufficient: [
+      ['Draw', 'Insufficient Material', 'Neither side has enough material to force checkmate.'],
+      ['Draw', 'Insufficient Material', 'Neither side has enough material to force checkmate.'],
+    ],
+    draw: [
+      ['Draw', 'Draw by Agreement', 'Both players agreed to end the game in a draw.'],
+      ['Draw', 'Draw by Agreement', 'Both players agreed to end the game in a draw.'],
+    ],
+    time: [
+      ['Victory', 'Won on Time', 'Your opponent ran out of time. You win!'],
+      ['Defeat', 'Time Expired', 'Your clock ran out. Better luck next time!'],
+    ],
+  };
+  const isDraw = score === 0.5;
+  if (termination === 'stalemate' && !isDraw) {
+    return score === 1
+      ? { result: 'victory', label: 'Victory', title: 'Won by Stalemate', description: 'Your opponent has no legal moves. Your custom rules count stalemate as a loss.' }
+      : { result: 'defeat', label: 'Defeat', title: 'Stalemate', description: 'You have no legal moves. Your custom rules count stalemate as a loss.' };
+  }
+  const pair = outcomes[termination] ?? outcomes.draw;
+  const details = pair[isDraw ? 0 : score === 1 ? 0 : 1];
+  return { result: details[0].toLowerCase(), label: details[0], title: details[1], description: details[2] };
+}
+
+function showGameOver(score, termination) {
+  const details = gameOverDetails(score, termination);
+  gameOverDialog.dataset.result = details.result;
+  document.querySelector('#game-over-result').textContent = details.label;
+  document.querySelector('#game-over-title').textContent = details.title;
+  document.querySelector('#game-over-description').textContent = details.description;
+  document.querySelector('#game-over-icon').textContent = details.result === 'victory' ? '♛'
+    : details.result === 'defeat' ? '♟' : '½';
+  document.querySelector('#game-over-status').hidden = true;
+  document.querySelector('#game-over-status').textContent = '';
+  document.querySelector('#game-over-rematch').hidden = onlineSpectating;
+  document.querySelector('#game-over-rematch').disabled = false;
+  if (!gameOverDialog.open) gameOverDialog.showModal();
+}
+
+function setGameOverStatus(message) {
+  const status = document.querySelector('#game-over-status');
+  status.textContent = message;
+  status.hidden = !message;
+}
+
+function finishOnlineGameFromServer(message) {
+  if (!onlineMode || message.gameId !== currentOnlineGameId || !message.termination) return;
+  const score = onlineSpectating ? 0.5
+    : playerColor === 'w' ? message.whiteScore : 1 - message.whiteScore;
+  gameMessage.textContent = message.termination === 'resignation'
+    ? score === 1 ? 'Your opponent resigned. You win!' : 'You resigned. Your opponent wins.'
+    : message.termination === 'checkmate'
+      ? score === 1 ? 'Checkmate! You win!' : 'Checkmate. Your opponent wins.'
+      : `Game ended: ${gameOverDetails(score, message.termination).title}.`;
+  if (!onlineSpectating) {
+    markGameResult(score === 1 ? 'victory' : score === 0 ? 'defeat' : 'draw', score, message.termination);
+  } else {
+    gameResult = true;
+  }
+  renderBoard();
 }
 
 function markGameResult(soundEvent = 'draw', humanScore = null, termination = 'draw') {
@@ -4638,9 +4818,15 @@ function markGameResult(soundEvent = 'draw', humanScore = null, termination = 'd
   if (practiceMode) updatePracticeCoach('result');
   stopActiveSound();
   playSound(soundEvent);
+  if (!onlineSpectating) showGameOver(score, termination);
 }
 
 function startNewGame() {
+  if (gameOverDialog.open) gameOverDialog.close();
+  if (resignConfirmDialog.open) resignConfirmDialog.close();
+  if (rematchOfferDialog.open) rematchOfferDialog.close();
+  pendingRematchRequestId = null;
+  resignationPending = false;
   const requestedSize = Number(customRules.boardSize) || 8;
   if (requestedSize !== activeBoardSize) {
     game = requestedSize === 8 ? new Chess() : new window.OpenboardLargeChess(requestedSize);
@@ -5508,10 +5694,21 @@ try {
   console.error('Could not restore the saved online invite code:', error);
 }
 document.querySelector('#resign').addEventListener('click', () => {
-  if (onlineSpectating) return;
-  if (!game.history().length || isGameOver() || gameResult) return;
+  if (onlineSpectating || gameResult || isGameOver() || resignationPending) return;
+  resignConfirmDialog.showModal();
+});
+
+document.querySelector('#resign-cancel').addEventListener('click', () => resignConfirmDialog.close());
+document.querySelector('#resign-confirm').addEventListener('click', () => {
+  if (resignationPending || gameResult || isGameOver()) {
+    resignConfirmDialog.close();
+    return;
+  }
+  resignationPending = true;
+  resignConfirmDialog.close();
   if (onlineMode) {
     if (!onlineReady || onlineSocket?.readyState !== WebSocket.OPEN) {
+      resignationPending = false;
       updateOnlineStatus('The room is not connected. Reconnect before resigning.');
       return;
     }
@@ -5519,9 +5716,82 @@ document.querySelector('#resign').addEventListener('click', () => {
     updateOnlineStatus('Resigning… waiting for the room server.');
     return;
   }
+  resignationPending = false;
   markGameResult('defeat', 0, 'resignation');
   gameMessage.textContent = 'You resigned. The opponent wins.';
   renderBoard();
+});
+
+document.querySelector('#game-over-rematch').addEventListener('click', () => {
+  const button = document.querySelector('#game-over-rematch');
+  if (!onlineMode) {
+    gameOverDialog.close();
+    startNewGame();
+    return;
+  }
+  if (!onlineReady || onlineSocket?.readyState !== WebSocket.OPEN || !currentOnlineGameId) {
+    setGameOverStatus('The room is disconnected. Reconnect before requesting a rematch.');
+    return;
+  }
+  if (pendingRematchRequestId) {
+    onlineSocket.send(JSON.stringify({
+      type: 'rematch-cancel',
+      gameId: currentOnlineGameId,
+      requestId: pendingRematchRequestId,
+    }));
+    button.disabled = true;
+    return;
+  }
+  if (rematchRequestPending) return;
+  rematchRequestPending = true;
+  button.disabled = true;
+  setGameOverStatus('Sending rematch request...');
+  onlineSocket.send(JSON.stringify({ type: 'rematch-request', gameId: currentOnlineGameId }));
+});
+
+document.querySelector('#game-over-menu').addEventListener('click', () => {
+  gameOverDialog.close();
+  if (onlineMode) {
+    if (onlineSocket?.readyState === WebSocket.OPEN) {
+      onlineSocket.send(JSON.stringify({ type: 'leave-room' }));
+    }
+    finishDisconnectOnlineGame(onlineSocket, true);
+  } else {
+    document.querySelector('#menu-toggle').click();
+  }
+});
+
+document.querySelector('#rematch-accept').addEventListener('click', () => {
+  if (!pendingRematchRequestId || !currentOnlineGameId
+    || onlineSocket?.readyState !== WebSocket.OPEN) return;
+  document.querySelector('#rematch-accept').disabled = true;
+  document.querySelector('#rematch-decline').disabled = true;
+  onlineSocket.send(JSON.stringify({
+    type: 'rematch-response',
+    requestId: pendingRematchRequestId,
+    gameId: currentOnlineGameId,
+    accept: true,
+  }));
+  setGameOverStatus('Accepting rematch...');
+});
+
+document.querySelector('#rematch-decline').addEventListener('click', () => {
+  if (!pendingRematchRequestId || !currentOnlineGameId
+    || onlineSocket?.readyState !== WebSocket.OPEN) {
+    rematchOfferDialog.close();
+    return;
+  }
+  onlineSocket.send(JSON.stringify({
+    type: 'rematch-response',
+    requestId: pendingRematchRequestId,
+    gameId: currentOnlineGameId,
+    accept: false,
+  }));
+});
+
+rematchOfferDialog.addEventListener('cancel', (event) => {
+  event.preventDefault();
+  document.querySelector('#rematch-decline').click();
 });
 
 document.querySelector('#offer-draw').addEventListener('click', () => {

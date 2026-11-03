@@ -9,7 +9,7 @@
     <meta name="theme-color" content="#17231f" />
     <meta name="description" content="A free, original chess game with a built-in local AI opponent." />
     <title>Openboard — Play Chess</title>
-    <link rel="stylesheet" href="./src/style.css?v=52" />
+    <link rel="stylesheet" href="./src/style.css?v=53" />
   </head>
   <body>
     <div id="app">
@@ -404,6 +404,39 @@
         <textarea id="game-export" readonly hidden aria-label="Exported PGN"></textarea>
         <button class="primary-button" value="close">Got it</button>
       </form>
+    </dialog>
+    <dialog id="resign-confirm-dialog" aria-labelledby="resign-confirm-title">
+      <div class="message-dialog-content">
+        <h2 id="resign-confirm-title">Resign this game?</h2>
+        <p>Resigning will end the game and give your opponent the win.</p>
+        <div class="message-dialog-actions">
+          <button class="primary-button" id="resign-confirm" type="button">Resign</button>
+          <button class="secondary-button" id="resign-cancel" type="button">Keep playing</button>
+        </div>
+      </div>
+    </dialog>
+    <dialog id="game-over-dialog" class="game-over-dialog" aria-labelledby="game-over-title">
+      <div class="game-over-content">
+        <span class="game-over-icon" id="game-over-icon" aria-hidden="true">♟</span>
+        <p class="eyebrow" id="game-over-result">GAME OVER</p>
+        <h2 id="game-over-title">Game over</h2>
+        <p id="game-over-description"></p>
+        <p class="game-over-status" id="game-over-status" role="status" aria-live="polite" hidden></p>
+        <div class="game-over-actions">
+          <button class="primary-button" id="game-over-rematch" type="button">Rematch</button>
+          <button class="secondary-button" id="game-over-menu" type="button">Return to Menu</button>
+        </div>
+      </div>
+    </dialog>
+    <dialog id="rematch-offer-dialog" aria-labelledby="rematch-offer-title">
+      <div class="message-dialog-content">
+        <h2 id="rematch-offer-title">Rematch requested</h2>
+        <p id="rematch-offer-message">Your opponent wants to play again.</p>
+        <div class="message-dialog-actions">
+          <button class="primary-button" id="rematch-accept" type="button">Accept Rematch</button>
+          <button class="secondary-button" id="rematch-decline" type="button">Decline</button>
+        </div>
+      </div>
     </dialog>
     <dialog id="online-draw-offer-dialog" aria-labelledby="online-draw-offer-title">
       <div class="message-dialog-content">

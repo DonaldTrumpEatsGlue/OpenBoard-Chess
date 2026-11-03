@@ -10,7 +10,9 @@ const { WebSocketServer, WebSocket } = require('ws');
 
 const port = Number(process.env.OPENBOARD_PORT || process.env.PORT || 3001);
 const rooms = new Map();
+const playersBySocket = new WeakMap();
 const roomLifetimeMs = 30 * 60 * 1000;
+const rematchRequestLifetimeMs = 60 * 1000;
 const maxChatHistory = 100;
 const maxChatMessageLength = 300;
 const chatRateWindowMs = 10_000;
@@ -249,8 +251,18 @@ function isRoomGameOver(room) {
     || (!room.variant.noDraws && room.chess.game_over());
 }
 
+function roomTermination(room) {
+  if (room.chess.in_checkmate()) return 'checkmate';
+  if (room.chess.in_stalemate()) return 'stalemate';
+  if (room.chess.in_threefold_repetition()) return 'threefold';
+  if (Number(room.chess.fen().split(' ')[4]) >= 100) return 'fiftyMove';
+  if (room.chess.insufficient_material()) return 'insufficient';
+  return 'draw';
+}
+
 function roomPosition(room) {
   return {
+    gameId: room.gameId,
     fen: room.chess.fen(),
     pgn: room.chess.pgn(),
     moves: room.chess.history({ verbose: true }).map(({ from, to, promotion }) => ({
@@ -259,6 +271,11 @@ function roomPosition(room) {
       ...(promotion ? { promotion } : {}),
     })),
     variant: room.variant,
+    gameOver: room.gameEnded,
+    ...(room.gameEnded ? {
+      termination: room.termination,
+      whiteScore: room.resultWhiteScore,
+    } : {}),
   };
 }
 
@@ -651,6 +668,7 @@ function makeAuthorizationHeader(accessToken) {
 async function recordOnlineResult(room, whiteScore, termination) {
   if (room.ratingSettlementStarted) return;
   room.ratingSettlementStarted = true;
+  const historyTermination = ['checkmate', 'resignation'].includes(termination) ? termination : 'draw';
   try {
     if (!supabaseUrl || !supabaseServiceRoleKey) {
       throw new Error('Online rating storage is not configured. Apply the rating SQL schema and configure the service-role key.');
@@ -669,7 +687,7 @@ async function recordOnlineResult(room, whiteScore, termination) {
         p_game_id: room.gameId,
         p_room_code: room.code,
         p_pgn: room.chess.pgn(),
-        p_termination: termination,
+        p_termination: historyTermination,
       }),
       signal: AbortSignal.timeout(5000),
     });
@@ -765,7 +783,7 @@ function sendRoomChat(room, player, text) {
   broadcast(room, message);
 }
 
-function leaveRoom(player) {
+function leaveRoom(player, reason = 'disconnect') {
   if (!player?.room) return;
   const room = player.room;
   if (player.role === 'spectator') {
@@ -777,6 +795,7 @@ function leaveRoom(player) {
     return;
   }
   const slot = room.players[player.color];
+  const leavingColor = player.color;
   if (slot?.socket === player.socket) slot.socket = null;
   player.room = null;
   player.color = null;
@@ -785,7 +804,31 @@ function leaveRoom(player) {
   const hasConnectedPlayer = [room.players.w, room.players.b]
     .some((slot) => slot.socket?.readyState === WebSocket.OPEN);
   if (hasConnectedPlayer) {
-    broadcast(room, { type: 'opponent-left' });
+    const opponentColor = leavingColor === 'w' ? 'b' : 'w';
+    const opponentSocket = room.players[opponentColor].socket;
+    if (room.rematch) {
+      const requesterColor = room.rematch.by;
+      const requesterSocket = room.players[requesterColor].socket;
+      if (requesterColor === leavingColor) {
+        send(opponentSocket, {
+          type: reason === 'disconnect' ? 'rematch-opponent-disconnected' : 'rematch-cancelled',
+          message: reason === 'disconnect' ? 'Your opponent disconnected before the rematch started.' : 'Your opponent cancelled the rematch request.',
+        });
+      } else {
+        send(requesterSocket, {
+          type: reason === 'disconnect' ? 'rematch-opponent-disconnected' : 'rematch-opponent-left',
+          message: reason === 'disconnect' ? 'Your opponent disconnected before responding to the rematch.' : 'Your opponent returned to the menu.',
+        });
+      }
+      room.rematch = null;
+    }
+    if (room.gameEnded) {
+      send(opponentSocket, {
+        type: reason === 'disconnect' ? 'opponent-disconnected' : 'opponent-returned-to-menu',
+      });
+    } else {
+      broadcast(room, { type: 'opponent-left' });
+    }
   } else {
     for (const spectator of room.spectators) {
       send(spectator.socket, { type: 'room-ended' });
@@ -853,7 +896,7 @@ async function handleMessage(socket, player, rawMessage) {
   }
 
   if (message.type === 'leave-room') {
-    leaveRoom(player);
+    leaveRoom(player, 'menu');
     send(socket, { type: 'left-room' });
     return;
   }
@@ -887,7 +930,7 @@ async function handleMessage(socket, player, rawMessage) {
       send(socket, { type: 'error', message: 'Online custom rules must use an 8×8 board and valid piece movement settings.' });
       return;
     }
-    if (player.room) leaveRoom(player);
+    if (player.room) leaveRoom(player, 'replaced');
     const code = generateRoomCode();
     const passwordSalt = roomPassword ? crypto.randomBytes(16) : null;
     const room = {
@@ -914,7 +957,10 @@ async function handleMessage(socket, player, rawMessage) {
       playerChat: [],
       spectatorChat: [],
       gameEnded: false,
+      termination: null,
+      resultWhiteScore: null,
       drawOfferBy: null,
+      rematch: null,
       ratingSettlementStarted: false,
       expiresAt: Date.now() + roomLifetimeMs,
     };
@@ -926,6 +972,7 @@ async function handleMessage(socket, player, rawMessage) {
     send(socket, {
       type: 'room-created',
       code,
+      gameId: room.gameId,
       color: 'w',
       name: room.players.b.name,
       countryCode: player.identity.countryCode || null,
@@ -979,11 +1026,14 @@ async function handleMessage(socket, player, rawMessage) {
         return;
       }
     }
-    if (player.room) leaveRoom(player);
+    if (player.room) leaveRoom(player, 'replaced');
     if (!reconnectColor && room.players[color].accountId) {
       configureRoomChess(room);
       room.gameId = crypto.randomUUID();
       room.gameEnded = false;
+      room.termination = null;
+      room.resultWhiteScore = null;
+      room.rematch = null;
       room.ratingSettlementStarted = false;
     }
     room.players[color].socket = socket;
@@ -1111,6 +1161,14 @@ async function handleMessage(socket, player, rawMessage) {
     return;
   }
 
+  if (room.rematch && room.rematch.expiresAt <= Date.now()) {
+    const requestColor = room.rematch.by;
+    const responseColor = requestColor === 'w' ? 'b' : 'w';
+    room.rematch = null;
+    send(room.players[requestColor].socket, { type: 'rematch-expired' });
+    send(room.players[responseColor].socket, { type: 'rematch-expired' });
+  }
+
   if (message.type === 'offer-draw') {
     if (room.gameEnded) {
       send(socket, { type: 'error', message: 'This game has already ended.' });
@@ -1161,8 +1219,127 @@ async function handleMessage(socket, player, rawMessage) {
       return;
     }
     room.gameEnded = true;
+    room.termination = 'draw';
+    room.resultWhiteScore = 0.5;
     broadcast(room, { type: 'draw-agreed' });
     await recordOnlineResult(room, 0.5, 'draw');
+    return;
+  }
+
+  if (message.type === 'rematch-request') {
+    if (!room.gameEnded || message.gameId !== room.gameId) {
+      send(socket, { type: 'error', message: 'A rematch can only be requested for the completed game.' });
+      return;
+    }
+    if (room.rematch) {
+      send(socket, { type: 'error', message: 'A rematch request is already pending.' });
+      return;
+    }
+    const opponentColor = player.color === 'w' ? 'b' : 'w';
+    const opponent = room.players[opponentColor];
+    if (opponent.socket?.readyState !== WebSocket.OPEN) {
+      send(socket, { type: 'error', message: 'Your opponent is not connected to accept a rematch.' });
+      return;
+    }
+    const requestId = crypto.randomUUID();
+    room.rematch = {
+      requestId,
+      gameId: room.gameId,
+      by: player.color,
+      expiresAt: Date.now() + rematchRequestLifetimeMs,
+    };
+    send(socket, { type: 'rematch-waiting', requestId, gameId: room.gameId });
+    send(opponent.socket, {
+      type: 'rematch-offered',
+      requestId,
+      gameId: room.gameId,
+      name: player.identity.username,
+    });
+    return;
+  }
+
+  if (message.type === 'rematch-cancel') {
+    if (!room.rematch || room.rematch.by !== player.color
+      || message.requestId !== room.rematch.requestId
+      || message.gameId !== room.rematch.gameId || room.gameId !== room.rematch.gameId) {
+      send(socket, { type: 'error', message: 'That rematch request is no longer active.' });
+      return;
+    }
+    const opponent = room.players[player.color === 'w' ? 'b' : 'w'];
+    room.rematch = null;
+    send(socket, { type: 'rematch-request-cancelled' });
+    send(opponent.socket, { type: 'rematch-cancelled', message: 'Your opponent cancelled the rematch request.' });
+    return;
+  }
+
+  if (message.type === 'rematch-response') {
+    const pending = room.rematch;
+    if (!room.gameEnded || !pending || pending.by === player.color
+      || message.accept !== true && message.accept !== false
+      || message.requestId !== pending.requestId || message.gameId !== pending.gameId
+      || room.gameId !== pending.gameId) {
+      send(socket, { type: 'error', message: 'That rematch response is no longer active.' });
+      return;
+    }
+    const requester = room.players[pending.by];
+    if (requester.socket?.readyState !== WebSocket.OPEN
+      || room.players[player.color].socket?.readyState !== WebSocket.OPEN) {
+      room.rematch = null;
+      send(socket, { type: 'rematch-opponent-disconnected', message: 'Your opponent disconnected before the rematch started.' });
+      return;
+    }
+    room.rematch = null;
+    if (!message.accept) {
+      send(requester.socket, { type: 'rematch-declined' });
+      send(socket, { type: 'rematch-declined-confirmed' });
+      return;
+    }
+    const previousWhite = room.players.w;
+    room.players.w = room.players.b;
+    room.players.b = previousWhite;
+    for (const color of ['w', 'b']) {
+      const currentSocket = room.players[color].socket;
+      const connectedPlayer = playersBySocket.get(currentSocket);
+      if (connectedPlayer) connectedPlayer.color = color;
+    }
+    configureRoomChess(room);
+    room.gameId = crypto.randomUUID();
+    room.gameEnded = false;
+    room.termination = null;
+    room.resultWhiteScore = null;
+    room.drawOfferBy = null;
+    room.ratingSettlementStarted = false;
+    room.expiresAt = Date.now() + roomLifetimeMs;
+    send(room.players.w.socket, { type: 'rematch-accepted' });
+    send(room.players.b.socket, { type: 'rematch-accepted' });
+    const players = { w: room.players.w.name, b: room.players.b.name };
+    const playerCountries = {
+      w: room.players.w.countryCode || null,
+      b: room.players.b.countryCode || null,
+    };
+    broadcastSpectators(room, {
+      type: 'spectator-start',
+      code: room.code,
+      players,
+      playerCountries,
+      ...roomPosition(room),
+      waiting: false,
+      spectatorChat: room.spectatorChat,
+    });
+    for (const color of ['w', 'b']) {
+      send(room.players[color].socket, {
+        type: 'game-start',
+        code: room.code,
+        players,
+        playerCountries,
+        ...roomPosition(room),
+        spectators: room.spectators.size,
+        playerChat: room.playerChat,
+        spectatorChat: room.spectatorChat,
+        color,
+        rematch: true,
+      });
+    }
     return;
   }
 
@@ -1209,10 +1386,18 @@ async function handleMessage(socket, player, rawMessage) {
     });
     if (isRoomGameOver(room)) {
       room.gameEnded = true;
-      const whiteScore = room.chess.in_checkmate()
+      room.termination = roomTermination(room);
+      const whiteScore = room.chess.in_checkmate() || (room.chess.in_stalemate() && room.variant.noDraws)
         ? room.chess.turn() === 'w' ? 0 : 1
         : 0.5;
-      await recordOnlineResult(room, whiteScore, room.chess.in_checkmate() ? 'checkmate' : 'draw');
+      room.resultWhiteScore = whiteScore;
+      broadcast(room, {
+        type: 'game-ended',
+        gameId: room.gameId,
+        termination: room.termination,
+        whiteScore,
+      });
+      await recordOnlineResult(room, whiteScore, room.termination);
     }
     return;
   }
@@ -1223,9 +1408,18 @@ async function handleMessage(socket, player, rawMessage) {
       return;
     }
     room.gameEnded = true;
-    broadcast(room, { type: 'resigned', color: player.color });
+    room.termination = 'resignation';
+    const whiteScore = player.color === 'w' ? 0 : 1;
+    room.resultWhiteScore = whiteScore;
+    broadcast(room, { type: 'resigned', color: player.color, gameId: room.gameId });
+    broadcast(room, {
+      type: 'game-ended',
+      gameId: room.gameId,
+      termination: room.termination,
+      whiteScore,
+    });
     if (room.chess.history().length) {
-      await recordOnlineResult(room, player.color === 'w' ? 0 : 1, 'resignation');
+      await recordOnlineResult(room, whiteScore, room.termination);
     } else {
       broadcast(room, { type: 'rating-not-counted' });
     }
@@ -1716,6 +1910,7 @@ const websocketServer = new WebSocketServer({
 
 websocketServer.on('connection', (socket) => {
   const player = { socket, room: null, color: null, role: null, identity: null, authenticating: false };
+  playersBySocket.set(socket, player);
   socket.on('message', (rawMessage) => {
     handleMessage(socket, player, rawMessage.toString()).catch((error) => {
       console.error('Online game request failed:', error);
@@ -1729,6 +1924,13 @@ websocketServer.on('connection', (socket) => {
 const cleanupTimer = setInterval(() => {
   const now = Date.now();
   for (const [code, room] of rooms) {
+    if (room.rematch?.expiresAt <= now) {
+      const requestColor = room.rematch.by;
+      const responseColor = requestColor === 'w' ? 'b' : 'w';
+      room.rematch = null;
+      send(room.players[requestColor].socket, { type: 'rematch-expired' });
+      send(room.players[responseColor].socket, { type: 'rematch-expired' });
+    }
     if (room.expiresAt <= now) {
       for (const slot of Object.values(room.players)) {
         send(slot.socket, { type: 'room-ended' });
@@ -1745,7 +1947,7 @@ const cleanupTimer = setInterval(() => {
       rooms.delete(code);
     }
   }
-}, 60_000);
+}, 5_000);
 cleanupTimer.unref();
 
 async function startRoomServer() {
