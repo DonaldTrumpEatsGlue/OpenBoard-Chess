@@ -281,7 +281,7 @@ dialog p { color: var(--muted); font-size: 12px; }
 #game-page.is-spectating .game-panel > .suggest-move-button,
 #game-page.is-spectating .game-insights,
 #game-page.is-spectating .game-panel > .panel-footer { display: none; }
-#game-page.is-online-game:not(.is-spectating) .game-panel > .suggest-move-button { display: flex; }
+#game-page.is-online-game .game-panel > .suggest-move-button { display: none; }
 #game-page.is-spectating .game-panel { min-height: 0; margin-top: 0; padding: 16px; }
 .is-spectating .player-details > #opponent-description,
 .is-spectating .player-details > #opponent-strength { display: none; }

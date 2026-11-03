@@ -1755,7 +1755,7 @@ function updateGameState() {
 
 function updateOnlineSuggestionAvailability() {
   const suggestButton = document.querySelector('#suggest-move');
-  suggestButton.hidden = onlineSpectating;
+  suggestButton.hidden = onlineMode;
   if (!onlineMode) {
     suggestButton.disabled = false;
     return;
@@ -7251,7 +7251,7 @@ document.querySelector('#copy-fen').addEventListener('click', async () => {
 });
 
 document.querySelector('#suggest-move').addEventListener('click', () => {
-  if (onlineMode && (!onlineReady || onlineSpectating || onlineSocket?.readyState !== WebSocket.OPEN)) return;
+  if (onlineMode || onlineSpectating) return;
   if (aiThinking || gameResult || isGameOver()) return;
   if (!onlineMode && !analysisMode && !puzzleMode && game.turn() !== playerColor) {
     gameMessage.textContent = 'Wait for your turn before requesting a suggestion.';
@@ -7265,8 +7265,7 @@ document.querySelector('#suggest-move').addEventListener('click', () => {
     return;
   }
   suggestedMove = { from: suggestion.from, to: suggestion.to };
-  const suggestedSide = onlineMode ? `${game.turn() === 'w' ? 'White' : 'Black'}: ` : '';
-  gameMessage.textContent = `Suggested move: ${suggestedSide}${suggestion.san} · ${suggestion.from} to ${suggestion.to}.`;
+  gameMessage.textContent = `Suggested move: ${suggestion.san} · ${suggestion.from} to ${suggestion.to}.`;
   renderBoard();
 });
 
