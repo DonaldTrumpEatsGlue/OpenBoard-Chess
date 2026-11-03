@@ -646,6 +646,61 @@ async function loadProfile(queryName, queryValue) {
   };
 }
 
+async function loadPublicMembers({ search, countryCode, ratedOnly, sort }) {
+  if (!supabaseUrl || !supabaseAnonKey) {
+    throw new Error('The members directory is not configured on this server yet.');
+  }
+  const membersUrl = new URL(`${supabaseUrl}/rest/v1/profiles`);
+  membersUrl.searchParams.set('select', 'id,username,country_code,avatar_data,online_elo,online_games');
+  membersUrl.searchParams.set('order', sort === 'rating' ? 'online_elo.desc,username.asc' : 'username.asc');
+  membersUrl.searchParams.set('limit', '50');
+  if (search) membersUrl.searchParams.set('username', `ilike.*${search}*`);
+  if (countryCode) membersUrl.searchParams.set('country_code', `eq.${countryCode}`);
+  if (ratedOnly) membersUrl.searchParams.set('online_games', 'gt.0');
+
+  const readRows = async () => {
+    const response = await fetch(membersUrl, {
+      headers: { apikey: supabaseAnonKey },
+      signal: AbortSignal.timeout(5000),
+    });
+    let result;
+    try {
+      result = await response.json();
+    } catch {
+      throw new Error('The members directory returned an unreadable response.');
+    }
+    return { response, result };
+  };
+
+  let ratingsAvailable = true;
+  let { response, result } = await readRows();
+  if (!response.ok && response.status === 400 && isMissingProfileColumnError(result)) {
+    ratingsAvailable = false;
+    if (countryCode || ratedOnly || sort === 'rating') {
+      return {
+        members: [],
+        ratingsAvailable,
+        message: 'Country and rating filters are not available until the profile database is updated.',
+      };
+    }
+    membersUrl.searchParams.set('select', 'id,username');
+    membersUrl.searchParams.set('order', 'username.asc');
+    ({ response, result } = await readRows());
+  }
+  if (!response.ok) throw new Error('Could not load the members directory.');
+  return {
+    members: result.map((profile) => ({
+      id: profile.id,
+      username: profile.username,
+      countryCode: profile.country_code || null,
+      ...(profile.avatar_data ? { avatarData: profile.avatar_data } : {}),
+      onlineElo: profile.online_games > 0 ? profile.online_elo : null,
+      onlineGames: profile.online_games || 0,
+    })),
+    ratingsAvailable,
+  };
+}
+
 async function callSocialRpc(name, arguments_) {
   if (!supabaseUrl || !supabaseServiceRoleKey) {
     throw new Error('Social features are not configured on this server yet.');
@@ -1476,6 +1531,44 @@ async function handleMessage(socket, player, rawMessage) {
 
 const server = http.createServer(async (request, response) => {
   const requestUrl = new URL(request.url, 'http://localhost');
+  if (requestUrl.pathname === '/community/members') {
+    addAuthCorsHeaders(request, response);
+    if (request.headers.origin && !isAllowedOrigin(request.headers.origin)) {
+      response.writeHead(403).end();
+      return;
+    }
+    if (request.method === 'OPTIONS') {
+      response.writeHead(204, {
+        'Access-Control-Allow-Methods': 'GET, OPTIONS',
+        'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+        'Access-Control-Max-Age': '600',
+      }).end();
+      return;
+    }
+    if (request.method !== 'GET') {
+      response.writeHead(405, { Allow: 'GET, OPTIONS' }).end();
+      return;
+    }
+    if (!allowSocialRequest(request, response)) return;
+    const search = requestUrl.searchParams.get('search')?.trim() || '';
+    const countryCode = requestUrl.searchParams.get('country')?.toUpperCase() || '';
+    const sort = requestUrl.searchParams.get('sort') || 'name';
+    const ratedOnly = requestUrl.searchParams.get('rated') === 'true';
+    if ((search && !/^[A-Za-z0-9_]{1,20}$/.test(search))
+      || (countryCode && !/^[A-Z]{2}$/.test(countryCode))
+      || !['name', 'rating'].includes(sort)
+      || (requestUrl.searchParams.has('rated') && !['true', 'false'].includes(requestUrl.searchParams.get('rated')))) {
+      sendSocialResponse(response, 400, { message: 'Choose a valid member search, country, rating filter, and sort order.' });
+      return;
+    }
+    try {
+      sendSocialResponse(response, 200, await loadPublicMembers({ search, countryCode, ratedOnly, sort }));
+    } catch (error) {
+      console.error('Members directory request failed:', error.message);
+      sendSocialResponse(response, 503, { message: error.message || 'The members directory is temporarily unavailable.' });
+    }
+    return;
+  }
   const isSocialRequest = requestUrl.pathname === '/social' || requestUrl.pathname.startsWith('/social/');
   if (isSocialRequest) {
     addAuthCorsHeaders(request, response);

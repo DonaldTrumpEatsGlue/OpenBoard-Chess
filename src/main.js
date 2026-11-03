@@ -234,6 +234,7 @@ let socialOverview = {
 };
 let activeSocialPanel = '';
 let activeSocialTab = 'friends';
+let communityMembersRequestId = 0;
 let activeSocialConversation = null;
 let activeHistoryType = 'offline';
 let historyReplayGame = null;
@@ -1912,6 +1913,7 @@ async function requestPlayerProfile(username = '') {
 function populateCountryOptions() {
   const countrySelect = document.querySelector('#profile-country-select');
   const settingsCountrySelect = document.querySelector('#dock-country-select');
+  const membersCountrySelect = document.querySelector('#community-member-country');
   const regionNames = new Intl.DisplayNames([navigator.language || 'en'], { type: 'region' });
   const countryCodes = 'AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS XK YE YT ZA ZM ZW'.split(' ');
   const options = countryCodes
@@ -1923,6 +1925,7 @@ function populateCountryOptions() {
     option.textContent = `${name} (${code})`;
     countrySelect.append(option);
     settingsCountrySelect.append(option.cloneNode(true));
+    membersCountrySelect.append(option.cloneNode(true));
   }
 }
 
@@ -1949,8 +1952,10 @@ function renderPlayerProfile(profile, isOwnProfile = false) {
     pendingAvatarData = null;
   }
   renderProfileActions(profile, isOwnProfile);
-  document.querySelector('#profile-online-elo').textContent = Number(profile.onlineElo).toLocaleString();
   const games = Number(profile.onlineGames) || 0;
+  document.querySelector('#profile-online-elo').textContent = games
+    ? Number(profile.onlineElo).toLocaleString()
+    : 'Unrated';
   const ratingLabel = games < 10 ? `Provisional · ${games} rated ${games === 1 ? 'game' : 'games'}` : `${games} rated games`;
   document.querySelector('#profile-online-record').textContent =
     `${profile.onlineWins}-${profile.onlineDraws}-${profile.onlineLosses} · ${ratingLabel}`;
@@ -2888,7 +2893,7 @@ const sidebarSections = {
   community: {
     title: 'Community',
     items: [
-      { icon: '♙', label: 'Player Profiles', action: 'profiles' },
+      { icon: '◎', label: 'Members & Profiles', action: 'members' },
     ],
   },
   other: {
@@ -2962,6 +2967,7 @@ function renderAppPage() {
   gamePage.hidden = isProfilesPage;
   profilesPage.hidden = !isProfilesPage;
   if (!isProfilesPage) return;
+  loadCommunityMembers();
   const username = params.get('username');
   document.querySelector('#profile-search-input').value = username || '';
   if (username && /^[A-Za-z0-9_]{3,20}$/.test(username)) {
@@ -2990,6 +2996,126 @@ function openProfilesPage() {
   navigateToAppPage('profiles');
   if (!authSession?.access_token) {
     document.querySelector('#profile-search-input').focus();
+  }
+}
+
+function openCommunityMembers() {
+  navigateToAppPage('profiles');
+  document.querySelector('#community-member-query').focus();
+}
+
+async function loadCommunityMembers() {
+  const requestId = ++communityMembersRequestId;
+  const status = document.querySelector('#community-members-status');
+  const list = document.querySelector('#community-member-list');
+  status.textContent = 'Loading community members…';
+  list.replaceChildren();
+  const query = document.querySelector('#community-member-query').value.trim();
+  const country = document.querySelector('#community-member-country').value;
+  const rated = document.querySelector('#community-member-rated').checked;
+  const sort = document.querySelector('#community-member-sort').value;
+  if (query && !/^[A-Za-z0-9_]{1,20}$/.test(query)) {
+    status.textContent = 'Search usernames using letters, numbers, and underscores.';
+    return;
+  }
+  try {
+    const endpoint = profileEndpoint('/community/members');
+    if (query) endpoint.searchParams.set('search', query);
+    if (country) endpoint.searchParams.set('country', country);
+    if (rated) endpoint.searchParams.set('rated', 'true');
+    if (sort !== 'name') endpoint.searchParams.set('sort', sort);
+    const response = await fetch(endpoint, { headers: { Accept: 'application/json' } });
+    let result;
+    try {
+      result = await response.json();
+    } catch {
+      throw new Error('The members directory returned an unreadable response.');
+    }
+    if (!response.ok) throw new Error(result.message || 'Could not load community members.');
+    if (requestId !== communityMembersRequestId) return;
+    if (result.message) {
+      status.textContent = result.message;
+      return;
+    }
+    for (const member of result.members || []) {
+      const item = document.createElement('li');
+      item.className = 'community-member';
+      const avatar = createSocialAvatar(member.username, member.avatarData);
+      avatar.classList.add('community-member-avatar');
+      const identity = document.createElement('div');
+      identity.className = 'community-member-identity';
+      const link = document.createElement('button');
+      link.type = 'button';
+      link.className = 'community-member-profile';
+      link.append(createCountryPlayerName(member.username, member.countryCode));
+      link.addEventListener('click', () => navigateToAppPage('profiles', member.username));
+      const rating = document.createElement('small');
+      rating.textContent = member.onlineElo == null
+        ? 'Unrated'
+        : `${Number(member.onlineElo).toLocaleString()} online · ${member.onlineGames} games`;
+      identity.append(link, rating);
+      const actions = document.createElement('div');
+      actions.className = 'community-member-actions';
+      const viewButton = document.createElement('button');
+      viewButton.type = 'button';
+      viewButton.className = 'secondary-button';
+      viewButton.textContent = 'View profile';
+      viewButton.addEventListener('click', () => navigateToAppPage('profiles', member.username));
+      const friendButton = document.createElement('button');
+      friendButton.type = 'button';
+      friendButton.className = 'secondary-button';
+      const isYou = authSession?.user?.id === member.id
+        || [authUsername, authSession?.user?.user_metadata?.username]
+          .filter(Boolean)
+          .some((username) => username.toLowerCase() === member.username.toLowerCase());
+      const isFriend = socialOverview.friends.some((friend) => friend.id === member.id);
+      const outgoingRequest = socialOverview.outgoingRequests.some((entry) => entry.username.toLowerCase() === member.username.toLowerCase());
+      const incomingRequest = socialOverview.incomingRequests.find((entry) => entry.username.toLowerCase() === member.username.toLowerCase());
+      const blocked = socialOverview.blockedUsers.some((entry) => entry.id === member.id);
+      const blockedBy = socialOverview.blockedBy.includes(member.id);
+      friendButton.textContent = isYou ? 'You'
+        : isFriend ? 'Friends'
+        : incomingRequest ? 'Accept request'
+          : outgoingRequest ? 'Request sent'
+            : blocked || blockedBy ? 'Unavailable'
+              : 'Add friend';
+      friendButton.disabled = isYou || isFriend || outgoingRequest || blocked || blockedBy;
+      friendButton.addEventListener('click', async () => {
+        if (!authSession?.access_token) {
+          openAccountDialog('signin');
+          return;
+        }
+        friendButton.disabled = true;
+        try {
+          if (incomingRequest) {
+            await requestSocialApi('/social/friends/respond', 'POST', {
+              requestId: incomingRequest.id,
+              accept: true,
+            });
+          } else {
+            await requestSocialApi('/social/friends/request', 'POST', { username: member.username });
+          }
+          await refreshSocialOverview();
+          await loadCommunityMembers();
+        } catch (error) {
+          document.querySelector('#community-members-status').textContent =
+            error.message || 'Could not send the friend request.';
+          friendButton.disabled = false;
+        }
+      });
+      actions.append(viewButton, friendButton);
+      item.append(avatar, identity, actions);
+      list.append(item);
+    }
+    const count = (result.members || []).length;
+    status.textContent = count
+      ? `${count} member${count === 1 ? '' : 's'} shown${count === 50 ? ' · refine your search for more' : ''}.`
+      : 'No members match these filters.';
+  } catch (error) {
+    console.error('Could not load community members:', error);
+    if (requestId === communityMembersRequestId) {
+      status.textContent = error.message || 'Could not load community members.';
+    }
   }
 }
 
@@ -3815,6 +3941,7 @@ function runSidebarAction(action) {
   else if (action === 'login') openAccountDialog('signin');
   else if (action === 'profile') openProfilesPage();
   else if (action === 'profiles') openProfilesPage();
+  else if (action === 'members') openCommunityMembers();
   else if (action === 'puzzle') startPuzzle();
   else if (action === 'daily-puzzle') startDailyPuzzle();
   else if (action === 'puzzle-next') startPuzzle();
@@ -5408,6 +5535,11 @@ document.querySelector('#online-go-account').addEventListener('click', () => {
   openAccountDialog('signin');
 });
 document.querySelector('#profiles-back').addEventListener('click', () => navigateToAppPage());
+document.querySelector('#community-member-search').addEventListener('submit', (event) => {
+  event.preventDefault();
+  loadCommunityMembers();
+});
+document.querySelector('#community-members-refresh').addEventListener('click', loadCommunityMembers);
 document.querySelector('#profile-search-form').addEventListener('submit', (event) => {
   event.preventDefault();
   const username = document.querySelector('#profile-search-input').value.trim();

@@ -714,11 +714,45 @@ before(async () => {
       if (profileSchemaMissingOptionalColumns
         && selectedFields !== 'username'
         && selectedFields !== 'id'
+        && selectedFields !== 'id,username'
         && selectedFields !== 'username_key') {
         response.writeHead(400).end(JSON.stringify({
           code: '42703',
           message: 'column country_code does not exist',
         }));
+        return;
+      }
+      if (selectedFields === 'id,username,country_code,avatar_data,online_elo,online_games') {
+        const search = url.searchParams.get('username')?.replace(/^ilike\.\*/, '').replace(/\*$/, '').toLowerCase() || '';
+        const countryCode = url.searchParams.get('country_code')?.slice(3);
+        const ratedOnly = url.searchParams.has('online_games');
+        const members = [...authUsers.values()]
+          .filter((account) => account.username.toLowerCase().includes(search))
+          .filter((account) => !countryCode || account.country_code === countryCode)
+          .filter((account) => !ratedOnly || account.online_games > 0)
+          .sort((left, right) => url.searchParams.get('order') === 'online_elo.desc,username.asc'
+            ? (right.online_elo - left.online_elo) || left.username.localeCompare(right.username)
+            : left.username.localeCompare(right.username))
+          .slice(0, Number(url.searchParams.get('limit')) || 50)
+          .map((account) => ({
+            id: account.id,
+            username: account.username,
+            country_code: account.country_code,
+            avatar_data: account.avatar_data,
+            online_elo: account.online_elo,
+            online_games: account.online_games,
+          }));
+        response.writeHead(200).end(JSON.stringify(members));
+        return;
+      }
+      if (selectedFields === 'id,username' && url.searchParams.has('username')) {
+        const search = url.searchParams.get('username')?.replace(/^ilike\.\*/, '').replace(/\*$/, '').toLowerCase() || '';
+        const members = [...authUsers.values()]
+          .filter((account) => account.username.toLowerCase().includes(search))
+          .sort((left, right) => left.username.localeCompare(right.username))
+          .slice(0, 50)
+          .map(({ id, username }) => ({ id, username }));
+        response.writeHead(200).end(JSON.stringify(members));
         return;
       }
       if (usernameKey !== undefined) {
@@ -1050,6 +1084,46 @@ test('public player profiles show online ratings but never expose account emails
 
   const invalidAvatar = await patchJson(privateProfileUrl, { avatarData: 'javascript:alert(1)' }, token);
   assert.equal(invalidAvatar.status, 400);
+});
+
+test('community members directory returns public accounts with real rating and country filters', async () => {
+  const firstToken = createAccount('MemberNorth', false, 'CA');
+  const secondToken = createAccount('MemberSouth', false, 'US');
+  createAccount('MemberUnrated', false, 'CA');
+  Object.assign(authUsers.get(firstToken), { online_elo: 1512, online_games: 12, avatar_data: 'data:image/webp;base64,SGVsbG8=' });
+  Object.assign(authUsers.get(secondToken), { online_elo: 1830, online_games: 37 });
+
+  const membersUrl = new URL(endpoint);
+  membersUrl.protocol = 'http:';
+  membersUrl.pathname = '/community/members';
+  membersUrl.search = '';
+  membersUrl.hash = '';
+  membersUrl.searchParams.set('search', 'Member');
+  const directory = await getJson(membersUrl);
+  assert.equal(directory.status, 200);
+  assert.equal(directory.body.ratingsAvailable, true);
+  assert.deepEqual(directory.body.members.map((member) => member.username), [
+    'MemberNorth',
+    'MemberSouth',
+    'MemberUnrated',
+  ]);
+  assert.equal(directory.body.members[0].onlineElo, 1512);
+  assert.equal(directory.body.members[0].countryCode, 'CA');
+  assert.equal(directory.body.members[0].avatarData, 'data:image/webp;base64,SGVsbG8=');
+  assert.equal(directory.body.members[2].onlineElo, null);
+  assert.equal(JSON.stringify(directory.body).includes('@example.test'), false);
+
+  membersUrl.searchParams.set('search', 'Member');
+  membersUrl.searchParams.set('country', 'CA');
+  membersUrl.searchParams.set('rated', 'true');
+  membersUrl.searchParams.set('sort', 'rating');
+  const filtered = await getJson(membersUrl);
+  assert.equal(filtered.status, 200);
+  assert.deepEqual(filtered.body.members.map((member) => member.username), ['MemberNorth']);
+
+  membersUrl.searchParams.set('search', 'Member*');
+  const invalid = await getJson(membersUrl);
+  assert.equal(invalid.status, 400);
 });
 
 test('completed online games update both player ratings and records exactly once', async () => {
@@ -2426,6 +2500,18 @@ test('player search and account identity remain usable before optional profile m
     const viewedOwnProfile = await getJson(socialUrl('/profiles/LegacyProfileUser'), token);
     assert.equal(viewedOwnProfile.status, 200);
     assert.equal(viewedOwnProfile.body.isOwnProfile, true);
+
+    const membersUrl = socialUrl('/community/members');
+    membersUrl.searchParams.set('search', 'Legacy');
+    const members = await getJson(membersUrl);
+    assert.equal(members.status, 200);
+    assert.equal(members.body.ratingsAvailable, false);
+    assert.equal(members.body.members[0].username, 'LegacyProfileUser');
+    assert.equal(members.body.members[0].onlineElo, null);
+    membersUrl.searchParams.set('country', 'US');
+    const unsupportedFilter = await getJson(membersUrl);
+    assert.equal(unsupportedFilter.status, 200);
+    assert.match(unsupportedFilter.body.message, /profile database is updated/i);
 
     const ownProfile = await getJson(socialUrl('/profile/me'), token);
     assert.equal(ownProfile.status, 200);

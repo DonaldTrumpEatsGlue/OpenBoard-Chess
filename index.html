@@ -226,14 +226,35 @@
         <button class="secondary-button profiles-back" id="profiles-back" type="button">← Back to game</button>
         <header class="profiles-page-header">
           <p class="eyebrow">COMMUNITY</p>
-          <h1 id="profiles-title">Player profiles</h1>
-          <p>Search public player profiles by username. Online ratings and records are saved to the account.</p>
+          <h1 id="profiles-title">Members &amp; player profiles</h1>
+          <p>Discover real Openboard members and open their public profiles. Ratings are shown only when supported by completed online games.</p>
         </header>
+        <section class="community-members" aria-labelledby="community-members-title">
+          <div class="community-section-heading">
+            <div><p class="eyebrow">COMMUNITY</p><h2 id="community-members-title">Find players</h2></div>
+            <button class="secondary-button" id="community-members-refresh" type="button">Refresh</button>
+          </div>
+          <form class="community-member-filters" id="community-member-search">
+            <label class="sr-only" for="community-member-query">Search member usernames</label>
+            <input id="community-member-query" maxlength="20" autocomplete="off" placeholder="Search by username" />
+            <label class="sr-only" for="community-member-country">Filter by country</label>
+            <select id="community-member-country"><option value="">All countries</option></select>
+            <label class="community-rated-filter"><input id="community-member-rated" type="checkbox" /> Rated players</label>
+            <label class="sr-only" for="community-member-sort">Sort members</label>
+            <select id="community-member-sort"><option value="name">Username A–Z</option><option value="rating">Highest rating</option></select>
+            <button class="primary-button" type="submit">Search</button>
+          </form>
+          <p class="studio-status community-members-status" id="community-members-status" role="status" aria-live="polite"></p>
+          <ul class="community-member-list" id="community-member-list" aria-label="Community members"></ul>
+        </section>
+        <section class="profile-lookup" aria-labelledby="profile-lookup-title">
+          <h2 id="profile-lookup-title">Open a player profile</h2>
         <form class="profile-search" id="profile-search-form">
           <label class="sr-only" for="profile-search-input">Player username</label>
           <input id="profile-search-input" maxlength="20" autocomplete="off" placeholder="Search username" />
           <button class="primary-button" type="submit">Search</button>
         </form>
+        </section>
         <p class="studio-status" id="profile-status" role="status">Sign in to view your own profile, or search for a username.</p>
         <article class="profile-card" id="profile-card" hidden>
           <div class="profile-card-heading"><span class="profile-avatar" id="profile-avatar"><span id="profile-avatar-letter">?</span><img id="profile-avatar-image" alt="" hidden /></span><div><span class="eyebrow">OPENBOARD PLAYER</span><h2 id="profile-username"></h2><p class="profile-country" id="profile-country"></p></div></div>
@@ -793,6 +814,6 @@
     <script defer src="./src/learning-content.js?v=49"></script>
     <script defer src="./src/academy-content.js?v=1"></script>
     <script defer src="./src/profile-utils.js?v=1"></script>
-    <script defer src="./src/main.js?v=67"></script>
+    <script defer src="./src/main.js?v=69"></script>
   </body>
 </html>
