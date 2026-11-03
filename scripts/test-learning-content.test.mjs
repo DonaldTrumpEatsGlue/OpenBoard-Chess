@@ -106,6 +106,20 @@ test('en passant is included as a legal capture destination in its demonstration
     .find((move) => move.to === 'd6');
   assert.ok(enPassant);
   assert.equal(enPassant.captured, 'p');
+  assert.ok(enPassant.flags.includes('e'));
+  const played = game.move(enPassant);
+  assert.equal(played.captured, 'p');
+  assert.equal(game.get('d6')?.color, 'w');
+  assert.equal(game.get('d5'), null);
+  game.undo();
+  assert.equal(game.get('e5')?.color, 'w');
+  assert.equal(game.get('d5')?.color, 'b');
+
+  const expiredCapture = new Chess(lesson.fen);
+  assert.ok(expiredCapture.move(lesson.moves[0]));
+  assert.ok(expiredCapture.move({ from: 'a1', to: 'a2' }));
+  assert.ok(expiredCapture.move({ from: 'h8', to: 'h7' }));
+  assert.equal(expiredCapture.moves({ square: lesson.focusSquare }).some((move) => move.includes('d6')), false);
 });
 
 test('the rule guide covers all special moves and common game endings', () => {

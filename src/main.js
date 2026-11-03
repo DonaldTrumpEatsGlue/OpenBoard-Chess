@@ -971,6 +971,10 @@ function renderBoard() {
   const gameOver = tutorialDemoGame ? displayGame.game_over() : isGameOver();
   const currentCheck = tutorialDemoGame ? displayGame.in_check() : isCheck();
   const lastMoveTo = displayGame.history({ verbose: true }).at(-1)?.to;
+  const selectedMoves = selectedSquare && !tutorialDemoGame
+    ? (premoveWindow ? getPremoveMoves(selectedSquare) : getLegalMoves({ square: selectedSquare }))
+    : [];
+  const captureTargets = new Set(selectedMoves.filter((move) => move.captured).map((move) => move.to));
 
   rows.forEach((rank, rowIndex) => {
     cols.forEach((file, colIndex) => {
@@ -983,7 +987,15 @@ function renderBoard() {
       button.dataset.square = square;
       button.setAttribute('role', 'gridcell');
       const isTutorialDestination = tutorialDemoLegalTargets.includes(square);
-      button.setAttribute('aria-label', `${square}${piece ? `, ${piece.color === 'w' ? 'white' : 'black'} ${customIdentity?.name ?? piece.type}` : ''}${isTutorialDestination ? ', legal move destination' : ''}`);
+      const isLegalDestination = !tutorialDemoGame && legalTargets.includes(square);
+      const isCaptureDestination = captureTargets.has(square);
+      const pieceDescription = piece ? `${piece.color === 'w' ? 'white' : 'black'} ${customIdentity?.name ?? piece.type}` : '';
+      const destinationDescription = isTutorialDestination
+        ? 'legal move destination'
+        : isLegalDestination
+          ? `legal ${isCaptureDestination ? 'capture' : 'move'} destination`
+          : '';
+      button.setAttribute('aria-label', [square, pieceDescription, destinationDescription].filter(Boolean).join(', '));
       if (tutorialDemoHighlights.includes(square)) button.classList.add('tutorial-highlight');
       if (suggestedMove?.from === square) button.classList.add('suggested-from');
       if (suggestedMove?.to === square) button.classList.add('suggested-to');
@@ -1005,9 +1017,9 @@ function renderBoard() {
       if (pendingPremove?.from === square) button.classList.add('premove-from');
       if (pendingPremove?.to === square) button.classList.add('premove-to');
       if (currentCheck && piece?.type === 'k' && piece.color === displayGame.turn()) button.classList.add('in-check');
-      if (!tutorialDemoGame && legalTargets.includes(square)) {
+      if (isLegalDestination) {
         const target = document.createElement('span');
-        target.className = piece ? 'move-target capture-target' : 'move-target';
+        target.className = piece || isCaptureDestination ? 'move-target capture-target' : 'move-target';
         button.append(target);
       }
       if (piece) {
