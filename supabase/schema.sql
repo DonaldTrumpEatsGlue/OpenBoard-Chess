@@ -30,6 +30,297 @@ create policy "Usernames are visible to everyone"
 grant select on public.profiles to anon, authenticated;
 revoke insert, update, delete on public.profiles from anon, authenticated;
 
+create table if not exists public.friend_requests (
+  id uuid primary key default gen_random_uuid(),
+  sender_id uuid not null references public.profiles (id) on delete cascade,
+  recipient_id uuid not null references public.profiles (id) on delete cascade,
+  status text not null default 'pending' check (status in ('pending', 'accepted', 'declined')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint friend_requests_distinct_users check (sender_id <> recipient_id)
+);
+
+create unique index if not exists friend_requests_one_pending_direction
+  on public.friend_requests (sender_id, recipient_id)
+  where status = 'pending';
+
+create table if not exists public.friendships (
+  user_low uuid not null references public.profiles (id) on delete cascade,
+  user_high uuid not null references public.profiles (id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (user_low, user_high),
+  constraint friendships_ordered_users check (user_low < user_high)
+);
+
+create table if not exists public.direct_messages (
+  id uuid primary key default gen_random_uuid(),
+  sender_id uuid not null references public.profiles (id) on delete cascade,
+  recipient_id uuid not null references public.profiles (id) on delete cascade,
+  body text not null check (char_length(body) between 1 and 1000),
+  created_at timestamptz not null default now(),
+  read_at timestamptz,
+  constraint direct_messages_distinct_users check (sender_id <> recipient_id)
+);
+
+create index if not exists direct_messages_conversation_order
+  on public.direct_messages (sender_id, recipient_id, created_at desc);
+create index if not exists direct_messages_unread
+  on public.direct_messages (recipient_id, sender_id, created_at desc)
+  where read_at is null;
+
+alter table public.friend_requests enable row level security;
+alter table public.friendships enable row level security;
+alter table public.direct_messages enable row level security;
+revoke all on public.friend_requests, public.friendships, public.direct_messages from public, anon, authenticated;
+grant select, insert, update, delete on public.friend_requests, public.friendships, public.direct_messages to service_role;
+
+create or replace function public.openboard_social_overview(p_user_id uuid)
+returns jsonb
+language sql
+security definer
+set search_path = ''
+as $$
+  select jsonb_build_object(
+    'friends', coalesce((
+      select jsonb_agg(
+        jsonb_build_object(
+          'id', peer.id,
+          'username', peer.username,
+          'countryCode', peer.country_code,
+          'lastMessage', latest.body,
+          'lastMessageAt', latest.created_at,
+          'lastMessageFromMe', latest.sender_id = p_user_id,
+          'unreadCount', coalesce(unread.count, 0)
+        )
+        order by coalesce(latest.created_at, friendship.created_at) desc
+      )
+      from public.friendships as friendship
+      join public.profiles as peer
+        on peer.id = case when friendship.user_low = p_user_id
+          then friendship.user_high else friendship.user_low end
+      left join lateral (
+        select message.body, message.created_at, message.sender_id
+        from public.direct_messages as message
+        where (message.sender_id = p_user_id and message.recipient_id = peer.id)
+          or (message.sender_id = peer.id and message.recipient_id = p_user_id)
+        order by message.created_at desc
+        limit 1
+      ) as latest on true
+      left join lateral (
+        select count(*) as count
+        from public.direct_messages as message
+        where message.sender_id = peer.id
+          and message.recipient_id = p_user_id
+          and message.read_at is null
+      ) as unread on true
+      where p_user_id in (friendship.user_low, friendship.user_high)
+    ), '[]'::jsonb),
+    'incomingRequests', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', request.id,
+        'username', sender.username,
+        'countryCode', sender.country_code,
+        'createdAt', request.created_at
+      ) order by request.created_at desc)
+      from public.friend_requests as request
+      join public.profiles as sender on sender.id = request.sender_id
+      where request.recipient_id = p_user_id and request.status = 'pending'
+    ), '[]'::jsonb),
+    'outgoingRequests', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', request.id,
+        'username', recipient.username,
+        'countryCode', recipient.country_code,
+        'createdAt', request.created_at
+      ) order by request.created_at desc)
+      from public.friend_requests as request
+      join public.profiles as recipient on recipient.id = request.recipient_id
+      where request.sender_id = p_user_id and request.status = 'pending'
+    ), '[]'::jsonb)
+  )
+$$;
+
+create or replace function public.openboard_send_friend_request(p_sender_id uuid, p_username_key text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  recipient public.profiles%rowtype;
+  existing_request public.friend_requests%rowtype;
+  user_low uuid;
+  user_high uuid;
+begin
+  select * into recipient from public.profiles where username_key = lower(p_username_key);
+  if recipient.id is null then
+    return jsonb_build_object('status', 'not_found');
+  end if;
+  if recipient.id = p_sender_id then
+    raise exception 'You cannot send a friend request to yourself.';
+  end if;
+  user_low := least(p_sender_id, recipient.id);
+  user_high := greatest(p_sender_id, recipient.id);
+  perform pg_advisory_xact_lock(hashtextextended(user_low::text || ':' || user_high::text, 0));
+
+  if exists (select 1 from public.friendships where friendships.user_low = user_low and friendships.user_high = user_high) then
+    return jsonb_build_object('status', 'already_friends');
+  end if;
+  select * into existing_request
+  from public.friend_requests
+  where status = 'pending'
+    and ((sender_id = p_sender_id and recipient_id = recipient.id)
+      or (sender_id = recipient.id and recipient_id = p_sender_id))
+  order by created_at desc
+  limit 1;
+  if existing_request.id is not null then
+    return jsonb_build_object(
+      'status', case when existing_request.sender_id = p_sender_id then 'pending' else 'incoming' end,
+      'id', existing_request.id
+    );
+  end if;
+
+  insert into public.friend_requests (sender_id, recipient_id)
+  values (p_sender_id, recipient.id)
+  returning * into existing_request;
+  return jsonb_build_object('status', 'pending', 'id', existing_request.id);
+end;
+$$;
+
+create or replace function public.openboard_respond_friend_request(
+  p_user_id uuid,
+  p_request_id uuid,
+  p_accept boolean
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  request public.friend_requests%rowtype;
+begin
+  select * into request
+  from public.friend_requests
+  where id = p_request_id and recipient_id = p_user_id and status = 'pending'
+  for update;
+  if request.id is null then
+    raise exception 'That friend request is no longer available.';
+  end if;
+
+  if p_accept then
+    insert into public.friendships (user_low, user_high)
+    values (least(request.sender_id, request.recipient_id), greatest(request.sender_id, request.recipient_id))
+    on conflict do nothing;
+    update public.friend_requests
+    set status = 'accepted', updated_at = now()
+    where id = request.id;
+  else
+    update public.friend_requests
+    set status = 'declined', updated_at = now()
+    where id = request.id;
+  end if;
+  return jsonb_build_object('accepted', p_accept);
+end;
+$$;
+
+create or replace function public.openboard_send_direct_message(
+  p_sender_id uuid,
+  p_recipient_username_key text,
+  p_body text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  recipient public.profiles%rowtype;
+  inserted_message public.direct_messages%rowtype;
+begin
+  select * into recipient
+  from public.profiles
+  where username_key = lower(p_recipient_username_key);
+  if recipient.id is null then
+    raise exception 'No player was found with that username.';
+  end if;
+  if recipient.id = p_sender_id then
+    raise exception 'You cannot message yourself.';
+  end if;
+  if not exists (
+    select 1 from public.friendships as friendship
+    where friendship.user_low = least(p_sender_id, recipient.id)
+      and friendship.user_high = greatest(p_sender_id, recipient.id)
+  ) then
+    raise exception 'You can message players after you are friends.';
+  end if;
+  insert into public.direct_messages (sender_id, recipient_id, body)
+  values (p_sender_id, recipient.id, p_body)
+  returning * into inserted_message;
+  return jsonb_build_object(
+    'id', inserted_message.id,
+    'senderId', inserted_message.sender_id,
+    'recipientId', inserted_message.recipient_id,
+    'body', inserted_message.body,
+    'createdAt', inserted_message.created_at,
+    'readAt', inserted_message.read_at
+  );
+end;
+$$;
+
+create or replace function public.openboard_load_direct_messages(p_user_id uuid, p_peer_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  messages jsonb;
+begin
+  if p_user_id = p_peer_id or not exists (
+    select 1 from public.friendships as friendship
+    where friendship.user_low = least(p_user_id, p_peer_id)
+      and friendship.user_high = greatest(p_user_id, p_peer_id)
+  ) then
+    raise exception 'You can message players after you are friends.';
+  end if;
+
+  update public.direct_messages
+  set read_at = now()
+  where sender_id = p_peer_id and recipient_id = p_user_id and read_at is null;
+
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'id', message.id,
+    'senderId', message.sender_id,
+    'recipientId', message.recipient_id,
+    'body', message.body,
+    'createdAt', message.created_at,
+    'readAt', message.read_at
+  ) order by message.created_at), '[]'::jsonb)
+  into messages
+  from (
+    select *
+    from public.direct_messages
+    where (sender_id = p_user_id and recipient_id = p_peer_id)
+      or (sender_id = p_peer_id and recipient_id = p_user_id)
+    order by created_at desc
+    limit 100
+  ) as message;
+  return messages;
+end;
+$$;
+
+revoke all on function public.openboard_social_overview(uuid) from public, anon, authenticated;
+revoke all on function public.openboard_send_friend_request(uuid, text) from public, anon, authenticated;
+revoke all on function public.openboard_respond_friend_request(uuid, uuid, boolean) from public, anon, authenticated;
+revoke all on function public.openboard_send_direct_message(uuid, text, text) from public, anon, authenticated;
+revoke all on function public.openboard_load_direct_messages(uuid, uuid) from public, anon, authenticated;
+grant execute on function public.openboard_social_overview(uuid) to service_role;
+grant execute on function public.openboard_send_friend_request(uuid, text) to service_role;
+grant execute on function public.openboard_respond_friend_request(uuid, uuid, boolean) to service_role;
+grant execute on function public.openboard_send_direct_message(uuid, text, text) to service_role;
+grant execute on function public.openboard_load_direct_messages(uuid, uuid) to service_role;
+
 create or replace function public.settle_openboard_rated_game(
   p_white_id uuid,
   p_black_id uuid,

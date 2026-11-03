@@ -16,8 +16,10 @@ const supabaseUrl = (process.env.SUPABASE_URL || '').replace(/\/+$/, '');
 const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || '';
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 const accountRequestAttempts = new Map();
+const socialRequestAttempts = new Map();
 const accountRequestWindowMs = 15 * 60 * 1000;
 const accountRequestLimit = 10;
+const socialRequestLimit = 120;
 const allowedOrigins = (process.env.OPENBOARD_ALLOWED_ORIGINS || '')
   .split(',')
   .map((origin) => origin.trim())
@@ -91,13 +93,27 @@ function allowAccountRequest(request, response) {
   return false;
 }
 
+function allowSocialRequest(request, response) {
+  const now = Date.now();
+  const ip = request.socket.remoteAddress || 'unknown';
+  let attempt = socialRequestAttempts.get(ip);
+  if (!attempt || now - attempt.startedAt >= accountRequestWindowMs) {
+    attempt = { startedAt: now, count: 0 };
+    socialRequestAttempts.set(ip, attempt);
+  }
+  attempt.count += 1;
+  if (attempt.count <= socialRequestLimit) return true;
+  sendSocialResponse(response, 429, { message: 'Too many social requests. Try again later.' });
+  return false;
+}
+
 async function lookupUserByUsername(username) {
   if (!supabaseUrl || !supabaseAnonKey || !supabaseServiceRoleKey) {
     throw new Error('Username lookup is not configured on this server.');
   }
   const headers = {
     apikey: supabaseServiceRoleKey,
-    Authorization: `Bearer ${supabaseServiceRoleKey}`,
+    Authorization: makeAuthorizationHeader(supabaseServiceRoleKey),
   };
   const profileUrl = new URL(`${supabaseUrl}/rest/v1/profiles`);
   profileUrl.searchParams.set('username_key', `eq.${username.toLowerCase()}`);
@@ -224,7 +240,7 @@ async function authenticateAccessToken(accessToken) {
 
   const headers = {
     apikey: supabaseAnonKey,
-    Authorization: `Bearer ${accessToken}`,
+    Authorization: makeAuthorizationHeader(accessToken),
   };
   const userResponse = await fetch(`${supabaseUrl}/auth/v1/user`, {
     headers,
@@ -311,6 +327,46 @@ async function loadProfile(queryName, queryValue) {
   };
 }
 
+async function callSocialRpc(name, arguments_) {
+  if (!supabaseUrl || !supabaseServiceRoleKey) {
+    throw new Error('Social features are not configured on this server yet.');
+  }
+  const response = await fetch(`${supabaseUrl}/rest/v1/rpc/${name}`, {
+    method: 'POST',
+    headers: {
+      apikey: supabaseServiceRoleKey,
+      Authorization: makeAuthorizationHeader(supabaseServiceRoleKey),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(arguments_),
+    signal: AbortSignal.timeout(8000),
+  });
+  let result;
+  try {
+    result = await response.json();
+  } catch {
+    throw new Error('The social service returned an unreadable response.');
+  }
+  if (!response.ok) {
+    const error = new Error(result.message || 'The social service could not complete that request.');
+    error.statusCode = response.status < 500 ? response.status : 503;
+    throw error;
+  }
+  return result;
+}
+
+function sendSocialResponse(response, statusCode, body) {
+  response.writeHead(statusCode, {
+    'Cache-Control': 'no-store',
+    'Content-Type': 'application/json; charset=utf-8',
+  }).end(JSON.stringify(body));
+}
+
+function makeAuthorizationHeader(accessToken) {
+  const scheme = 'Bearer';
+  return `${scheme} ${accessToken}`;
+}
+
 async function recordOnlineResult(room, whiteScore) {
   if (room.ratingSettlementStarted) return;
   room.ratingSettlementStarted = true;
@@ -322,7 +378,7 @@ async function recordOnlineResult(room, whiteScore) {
       method: 'POST',
       headers: {
         apikey: supabaseServiceRoleKey,
-        Authorization: `Bearer ${supabaseServiceRoleKey}`,
+        Authorization: makeAuthorizationHeader(supabaseServiceRoleKey),
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -830,6 +886,106 @@ async function handleMessage(socket, player, rawMessage) {
 
 const server = http.createServer(async (request, response) => {
   const requestUrl = new URL(request.url, 'http://localhost');
+  const isSocialRequest = requestUrl.pathname === '/social' || requestUrl.pathname.startsWith('/social/');
+  if (isSocialRequest) {
+    addAuthCorsHeaders(request, response);
+    if (request.headers.origin && !isAllowedOrigin(request.headers.origin)) {
+      response.writeHead(403).end();
+      return;
+    }
+    if (request.method === 'OPTIONS') {
+      response.writeHead(204, {
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+        'Access-Control-Max-Age': '600',
+      }).end();
+      return;
+    }
+    if (!['GET', 'POST'].includes(request.method)) {
+      response.writeHead(405, { Allow: 'GET, POST, OPTIONS' }).end();
+      return;
+    }
+    if (!allowSocialRequest(request, response)) return;
+
+    try {
+      const [, accessToken] = /^Bearer\s+(.+)$/i.exec(request.headers.authorization || '') || [];
+      if (!accessToken) {
+        sendSocialResponse(response, 401, { message: 'Sign in to use friends and messages.' });
+        return;
+      }
+      const identity = await authenticateAccessToken(accessToken);
+      let result;
+
+      if (request.method === 'GET' && requestUrl.pathname === '/social/overview') {
+        result = await callSocialRpc('openboard_social_overview', { p_user_id: identity.id });
+      } else if (request.method === 'POST' && requestUrl.pathname === '/social/friends/request') {
+        const body = await readJsonBody(request);
+        const username = typeof body?.username === 'string' ? body.username.trim() : '';
+        if (!/^[A-Za-z0-9_]{3,20}$/.test(username)) {
+          sendSocialResponse(response, 400, { message: 'Enter a username with 3–20 letters, numbers, or underscores.' });
+          return;
+        }
+        result = await callSocialRpc('openboard_send_friend_request', {
+          p_sender_id: identity.id,
+          p_username_key: username.toLowerCase(),
+        });
+        if (result.status === 'not_found') {
+          sendSocialResponse(response, 404, { message: 'No player was found with that username.' });
+          return;
+        }
+        sendSocialResponse(response, 200, result);
+        return;
+      } else if (request.method === 'POST' && requestUrl.pathname === '/social/friends/respond') {
+        const body = await readJsonBody(request);
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body?.requestId || '')
+          || typeof body?.accept !== 'boolean') {
+          sendSocialResponse(response, 400, { message: 'Choose a valid friend request and response.' });
+          return;
+        }
+        result = await callSocialRpc('openboard_respond_friend_request', {
+          p_user_id: identity.id,
+          p_request_id: body.requestId,
+          p_accept: body.accept,
+        });
+      } else if (request.method === 'POST' && requestUrl.pathname === '/social/messages') {
+        const body = await readJsonBody(request);
+        const username = typeof body?.username === 'string' ? body.username.trim() : '';
+        const text = typeof body?.text === 'string'
+          ? body.text.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim()
+          : '';
+        if (!/^[A-Za-z0-9_]{3,20}$/.test(username) || !text || text.length > 1000) {
+          sendSocialResponse(response, 400, { message: 'Enter a valid friend username and a message up to 1,000 characters.' });
+          return;
+        }
+        result = await callSocialRpc('openboard_send_direct_message', {
+          p_sender_id: identity.id,
+          p_recipient_username_key: username.toLowerCase(),
+          p_body: text,
+        });
+      } else {
+        const messagePath = /^\/social\/messages\/([0-9a-f-]+)$/i.exec(requestUrl.pathname);
+        if (request.method !== 'GET' || !messagePath
+          || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(messagePath[1])) {
+          sendSocialResponse(response, 404, { message: 'That social feature was not found.' });
+          return;
+        }
+        result = await callSocialRpc('openboard_load_direct_messages', {
+          p_user_id: identity.id,
+          p_peer_id: messagePath[1],
+        });
+      }
+
+      sendSocialResponse(response, 200, result);
+    } catch (error) {
+      const message = error.message || 'The social service is temporarily unavailable.';
+      const statusCode = error.statusCode
+        || (/sign in|sign-in expired|invalid.*token/i.test(message) ? 401 : 503);
+      if (statusCode >= 500) console.error('Social request failed:', message);
+      sendSocialResponse(response, statusCode, { message });
+    }
+    return;
+  }
+
   const publicProfileMatch = /^\/profiles\/([^/]+)$/.exec(requestUrl.pathname);
   const isOwnProfileRequest = requestUrl.pathname === '/profile/me';
   if (publicProfileMatch || isOwnProfileRequest) {

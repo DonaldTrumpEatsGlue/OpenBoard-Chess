@@ -19,6 +19,7 @@ const onlineDialog = document.querySelector('#online-dialog');
 const accountDialog = document.querySelector('#account-dialog');
 const profilesPage = document.querySelector('#profiles-page');
 const gamePage = document.querySelector('#game-page');
+const socialPanel = document.querySelector('#social-panel');
 const onlineLeaveDialog = document.querySelector('#online-leave-dialog');
 const onlineOpponentLeftDialog = document.querySelector('#online-opponent-left-dialog');
 const pieceTheme = window.OpenboardPieceThemes.classic;
@@ -147,6 +148,10 @@ let onlineRoomCode = null;
 let onlineLeaveTimeout = null;
 let onlinePlayerName = '';
 let onlinePlayerCountryCode = null;
+let socialOverview = { friends: [], incomingRequests: [], outgoingRequests: [] };
+let activeSocialPanel = '';
+let activeSocialTab = 'friends';
+let activeSocialConversation = null;
 let onlinePreviousClock = null;
 let onlinePreviousColor = null;
 let publicRooms = [];
@@ -1591,14 +1596,26 @@ function saveAuthSession(session) {
     document.querySelector('#online-auth-status').textContent = 'Signed in for this tab, but browser storage is unavailable.';
   }
   updateAccountUI();
+  if (!socialPanel.hidden) {
+    if (activeSocialPanel === 'settings') {
+      document.querySelector('#social-account-settings').textContent =
+        `Account · ${authUsername || authSession.user?.email || 'signed in'}`;
+    } else {
+      showSocialView(activeSocialPanel || 'friends');
+      refreshSocialPanel();
+    }
+  }
 }
 
 function clearAuthSession() {
   authSession = null;
   authUsername = '';
   onlineIdentityVerified = false;
+  socialOverview = { friends: [], incomingRequests: [], outgoingRequests: [] };
+  updateSocialBadges();
   localStorage.removeItem(authSessionStorageKey);
   updateAccountUI();
+  if (!socialPanel.hidden) refreshSocialPanel();
 }
 
 function profileEndpoint(path) {
@@ -1751,6 +1768,11 @@ function updateAccountUI(message = '') {
   if (message) document.querySelector('#online-auth-status').textContent = message;
 }
 
+function makeAuthorizationHeader(accessToken) {
+  const scheme = 'Bearer';
+  return `${scheme} ${accessToken}`;
+}
+
 async function requestSupabaseAuth(path, body, accessToken = '') {
   if (!supabaseUrl || !supabaseAnonKey) {
     throw new Error('Online accounts are not configured yet. The site owner must finish the free account-service setup.');
@@ -1760,7 +1782,7 @@ async function requestSupabaseAuth(path, body, accessToken = '') {
     headers: {
       apikey: supabaseAnonKey,
       'Content-Type': 'application/json',
-      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      ...(accessToken ? { Authorization: makeAuthorizationHeader(accessToken) } : {}),
     },
     body: JSON.stringify(body),
   });
@@ -1923,7 +1945,7 @@ async function updateRecoveredPassword(password) {
     method: 'PUT',
     headers: {
       apikey: supabaseAnonKey,
-      Authorization: `Bearer ${authSession.access_token}`,
+      Authorization: makeAuthorizationHeader(authSession.access_token),
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ password }),
@@ -2375,6 +2397,375 @@ function playerNameWithCountry(username, countryCode) {
 function countryLabel(countryCode) {
   if (!/^[A-Z]{2}$/.test(countryCode || '')) return '';
   return new Intl.DisplayNames([navigator.language || 'en'], { type: 'region' }).of(countryCode);
+}
+
+async function requestSocialApi(path, method = 'GET', body) {
+  const session = await getValidAuthSession();
+  if (!session?.access_token) throw new Error('Sign in to use friends and messages.');
+  const endpoint = profileEndpoint(path);
+  const response = await fetch(endpoint, {
+    method,
+    headers: {
+      Authorization: makeAuthorizationHeader(session.access_token),
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  let result;
+  try {
+    result = await response.json();
+  } catch {
+    throw new Error('The online server returned an unreadable social response.');
+  }
+  if (!response.ok) throw new Error(result.message || 'The social service could not complete that request.');
+  return result;
+}
+
+function showSocialView(viewName) {
+  document.querySelectorAll('.social-panel-view').forEach((view) => {
+    view.hidden = view.dataset.socialView !== viewName;
+  });
+  document.querySelector('#social-signed-out').hidden = true;
+  activeSocialPanel = viewName;
+  document.querySelector('#social-panel-title').textContent = ({
+    friends: 'Friends',
+    messages: 'Messages',
+    notifications: 'Notifications',
+    settings: 'Settings',
+  })[viewName] || 'Social';
+}
+
+function updateSocialBadges() {
+  const requests = socialOverview.incomingRequests.length;
+  const unreadMessages = socialOverview.friends.reduce(
+    (total, friend) => total + (Number(friend.unreadCount) || 0),
+    0,
+  );
+  const badgeValues = {
+    friends: requests,
+    messages: unreadMessages,
+    notifications: requests + unreadMessages,
+  };
+  for (const [name, count] of Object.entries(badgeValues)) {
+    const badge = document.querySelector(`[data-social-badge="${name}"]`);
+    badge.hidden = count === 0;
+    badge.textContent = count > 9 ? '9+' : String(count);
+    badge.setAttribute('aria-label', `${count} ${name === 'friends' ? 'friend requests' : name === 'messages' ? 'unread messages' : 'notifications'}`);
+  }
+  const requestCount = document.querySelector('#friend-request-count');
+  requestCount.hidden = requests === 0;
+  requestCount.textContent = String(requests);
+}
+
+function appendSocialEmpty(list, message) {
+  const empty = document.createElement('li');
+  empty.className = 'social-empty';
+  empty.textContent = message;
+  list.append(empty);
+}
+
+function createSocialAvatar(username) {
+  const avatar = document.createElement('span');
+  avatar.className = 'social-avatar';
+  avatar.setAttribute('aria-hidden', 'true');
+  avatar.textContent = [...username][0]?.toUpperCase() || '?';
+  return avatar;
+}
+
+function createSocialUserCopy(username, countryCode, detail = '') {
+  const copy = document.createElement('span');
+  copy.className = 'social-item-copy';
+  const name = document.createElement('strong');
+  name.textContent = playerNameWithCountry(username, countryCode);
+  copy.append(name);
+  if (detail) {
+    const secondary = document.createElement('small');
+    secondary.textContent = detail;
+    copy.append(secondary);
+  }
+  return copy;
+}
+
+function createSocialAction(label, action, primary = false) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = label;
+  if (primary) button.className = 'social-accept';
+  button.addEventListener('click', action);
+  return button;
+}
+
+function renderSocialFriends() {
+  const friendsList = document.querySelector('#social-friends-list');
+  friendsList.replaceChildren();
+  if (!socialOverview.friends.length) {
+    appendSocialEmpty(friendsList, 'Your friend list is empty. Search for a player above to send a request.');
+  }
+  for (const friend of socialOverview.friends) {
+    const row = document.createElement('li');
+    row.className = 'social-list-item';
+    const preview = friend.lastMessage
+      ? `${friend.lastMessageFromMe ? 'You: ' : ''}${friend.lastMessage}`
+      : 'You are friends';
+    row.append(createSocialAvatar(friend.username), createSocialUserCopy(friend.username, friend.countryCode, preview));
+    const actions = document.createElement('span');
+    actions.className = 'social-item-actions';
+    actions.append(createSocialAction('Message', () => openSocialConversation(friend.id)));
+    row.append(actions);
+    friendsList.append(row);
+  }
+}
+
+function renderSocialRequests() {
+  const list = document.querySelector('#social-requests-list');
+  list.replaceChildren();
+  if (!socialOverview.incomingRequests.length && !socialOverview.outgoingRequests.length) {
+    appendSocialEmpty(list, 'No pending friend requests.');
+  }
+  for (const request of socialOverview.incomingRequests) {
+    const row = document.createElement('li');
+    row.className = 'social-list-item';
+    row.append(createSocialAvatar(request.username), createSocialUserCopy(request.username, request.countryCode, 'Wants to be your friend'));
+    const actions = document.createElement('span');
+    actions.className = 'social-item-actions';
+    actions.append(
+      createSocialAction('Accept', () => respondToFriendRequest(request.id, true), true),
+      createSocialAction('Decline', () => respondToFriendRequest(request.id, false)),
+    );
+    row.append(actions);
+    list.append(row);
+  }
+  for (const request of socialOverview.outgoingRequests) {
+    const row = document.createElement('li');
+    row.className = 'social-list-item';
+    row.append(createSocialAvatar(request.username), createSocialUserCopy(request.username, request.countryCode, 'Request sent'));
+    list.append(row);
+  }
+}
+
+function renderSocialConversations() {
+  const list = document.querySelector('#social-conversation-list');
+  list.replaceChildren();
+  if (!socialOverview.friends.length) {
+    const empty = document.createElement('p');
+    empty.className = 'social-empty';
+    empty.textContent = 'Add a friend to start a private conversation.';
+    list.append(empty);
+    return;
+  }
+  const conversationList = document.createElement('ul');
+  conversationList.className = 'social-list';
+  for (const friend of socialOverview.friends) {
+    const row = document.createElement('li');
+    row.className = 'social-list-item';
+    const detail = friend.lastMessage
+      ? `${friend.lastMessageFromMe ? 'You: ' : ''}${friend.lastMessage}`
+      : 'Start a conversation';
+    row.append(createSocialAvatar(friend.username), createSocialUserCopy(friend.username, friend.countryCode, detail));
+    if (Number(friend.unreadCount) > 0) {
+      const unread = document.createElement('span');
+      unread.className = 'social-unread';
+      unread.textContent = friend.unreadCount > 99 ? '99+' : String(friend.unreadCount);
+      row.append(unread);
+    }
+    row.tabIndex = 0;
+    row.setAttribute('role', 'button');
+    row.setAttribute('aria-label', `Open messages with ${friend.username}`);
+    row.addEventListener('click', () => openSocialConversation(friend.id));
+    row.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        openSocialConversation(friend.id);
+      }
+    });
+    conversationList.append(row);
+  }
+  list.append(conversationList);
+}
+
+function renderSocialNotifications() {
+  const list = document.querySelector('#social-notifications-list');
+  list.replaceChildren();
+  const notifications = [
+    ...socialOverview.incomingRequests.map((request) => ({ type: 'request', item: request })),
+    ...socialOverview.friends
+      .filter((friend) => Number(friend.unreadCount) > 0)
+      .map((friend) => ({ type: 'message', item: friend })),
+  ];
+  if (!notifications.length) {
+    appendSocialEmpty(list, 'You are all caught up. New friend requests and unread messages will appear here.');
+    return;
+  }
+  for (const notification of notifications) {
+    const { item } = notification;
+    const row = document.createElement('li');
+    row.className = 'social-list-item';
+    const request = notification.type === 'request';
+    const description = request
+      ? 'Sent you a friend request'
+      : `${item.unreadCount} unread ${Number(item.unreadCount) === 1 ? 'message' : 'messages'}`;
+    row.append(createSocialAvatar(item.username), createSocialUserCopy(item.username, item.countryCode, description));
+    const actions = document.createElement('span');
+    actions.className = 'social-item-actions';
+    if (request) {
+      actions.append(createSocialAction('Accept', () => respondToFriendRequest(item.id, true), true));
+    } else {
+      actions.append(createSocialAction('Reply', () => openSocialConversation(item.id), true));
+    }
+    row.append(actions);
+    list.append(row);
+  }
+}
+
+async function refreshSocialOverview() {
+  if (!authSession?.access_token) return;
+  const overview = await requestSocialApi('/social/overview');
+  socialOverview = {
+    friends: Array.isArray(overview.friends) ? overview.friends : [],
+    incomingRequests: Array.isArray(overview.incomingRequests) ? overview.incomingRequests : [],
+    outgoingRequests: Array.isArray(overview.outgoingRequests) ? overview.outgoingRequests : [],
+  };
+  updateSocialBadges();
+  renderSocialFriends();
+  renderSocialRequests();
+  renderSocialConversations();
+  renderSocialNotifications();
+}
+
+async function refreshSocialPanel() {
+  if (!authSession?.access_token) {
+    document.querySelectorAll('.social-panel-view').forEach((view) => { view.hidden = true; });
+    document.querySelector('#social-signed-out').hidden = false;
+    document.querySelector('#social-panel-status').textContent = '';
+    document.querySelector('#social-panel-title').textContent = 'Sign in required';
+    return;
+  }
+  document.querySelector('#social-panel-status').textContent = 'Refreshing…';
+  try {
+    await refreshSocialOverview();
+    document.querySelector('#social-panel-status').textContent = '';
+    if (activeSocialPanel === 'messages') renderSocialConversations();
+  } catch (error) {
+    console.error('Could not refresh social features:', error);
+    document.querySelector('#social-panel-status').textContent = error.message || 'Social features are temporarily unavailable.';
+  }
+}
+
+function openSocialPanel(panelName) {
+  if (activeSocialPanel === panelName && !socialPanel.hidden) {
+    closeSocialPanel();
+    return;
+  }
+  showSocialView(panelName);
+  socialPanel.hidden = false;
+  document.querySelectorAll('[data-social-panel]').forEach((button) => {
+    const active = button.dataset.socialPanel === panelName;
+    button.setAttribute('aria-expanded', String(active));
+  });
+  if (panelName === 'settings') {
+    document.querySelector('#dock-board-theme').value = boardThemeSelect.value;
+    document.querySelector('#dock-interface-theme').value = interfaceThemeSelect.value;
+    document.querySelector('#dock-sound-toggle').checked = soundToggle.checked;
+    document.querySelector('#social-account-settings').textContent = authSession?.access_token
+      ? `Account · ${authUsername || authSession.user?.email || 'signed in'}`
+      : 'Sign in or create an account';
+  } else {
+    refreshSocialPanel();
+  }
+}
+
+function closeSocialPanel() {
+  socialPanel.hidden = true;
+  activeSocialPanel = '';
+  document.querySelectorAll('[data-social-panel]').forEach((button) => {
+    button.setAttribute('aria-expanded', 'false');
+  });
+}
+
+async function respondToFriendRequest(requestId, accept) {
+  document.querySelector('#social-panel-status').textContent = accept ? 'Adding friend…' : 'Declining request…';
+  try {
+    await requestSocialApi('/social/friends/respond', 'POST', { requestId, accept });
+    await refreshSocialOverview();
+    document.querySelector('#social-panel-status').textContent = accept ? 'Friend added.' : 'Request declined.';
+    if (activeSocialTab === 'requests' && accept) selectSocialFriendsTab('friends');
+  } catch (error) {
+    console.error('Could not update friend request:', error);
+    document.querySelector('#social-panel-status').textContent = error.message || 'Could not update friend request.';
+  }
+}
+
+function selectSocialFriendsTab(tab) {
+  activeSocialTab = tab;
+  const friendsSelected = tab === 'friends';
+  document.querySelectorAll('[data-friends-tab]').forEach((button) => {
+    const active = button.dataset.friendsTab === tab;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', String(active));
+  });
+  document.querySelector('#friend-request-form').hidden = !friendsSelected;
+  document.querySelector('#social-friends-list').hidden = !friendsSelected;
+  document.querySelector('#social-requests-list').hidden = friendsSelected;
+}
+
+async function sendFriendRequest(username) {
+  document.querySelector('#social-panel-status').textContent = 'Searching for player…';
+  try {
+    const result = await requestSocialApi('/social/friends/request', 'POST', { username });
+    await refreshSocialOverview();
+    if (result.status === 'incoming') {
+      selectSocialFriendsTab('requests');
+      document.querySelector('#social-panel-status').textContent = 'This player already sent you a request. Review it in Requests.';
+    } else if (result.status === 'already_friends') {
+      document.querySelector('#social-panel-status').textContent = `You are already friends with @${username}.`;
+    } else {
+      document.querySelector('#social-panel-status').textContent = 'Friend request sent.';
+    }
+  } catch (error) {
+    console.error('Could not send friend request:', error);
+    document.querySelector('#social-panel-status').textContent = error.message || 'Could not send friend request.';
+  }
+}
+
+async function openSocialConversation(friendId) {
+  const friend = socialOverview.friends.find((entry) => entry.id === friendId);
+  if (!friend) return;
+  activeSocialConversation = friend;
+  document.querySelector('#social-conversation-name').textContent =
+    playerNameWithCountry(friend.username, friend.countryCode);
+  document.querySelector('#social-conversation-list').hidden = true;
+  const conversation = document.querySelector('#social-conversation');
+  conversation.hidden = false;
+  document.querySelector('#social-message-input').focus();
+  await loadSocialMessages(friend);
+}
+
+async function loadSocialMessages(friend) {
+  const list = document.querySelector('#social-message-list');
+  list.replaceChildren();
+  try {
+    const messages = await requestSocialApi(`/social/messages/${encodeURIComponent(friend.id)}`);
+    for (const message of messages) {
+      const item = document.createElement('li');
+      item.className = `social-message${message.senderId === authSession?.user?.id ? ' mine' : ''}`;
+      const content = document.createElement('span');
+      content.textContent = message.body;
+      const timestamp = document.createElement('time');
+      timestamp.dateTime = message.createdAt;
+      const date = new Date(message.createdAt);
+      timestamp.textContent = Number.isNaN(date.getTime())
+        ? ''
+        : date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      item.append(content, timestamp);
+      list.append(item);
+    }
+    if (!messages.length) appendSocialEmpty(list, 'Say hello to start the conversation.');
+    list.scrollTop = list.scrollHeight;
+    await refreshSocialOverview();
+  } catch (error) {
+    console.error('Could not load direct messages:', error);
+    document.querySelector('#social-panel-status').textContent = error.message || 'Could not load this conversation.';
+  }
 }
 
 function runSidebarAction(action) {
@@ -3482,6 +3873,78 @@ document.querySelector('#profile-search-form').addEventListener('submit', (event
   history.replaceState({ page: 'profiles' }, '', url);
   loadPlayerProfile(username);
 });
+document.querySelectorAll('[data-social-panel]').forEach((button) => {
+  button.addEventListener('click', () => openSocialPanel(button.dataset.socialPanel));
+});
+document.querySelector('#social-panel-close').addEventListener('click', closeSocialPanel);
+document.querySelector('#social-refresh').addEventListener('click', refreshSocialPanel);
+document.querySelector('#social-signin').addEventListener('click', () => openAccountDialog('signin'));
+document.querySelector('#friend-request-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  const input = document.querySelector('#friend-request-username');
+  const username = input.value.trim();
+  if (!/^[A-Za-z0-9_]{3,20}$/.test(username)) {
+    document.querySelector('#social-panel-status').textContent =
+      'Usernames must be 3–20 letters, numbers, or underscores.';
+    return;
+  }
+  sendFriendRequest(username).then(() => { input.value = ''; });
+});
+document.querySelectorAll('[data-friends-tab]').forEach((button) => {
+  button.addEventListener('click', () => selectSocialFriendsTab(button.dataset.friendsTab));
+});
+document.querySelector('#social-conversation-back').addEventListener('click', () => {
+  activeSocialConversation = null;
+  document.querySelector('#social-conversation').hidden = true;
+  document.querySelector('#social-conversation-list').hidden = false;
+});
+document.querySelector('#social-compose-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (!activeSocialConversation) return;
+  const input = document.querySelector('#social-message-input');
+  const text = input.value.trim();
+  if (!text || text.length > 1000) return;
+  const sendButton = event.currentTarget.querySelector('button');
+  sendButton.disabled = true;
+  try {
+    await requestSocialApi('/social/messages', 'POST', {
+      username: activeSocialConversation.username,
+      text,
+    });
+    input.value = '';
+    await loadSocialMessages(activeSocialConversation);
+  } catch (error) {
+    console.error('Could not send direct message:', error);
+    document.querySelector('#social-panel-status').textContent = error.message || 'Could not send your message.';
+  } finally {
+    sendButton.disabled = false;
+    input.focus();
+  }
+});
+document.querySelector('#dock-board-theme').addEventListener('change', (event) => {
+  boardThemeSelect.value = event.target.value;
+  boardThemeSelect.dispatchEvent(new Event('change', { bubbles: true }));
+});
+document.querySelector('#dock-interface-theme').addEventListener('change', (event) => {
+  interfaceThemeSelect.value = event.target.value;
+  interfaceThemeSelect.dispatchEvent(new Event('change', { bubbles: true }));
+});
+document.querySelector('#dock-sound-toggle').addEventListener('change', (event) => {
+  soundToggle.checked = event.target.checked;
+  soundToggle.dispatchEvent(new Event('change', { bubbles: true }));
+});
+document.querySelector('#social-sound-settings').addEventListener('click', () => {
+  renderSoundSettings();
+  soundSettingsDialog.showModal();
+});
+document.querySelector('#social-account-settings').addEventListener('click', () => {
+  openAccountDialog('signin');
+});
+setInterval(() => {
+  if (!socialPanel.hidden && activeSocialPanel !== 'settings' && authSession?.access_token) {
+    refreshSocialPanel();
+  }
+}, 30_000);
 window.addEventListener('popstate', renderAppPage);
 document.querySelector('#online-leave-game').addEventListener('click', () => onlineLeaveDialog.showModal());
 document.querySelector('#online-leave-cancel').addEventListener('click', () => onlineLeaveDialog.close());

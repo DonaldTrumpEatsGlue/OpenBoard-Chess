@@ -9,7 +9,7 @@
     <meta name="theme-color" content="#17231f" />
     <meta name="description" content="A free, original chess game with a built-in local AI opponent." />
     <title>Openboard — Play Chess</title>
-    <link rel="stylesheet" href="./src/style.css?v=34" />
+    <link rel="stylesheet" href="./src/style.css?v=35" />
   </head>
   <body>
     <div id="app">
@@ -213,6 +213,78 @@
       </main>
 
       <footer class="site-footer"><span>OPENBOARD</span><span>Free chess for everyone.</span></footer>
+
+      <nav class="social-dock" aria-label="Social tools">
+        <button class="social-dock-button" type="button" data-social-panel="friends" aria-label="Friends" aria-expanded="false" title="Friends">
+          <span aria-hidden="true">♟</span><span class="social-dock-badge" data-social-badge="friends" hidden></span>
+        </button>
+        <button class="social-dock-button" type="button" data-social-panel="messages" aria-label="Messages" aria-expanded="false" title="Messages">
+          <span aria-hidden="true">✉</span><span class="social-dock-badge" data-social-badge="messages" hidden></span>
+        </button>
+        <button class="social-dock-button" type="button" data-social-panel="notifications" aria-label="Notifications" aria-expanded="false" title="Notifications">
+          <span aria-hidden="true">♢</span><span class="social-dock-badge" data-social-badge="notifications" hidden></span>
+        </button>
+        <button class="social-dock-button" type="button" data-social-panel="settings" aria-label="Settings" aria-expanded="false" title="Settings">
+          <span aria-hidden="true">⚙</span>
+        </button>
+      </nav>
+
+      <aside class="social-panel" id="social-panel" aria-label="Social tools" hidden>
+        <header class="social-panel-header">
+          <h2 id="social-panel-title">Friends</h2>
+          <div class="social-panel-header-actions">
+            <button class="social-refresh" id="social-refresh" type="button" aria-label="Refresh social panel" title="Refresh">↻</button>
+            <button class="social-panel-close" id="social-panel-close" type="button" aria-label="Close social panel">×</button>
+          </div>
+        </header>
+        <p class="social-panel-status" id="social-panel-status" role="status" aria-live="polite"></p>
+        <section class="social-panel-view social-signed-out" id="social-signed-out" hidden>
+          <p>Sign in to find friends, exchange private messages, and see account notifications.</p>
+          <button class="primary-button" id="social-signin" type="button">Sign in or create an account</button>
+        </section>
+
+        <section class="social-panel-view" data-social-view="friends" hidden>
+          <div class="social-tabs" role="tablist" aria-label="Friend list">
+            <button class="social-tab active" type="button" role="tab" data-friends-tab="friends" aria-selected="true">Friends</button>
+            <button class="social-tab" type="button" role="tab" data-friends-tab="requests" aria-selected="false">Requests <span id="friend-request-count" hidden>0</span></button>
+          </div>
+          <form class="social-search" id="friend-request-form">
+            <label class="sr-only" for="friend-request-username">Search players by username</label>
+            <input id="friend-request-username" maxlength="20" autocomplete="off" placeholder="Search players by username" />
+            <button class="primary-button" type="submit">Add</button>
+          </form>
+          <ul class="social-list" id="social-friends-list"></ul>
+          <ul class="social-list" id="social-requests-list" hidden></ul>
+        </section>
+
+        <section class="social-panel-view" data-social-view="messages" hidden>
+          <div id="social-conversation-list" class="social-list-wrap"></div>
+          <section class="social-conversation" id="social-conversation" aria-label="Direct message conversation" hidden>
+            <div class="social-conversation-header">
+              <button class="social-back" id="social-conversation-back" type="button" aria-label="Back to messages">←</button>
+              <strong id="social-conversation-name"></strong>
+            </div>
+            <ol class="social-message-list" id="social-message-list" aria-live="polite"></ol>
+            <form class="social-compose" id="social-compose-form">
+              <label class="sr-only" for="social-message-input">Write a message</label>
+              <input id="social-message-input" maxlength="1000" autocomplete="off" placeholder="Write a message" />
+              <button class="primary-button" type="submit" aria-label="Send message">➤</button>
+            </form>
+          </section>
+        </section>
+
+        <section class="social-panel-view" data-social-view="notifications" hidden>
+          <ul class="social-list" id="social-notifications-list"></ul>
+        </section>
+
+        <section class="social-panel-view social-settings-view" data-social-view="settings" hidden>
+          <label><span>Board colors</span><select id="dock-board-theme"><option value="classic">Meadow</option><option value="blue">Glacier</option><option value="walnut">Walnut</option></select></label>
+          <label><span>Interface theme</span><select id="dock-interface-theme"><option value="dark">Night</option><option value="light">Day</option></select></label>
+          <label class="social-sound-toggle"><input type="checkbox" id="dock-sound-toggle" /> <span>Move sounds</span></label>
+          <button class="secondary-button" id="social-sound-settings" type="button">Sound &amp; audio settings</button>
+          <button class="secondary-button" id="social-account-settings" type="button">Account &amp; sign in</button>
+        </section>
+      </aside>
     </div>
 
     <dialog id="promotion-dialog" aria-labelledby="promotion-title">
@@ -439,6 +511,6 @@
     <script defer src="./vendor/chess.js"></script>
     <script defer src="./src/large-board-chess.js"></script>
     <script defer src="./src/piece-studio.js"></script>
-    <script defer src="./src/main.js?v=34"></script>
+    <script defer src="./src/main.js?v=35"></script>
   </body>
 </html>

@@ -16,7 +16,15 @@ const authUsers = new Map();
 const passwordRecoveryRequests = [];
 const ratedGameRequests = [];
 const signupRequests = [];
+const socialFriendRequests = [];
+const socialFriendships = [];
+const socialDirectMessages = [];
 let userIdCounter = 1;
+let socialIdCounter = 1;
+
+function nextSocialId() {
+  return `10000000-0000-4000-8000-${String(socialIdCounter++).padStart(12, '0')}`;
+}
 
 async function findOpenPort() {
   const server = net.createServer();
@@ -63,6 +71,11 @@ function createAccount(username, verified = false, countryCode = null) {
     confirmed_at: verified ? new Date().toISOString() : null,
   });
   return token;
+}
+
+function makeAuthorizationHeader(accessToken) {
+  const scheme = 'Bearer';
+  return `${scheme} ${accessToken}`;
 }
 
 async function connect(origin, username = 'Host') {
@@ -118,7 +131,7 @@ function getJson(url, accessToken = '', origin = 'https://sample-user.github.io'
       method: 'GET',
       headers: {
         Origin: origin,
-        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        ...(accessToken ? { Authorization: makeAuthorizationHeader(accessToken) } : {}),
       },
     }, (response) => {
       let rawBody = '';
@@ -133,6 +146,13 @@ function getJson(url, accessToken = '', origin = 'https://sample-user.github.io'
     request.on('error', reject);
     request.end();
   });
+}
+
+function socialUrl(pathname) {
+  const url = new URL(endpoint);
+  url.protocol = 'http:';
+  url.pathname = pathname;
+  return url;
 }
 
 function waitForMessage(socket, predicate) {
@@ -204,7 +224,7 @@ async function assertReplacementStartsNewGame(departureType) {
 before(async () => {
   authServer = http.createServer(async (request, response) => {
     response.setHeader('Content-Type', 'application/json');
-    const token = request.headers.authorization?.replace(/^Bearer /, '');
+    const token = request.headers.authorization?.split(/\s+/, 2)[1] || '';
     const user = authUsers.get(token);
     if (request.url === '/auth/v1/signup') {
       let rawBody = '';
@@ -249,6 +269,151 @@ before(async () => {
           user: { id: account[1].id, email: account[1].email, username: account[1].username },
         }
         : { message: 'Invalid token' }));
+      return;
+    }
+    if (request.url?.startsWith('/rest/v1/rpc/openboard_social_')
+      || [
+        '/rest/v1/rpc/openboard_send_friend_request',
+        '/rest/v1/rpc/openboard_respond_friend_request',
+        '/rest/v1/rpc/openboard_send_direct_message',
+        '/rest/v1/rpc/openboard_load_direct_messages',
+      ].includes(request.url)) {
+      let rawBody = '';
+      for await (const chunk of request) rawBody += chunk;
+      const body = JSON.parse(rawBody);
+      let result;
+      if (request.url === '/rest/v1/rpc/openboard_social_overview') {
+        const friendIds = socialFriendships
+          .filter(([low, high]) => low === body.p_user_id || high === body.p_user_id)
+          .map(([low, high]) => low === body.p_user_id ? high : low);
+        const friends = friendIds.map((friendId) => {
+          const peer = [...authUsers.values()].find((candidate) => candidate.id === friendId);
+          const messages = socialDirectMessages
+            .filter((message) => (
+              (message.senderId === body.p_user_id && message.recipientId === friendId)
+              || (message.senderId === friendId && message.recipientId === body.p_user_id)
+            ))
+            .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+          const latest = messages[0];
+          return {
+            id: friendId,
+            username: peer.username,
+            countryCode: peer.country_code,
+            lastMessage: latest?.body || null,
+            lastMessageAt: latest?.createdAt || null,
+            lastMessageFromMe: latest?.senderId === body.p_user_id,
+            unreadCount: messages.filter((message) => (
+              message.senderId === friendId
+              && message.recipientId === body.p_user_id
+              && !message.readAt
+            )).length,
+          };
+        });
+        result = {
+          friends,
+          incomingRequests: socialFriendRequests
+            .filter((entry) => entry.recipientId === body.p_user_id && entry.status === 'pending')
+            .map((entry) => {
+              const sender = [...authUsers.values()].find((candidate) => candidate.id === entry.senderId);
+              return { id: entry.id, username: sender.username, countryCode: sender.country_code, createdAt: entry.createdAt };
+            }),
+          outgoingRequests: socialFriendRequests
+            .filter((entry) => entry.senderId === body.p_user_id && entry.status === 'pending')
+            .map((entry) => {
+              const recipient = [...authUsers.values()].find((candidate) => candidate.id === entry.recipientId);
+              return { id: entry.id, username: recipient.username, countryCode: recipient.country_code, createdAt: entry.createdAt };
+            }),
+        };
+      } else if (request.url === '/rest/v1/rpc/openboard_send_friend_request') {
+        const recipient = [...authUsers.values()].find((candidate) => (
+          candidate.username.toLowerCase() === body.p_username_key
+        ));
+        if (!recipient) {
+          result = { status: 'not_found' };
+        } else if (socialFriendships.some(([low, high]) => (
+          low === body.p_sender_id && high === recipient.id
+          || low === recipient.id && high === body.p_sender_id
+        ))) {
+          result = { status: 'already_friends' };
+        } else {
+          const existing = socialFriendRequests.find((entry) => (
+            entry.status === 'pending'
+            && ((entry.senderId === body.p_sender_id && entry.recipientId === recipient.id)
+              || (entry.senderId === recipient.id && entry.recipientId === body.p_sender_id))
+          ));
+          if (existing) {
+            result = {
+              status: existing.senderId === body.p_sender_id ? 'pending' : 'incoming',
+              id: existing.id,
+            };
+          } else {
+            const entry = {
+              id: nextSocialId(),
+              senderId: body.p_sender_id,
+              recipientId: recipient.id,
+              status: 'pending',
+              createdAt: new Date().toISOString(),
+            };
+            socialFriendRequests.push(entry);
+            result = { status: 'pending', id: entry.id };
+          }
+        }
+      } else if (request.url === '/rest/v1/rpc/openboard_respond_friend_request') {
+        const entry = socialFriendRequests.find((candidate) => (
+          candidate.id === body.p_request_id
+          && candidate.recipientId === body.p_user_id
+          && candidate.status === 'pending'
+        ));
+        if (!entry) {
+          response.writeHead(400).end(JSON.stringify({ message: 'That friend request is no longer available.' }));
+          return;
+        }
+        entry.status = body.p_accept ? 'accepted' : 'declined';
+        if (body.p_accept) {
+          const [low, high] = [entry.senderId, entry.recipientId].sort();
+          socialFriendships.push([low, high]);
+        }
+        result = { accepted: body.p_accept };
+      } else if (request.url === '/rest/v1/rpc/openboard_send_direct_message') {
+        const recipient = [...authUsers.values()].find((candidate) => (
+          candidate.username.toLowerCase() === body.p_recipient_username_key
+        ));
+        if (!recipient || recipient.id === body.p_sender_id) {
+          response.writeHead(400).end(JSON.stringify({ message: 'No player was found with that username.' }));
+          return;
+        }
+        const [low, high] = [body.p_sender_id, recipient.id].sort();
+        if (!socialFriendships.some(([friendLow, friendHigh]) => friendLow === low && friendHigh === high)) {
+          response.writeHead(400).end(JSON.stringify({ message: 'You can message players after you are friends.' }));
+          return;
+        }
+        const message = {
+          id: nextSocialId(),
+          senderId: body.p_sender_id,
+          recipientId: recipient.id,
+          body: body.p_body,
+          createdAt: new Date().toISOString(),
+          readAt: null,
+        };
+        socialDirectMessages.push(message);
+        result = message;
+      } else if (request.url === '/rest/v1/rpc/openboard_load_direct_messages') {
+        const [low, high] = [body.p_user_id, body.p_peer_id].sort();
+        if (!socialFriendships.some(([friendLow, friendHigh]) => friendLow === low && friendHigh === high)) {
+          response.writeHead(400).end(JSON.stringify({ message: 'You can message players after you are friends.' }));
+          return;
+        }
+        for (const message of socialDirectMessages) {
+          if (message.senderId === body.p_peer_id && message.recipientId === body.p_user_id && !message.readAt) {
+            message.readAt = new Date().toISOString();
+          }
+        }
+        result = socialDirectMessages.filter((message) => (
+          (message.senderId === body.p_user_id && message.recipientId === body.p_peer_id)
+          || (message.senderId === body.p_peer_id && message.recipientId === body.p_user_id)
+        ));
+      }
+      response.writeHead(200).end(JSON.stringify(result));
       return;
     }
     if (request.url === '/rest/v1/rpc/settle_openboard_rated_game') {
@@ -398,7 +563,7 @@ test('origin allowlist supports GitHub Pages subdomains and rejects unrelated we
   assert.match(error.message, /Unexpected server response: 403/);
 });
 
-test('database schema reserves case-insensitive usernames when accounts are created', () => {
+test('database schema reserves usernames and keeps social data behind server-only RPCs', () => {
   const schema = readFileSync(path.resolve(__dirname, '../../supabase/schema.sql'), 'utf8');
   assert.match(schema, /username_key text not null unique/i);
   assert.match(schema, /country_code text check \(country_code is null or country_code ~ '\^\[A-Z\]\{2\}\$'\)/i);
@@ -409,6 +574,13 @@ test('database schema reserves case-insensitive usernames when accounts are crea
   assert.match(schema, /raise exception 'username_taken'/i);
   assert.doesNotMatch(schema, /new\.email_confirmed_at is null/i);
   assert.match(schema, /from auth\.users as users[\s\S]*on conflict do nothing/i);
+  assert.match(schema, /create table if not exists public\.friend_requests/i);
+  assert.match(schema, /create table if not exists public\.friendships/i);
+  assert.match(schema, /create table if not exists public\.direct_messages/i);
+  assert.match(schema, /alter table public\.direct_messages enable row level security/i);
+  assert.match(schema, /revoke all on public\.friend_requests, public\.friendships, public\.direct_messages from public, anon, authenticated/i);
+  assert.match(schema, /grant execute on function public\.openboard_social_overview\(uuid\) to service_role/i);
+  assert.match(schema, /grant execute on function public\.openboard_send_direct_message\(uuid, text, text\) to service_role/i);
 });
 
 test('online actions require an account and use its reserved username without email verification', async () => {
@@ -1280,4 +1452,129 @@ test('room chat rejects empty and oversized messages and limits message bursts',
   } finally {
     host.close();
   }
+});
+
+test('social API protects friend requests and direct messages behind account authentication', async () => {
+  const senderToken = createAccount('SocialSender', true, 'US');
+  const recipientToken = createAccount('SocialRecipient', true, 'CA');
+  const unrelatedToken = createAccount('SocialStranger', true, 'GB');
+  const declinerToken = createAccount('SocialDecliner', true, 'AU');
+  const senderHeaders = { Authorization: makeAuthorizationHeader(senderToken) };
+  const recipientHeaders = { Authorization: makeAuthorizationHeader(recipientToken) };
+  const declinerHeaders = { Authorization: makeAuthorizationHeader(declinerToken) };
+
+  const signedOut = await getJson(socialUrl('/social/overview'));
+  assert.equal(signedOut.status, 401);
+
+  const emptyOverview = await getJson(socialUrl('/social/overview'), senderToken);
+  assert.equal(emptyOverview.status, 200);
+  assert.deepEqual(emptyOverview.body, { friends: [], incomingRequests: [], outgoingRequests: [] });
+
+  const invalidRequest = await postJson(
+    socialUrl('/social/friends/request'),
+    { username: 'x' },
+    undefined,
+    senderHeaders,
+  );
+  assert.equal(invalidRequest.status, 400);
+
+  const sentRequest = await postJson(
+    socialUrl('/social/friends/request'),
+    { username: 'SocialRecipient' },
+    undefined,
+    senderHeaders,
+  );
+  assert.equal(sentRequest.status, 200, JSON.stringify(sentRequest.body));
+  assert.equal(sentRequest.body.status, 'pending');
+  assert.match(sentRequest.body.id, /^[0-9a-f-]{36}$/i);
+  const senderPending = await getJson(socialUrl('/social/overview'), senderToken);
+  assert.equal(senderPending.body.outgoingRequests[0].username, 'SocialRecipient');
+
+  const recipientOverview = await getJson(socialUrl('/social/overview'), recipientToken);
+  assert.equal(recipientOverview.body.incomingRequests.length, 1);
+  assert.equal(recipientOverview.body.incomingRequests[0].username, 'SocialSender');
+  assert.equal(recipientOverview.body.incomingRequests[0].countryCode, 'US');
+  assert.equal(recipientOverview.body.friends.length, 0);
+
+  const invalidResponse = await postJson(
+    socialUrl('/social/friends/respond'),
+    { requestId: 'not-a-uuid', accept: true },
+    undefined,
+    recipientHeaders,
+  );
+  assert.equal(invalidResponse.status, 400);
+
+  const acceptedRequest = await postJson(
+    socialUrl('/social/friends/respond'),
+    { requestId: sentRequest.body.id, accept: true },
+    undefined,
+    recipientHeaders,
+  );
+  assert.equal(acceptedRequest.status, 200);
+  assert.deepEqual(acceptedRequest.body, { accepted: true });
+
+  const senderFriends = await getJson(socialUrl('/social/overview'), senderToken);
+  assert.equal(senderFriends.body.friends.length, 1);
+  assert.equal(senderFriends.body.friends[0].username, 'SocialRecipient');
+  assert.equal(senderFriends.body.friends[0].countryCode, 'CA');
+
+  const deniedMessage = await postJson(
+    socialUrl('/social/messages'),
+    { username: 'SocialStranger', text: 'Not a friend yet' },
+    undefined,
+    senderHeaders,
+  );
+  assert.equal(deniedMessage.status, 400);
+  assert.match(deniedMessage.body.message, /after you are friends/i);
+
+  const sentMessage = await postJson(
+    socialUrl('/social/messages'),
+    { username: 'SocialRecipient', text: 'Hello from Openboard' },
+    undefined,
+    senderHeaders,
+  );
+  assert.equal(sentMessage.status, 200);
+  assert.equal(sentMessage.body.body, 'Hello from Openboard');
+  assert.equal(sentMessage.body.senderId, authUsers.get(senderToken).id);
+
+  const unreadOverview = await getJson(socialUrl('/social/overview'), recipientToken);
+  assert.equal(unreadOverview.body.friends[0].unreadCount, 1);
+
+  const readConversation = await getJson(
+    socialUrl(`/social/messages/${authUsers.get(senderToken).id}`),
+    recipientToken,
+  );
+  assert.equal(readConversation.status, 200);
+  assert.equal(readConversation.body.length, 1);
+  assert.equal(readConversation.body[0].body, 'Hello from Openboard');
+  assert.ok(readConversation.body[0].readAt);
+
+  const readOverview = await getJson(socialUrl('/social/overview'), recipientToken);
+  assert.equal(readOverview.body.friends[0].unreadCount, 0);
+
+  const declineRequest = await postJson(
+    socialUrl('/social/friends/request'),
+    { username: 'SocialDecliner' },
+    undefined,
+    senderHeaders,
+  );
+  assert.equal(declineRequest.status, 200);
+  const declinedResponse = await postJson(
+    socialUrl('/social/friends/respond'),
+    { requestId: declineRequest.body.id, accept: false },
+    undefined,
+    declinerHeaders,
+  );
+  assert.equal(declinedResponse.status, 200);
+  assert.deepEqual(declinedResponse.body, { accepted: false });
+  const declinedOverview = await getJson(socialUrl('/social/overview'), declinerToken);
+  assert.equal(declinedOverview.body.incomingRequests.length, 0);
+  assert.equal(declinedOverview.body.friends.length, 0);
+
+  const unauthorizedMessage = await getJson(
+    socialUrl(`/social/messages/${authUsers.get(recipientToken).id}`),
+    unrelatedToken,
+  );
+  assert.equal(unauthorizedMessage.status, 400);
+  assert.match(unauthorizedMessage.body.message, /after you are friends/i);
 });
