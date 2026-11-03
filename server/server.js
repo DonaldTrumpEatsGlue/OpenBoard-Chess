@@ -23,7 +23,13 @@ const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 const accountRequestAttempts = new Map();
 const socialRequestAttempts = new Map();
 const accountRequestWindowMs = 15 * 60 * 1000;
-const accountRequestLimit = 10;
+const accountRequestLimits = new Map([
+  ['/auth/signup', 10],
+  ['/auth/username', 30],
+  ['/auth/recover', 10],
+  ['/auth/verify-recovery', 20],
+]);
+const trustProxy = process.env.OPENBOARD_TRUST_PROXY === 'true';
 const socialRequestLimit = 120;
 const allowedOrigins = (process.env.OPENBOARD_ALLOWED_ORIGINS || '')
   .split(',')
@@ -334,6 +340,7 @@ function addAuthCorsHeaders(request, response) {
   const origin = request.headers.origin;
   if (origin && isAllowedOrigin(origin)) {
     response.setHeader('Access-Control-Allow-Origin', origin);
+    response.setHeader('Access-Control-Expose-Headers', 'Retry-After');
     response.setHeader('Vary', 'Origin');
   }
 }
@@ -368,23 +375,33 @@ function readJsonBody(request, maxLength = 2048) {
 
 function allowAccountRequest(request, response) {
   const now = Date.now();
-  for (const [ip, attempt] of accountRequestAttempts) {
-    if (now - attempt.startedAt >= accountRequestWindowMs) accountRequestAttempts.delete(ip);
+  for (const [key, attempt] of accountRequestAttempts) {
+    if (now - attempt.startedAt >= accountRequestWindowMs) accountRequestAttempts.delete(key);
   }
-  const ip = request.socket.remoteAddress || 'unknown';
-  let attempt = accountRequestAttempts.get(ip);
+  const forwardedIp = trustProxy ? clientAddressFromForwardedHeader(request) : null;
+  const ip = forwardedIp || request.socket.remoteAddress || 'unknown';
+  const route = new URL(request.url, 'http://localhost').pathname;
+  const key = `${ip}:${route}`;
+  let attempt = accountRequestAttempts.get(key);
   if (!attempt || now - attempt.startedAt >= accountRequestWindowMs) {
     attempt = { startedAt: now, count: 0 };
-    accountRequestAttempts.set(ip, attempt);
+    accountRequestAttempts.set(key, attempt);
   }
   attempt.count += 1;
-  if (attempt.count <= accountRequestLimit) return true;
+  if (attempt.count <= (accountRequestLimits.get(route) || 10)) return true;
   response.writeHead(429, {
     'Cache-Control': 'no-store',
     'Content-Type': 'application/json; charset=utf-8',
     'Retry-After': String(Math.ceil((accountRequestWindowMs - (now - attempt.startedAt)) / 1000)),
   }).end(JSON.stringify({ message: 'Too many account requests. Try again later.' }));
   return false;
+}
+
+function clientAddressFromForwardedHeader(request) {
+  const forwardedFor = request.headers['x-forwarded-for'];
+  if (typeof forwardedFor !== 'string') return null;
+  const address = forwardedFor.split(',').map((entry) => entry.trim()).find((entry) => net.isIP(entry));
+  return address || null;
 }
 
 function allowSocialRequest(request, response) {

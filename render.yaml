@@ -13,6 +13,8 @@ services:
         value: production
       - key: OPENBOARD_ALLOWED_ORIGINS
         value: https://*.github.io
+      - key: OPENBOARD_TRUST_PROXY
+        value: "true"
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_ANON_KEY

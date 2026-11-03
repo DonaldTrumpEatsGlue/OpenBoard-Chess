@@ -823,6 +823,7 @@ before(async () => {
       ...process.env,
       OPENBOARD_PORT: String(port),
       OPENBOARD_ALLOWED_ORIGINS: 'https://*.github.io',
+      OPENBOARD_TRUST_PROXY: 'true',
       SUPABASE_URL: authUrl,
       SUPABASE_ANON_KEY: 'test-anon-key',
       SUPABASE_SERVICE_ROLE_KEY: 'test-service-role-key',
@@ -1004,6 +1005,43 @@ test('signup derives and stores an approximate country code from the request IP'
   profileUrl.hash = '';
   const profile = await getJson(profileUrl);
   assert.equal(profile.body.countryCode, 'US');
+});
+
+test('account throttling separates clients and signup traffic from sign-in traffic', async () => {
+  const endpointUrl = new URL(endpoint);
+  endpointUrl.protocol = 'http:';
+  endpointUrl.pathname = '/auth/signup';
+  endpointUrl.search = '';
+  endpointUrl.hash = '';
+  const requestOptions = { 'x-forwarded-for': '198.51.100.40' };
+  const invalidSignup = {
+    username: 'RateLimited',
+    email: 'not-an-email',
+    password: 'secure-password-123',
+    redirectTo: 'https://sample-user.github.io/OpenBoard-Chess/',
+  };
+
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const result = await postJson(endpointUrl, invalidSignup, 'https://sample-user.github.io', requestOptions);
+    assert.equal(result.status, 400);
+  }
+  const blockedSignup = await postJson(endpointUrl, invalidSignup, 'https://sample-user.github.io', requestOptions);
+  assert.equal(blockedSignup.status, 429);
+  assert.ok(Number(blockedSignup.headers['retry-after']) > 0);
+  assert.equal(blockedSignup.headers['access-control-expose-headers'], 'Retry-After');
+
+  const usernameUrl = new URL(endpointUrl);
+  usernameUrl.pathname = '/auth/username';
+  const signIn = await postJson(usernameUrl, {
+    username: 'UnknownRateLimited',
+    password: 'secure-password-123',
+  }, 'https://sample-user.github.io', requestOptions);
+  assert.equal(signIn.status, 401);
+
+  const anotherClient = await postJson(endpointUrl, invalidSignup, 'https://sample-user.github.io', {
+    'x-forwarded-for': '198.51.100.41',
+  });
+  assert.equal(anotherClient.status, 400);
 });
 
 test('country codes appear beside account names in lobbies, games, and chat', async () => {

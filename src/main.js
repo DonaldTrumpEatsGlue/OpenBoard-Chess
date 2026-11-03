@@ -2453,6 +2453,15 @@ async function requestServerSignup(username, email, password) {
   }
   if (!response.ok) {
     const detail = result.msg || result.message || result.error_description || result.error;
+    if (response.status === 429) {
+      const retryAfterSeconds = Number(response.headers.get('Retry-After'));
+      const retryMinutes = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+        ? Math.ceil(retryAfterSeconds / 60)
+        : null;
+      throw new Error(retryMinutes
+        ? `Too many signup attempts from this network. Please try again in about ${retryMinutes} minute${retryMinutes === 1 ? '' : 's'}.`
+        : 'Too many signup attempts from this network. Please try again later.');
+    }
     if (typeof detail === 'string' && /username_taken|duplicate key/i.test(detail)) {
       throw new Error('That username is already taken. Choose a different one.');
     }
