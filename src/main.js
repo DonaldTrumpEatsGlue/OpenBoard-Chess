@@ -2829,6 +2829,8 @@ const sidebarSections = {
     items: [
       { icon: '🧩', label: 'Puzzle', action: 'puzzle' },
       { icon: '🟩', label: 'Daily Puzzle', action: 'daily-puzzle' },
+      { icon: '↻', label: 'Next Puzzle', action: 'puzzle-next' },
+      { icon: '?', label: 'Puzzle Hint', action: 'puzzle-hint' },
       { icon: '⚡', label: 'Puzzle Rush', action: 'coming-soon' },
       { icon: '⚔', label: 'Puzzle Battle', action: 'coming-soon' },
       { icon: '▧', label: 'Custom Puzzles', action: 'coming-soon' },
@@ -2849,7 +2851,6 @@ const sidebarSections = {
     items: [
       { icon: '⌕', label: 'Analyze Position', action: 'analysis' },
       { icon: '✦', label: 'Suggest a Move', action: 'suggest' },
-      { icon: '♟', label: 'Practice Against a Bot', action: 'bots' },
     ],
   },
   watch: {
@@ -2868,8 +2869,6 @@ const sidebarSections = {
   other: {
     title: 'Other',
     items: [
-      { icon: '♞', label: 'Custom Variants', action: 'variants' },
-      { icon: '▤', label: 'Game History', action: 'history' },
       { icon: '♪', label: 'Sound Settings', action: 'settings' },
       { icon: '?', label: 'Help & Support', action: 'help' },
     ],
@@ -2893,7 +2892,9 @@ function renderSidebarSubmenu(section) {
   closeButton.textContent = '×';
   submenuHeader.append(heading, closeButton);
   submenu.append(submenuHeader);
-  for (const item of menu.items) {
+  const items = menu.items.filter((item) =>
+    puzzleMode || !['puzzle-next', 'puzzle-hint'].includes(item.action));
+  for (const item of items) {
     const button = document.createElement('button');
     button.className = 'sidebar-submenu-item';
     button.type = 'button';
@@ -3791,11 +3792,13 @@ function runSidebarAction(action) {
   else if (action === 'profiles') openProfilesPage();
   else if (action === 'puzzle') startPuzzle();
   else if (action === 'daily-puzzle') startDailyPuzzle();
+  else if (action === 'puzzle-next') startPuzzle();
+  else if (action === 'puzzle-hint') showPuzzleHint();
   else if (action === 'tutorial') openBeginnerTutorial();
   else if (action === 'academy') openChessAcademy();
   else if (action === 'practice') openPracticeSetup();
   else if (action === 'rules') openChessRules();
-  else if (action === 'analysis') document.querySelector('#analysis-open').click();
+  else if (action === 'analysis') openPositionAnalysis();
   else if (action === 'suggest') document.querySelector('#suggest-move').click();
   else if (action === 'variants') customRulesDialog.showModal();
   else if (action === 'history') openGameHistory();
@@ -7041,15 +7044,13 @@ function openChessRules() {
   document.querySelector('#rules-dialog').showModal();
 }
 
-document.querySelector('#puzzle-start').addEventListener('click', () => startPuzzle());
-document.querySelector('#puzzle-next').addEventListener('click', () => startPuzzle());
-document.querySelector('#puzzle-hint').addEventListener('click', () => {
+function showPuzzleHint() {
   if (!puzzleMode) {
     showMessage('Puzzle hint', 'Start the mate-in-one puzzle first.');
     return;
   }
   showMessage('Puzzle hint', puzzlePositions[puzzleCurrentIndex].hint);
-});
+}
 document.querySelector('#tutorial-close').addEventListener('click', closeBeginnerTutorial);
 document.querySelector('#tutorial-dialog').addEventListener('close', restoreTutorialBoard);
 document.querySelector('#tutorial-dialog').addEventListener('cancel', (event) => {
@@ -7195,7 +7196,7 @@ academyDialog.addEventListener('close', () => {
   }
 });
 
-document.querySelector('#analysis-open').addEventListener('click', () => {
+function openPositionAnalysis() {
   gameToken += 1;
   if (activeWorker) {
     activeWorker.terminate();
@@ -7208,7 +7209,7 @@ document.querySelector('#analysis-open').addEventListener('click', () => {
   document.querySelector('#analysis-input').value = game.fen();
   renderBoard();
   document.querySelector('#analysis-dialog').showModal();
-});
+}
 
 document.querySelector('#load-position').addEventListener('click', () => {
   const input = document.querySelector('#analysis-input').value.trim();
