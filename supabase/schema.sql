@@ -80,7 +80,7 @@ create table if not exists public.game_challenges (
   id uuid primary key default gen_random_uuid(),
   sender_id uuid not null references public.profiles (id) on delete cascade,
   recipient_id uuid not null references public.profiles (id) on delete cascade,
-  challenge_type text not null check (challenge_type in ('now', 'scheduled')),
+  challenge_type text not null check (challenge_type in ('now', 'scheduled', 'rematch')),
   room_code text,
   scheduled_at timestamptz,
   status text not null default 'pending' check (status in ('pending', 'accepted', 'declined', 'expired')),
@@ -89,10 +89,23 @@ create table if not exists public.game_challenges (
   expires_at timestamptz not null,
   constraint game_challenges_distinct_users check (sender_id <> recipient_id),
   constraint game_challenges_details check (
-    (challenge_type = 'now' and room_code is not null and room_code ~ '^[A-Z0-9]{6}$' and scheduled_at is null)
+    (challenge_type in ('now', 'rematch') and room_code is not null and room_code ~ '^[A-Z0-9]{6}$' and scheduled_at is null)
     or (challenge_type = 'scheduled' and room_code is null and scheduled_at is not null)
   )
 );
+
+alter table public.game_challenges
+  drop constraint if exists game_challenges_challenge_type_check;
+alter table public.game_challenges
+  add constraint game_challenges_challenge_type_check
+  check (challenge_type in ('now', 'scheduled', 'rematch'));
+alter table public.game_challenges
+  drop constraint if exists game_challenges_details;
+alter table public.game_challenges
+  add constraint game_challenges_details check (
+    (challenge_type in ('now', 'rematch') and room_code is not null and room_code ~ '^[A-Z0-9]{6}$' and scheduled_at is null)
+    or (challenge_type = 'scheduled' and room_code is null and scheduled_at is not null)
+  );
 
 create unique index if not exists game_challenges_one_pending_direction
   on public.game_challenges (sender_id, recipient_id)
@@ -259,7 +272,7 @@ as $$
       where (challenge.sender_id = p_user_id or challenge.recipient_id = p_user_id)
         and (
           (challenge.status = 'pending' and challenge.expires_at > now())
-          or (challenge.updated_at >= now() - interval '30 days')
+          or (challenge.status <> 'pending' and challenge.updated_at >= now() - interval '30 days')
         )
     ), '[]'::jsonb)
   )
@@ -298,18 +311,19 @@ begin
   ) then
     raise exception 'This player cannot receive a challenge.';
   end if;
-  if p_challenge_type = 'now' then
+  if p_challenge_type in ('now', 'rematch') then
     if p_room_code is null or p_room_code !~ '^[A-Z0-9]{6}$' or p_scheduled_at is not null then
-      raise exception 'Create a valid private room before sending a play-now challenge.';
+      raise exception 'Create a valid private room before sending this challenge.';
     end if;
-    v_expires_at := now() + interval '24 hours';
+    v_expires_at := now() + case when p_challenge_type = 'rematch'
+      then interval '30 minutes' else interval '24 hours' end;
   elsif p_challenge_type = 'scheduled' then
     if p_room_code is not null or p_scheduled_at is null or p_scheduled_at <= now() then
       raise exception 'Choose a future date and time for the scheduled challenge.';
     end if;
     v_expires_at := p_scheduled_at + interval '1 day';
   else
-    raise exception 'Choose play now or schedule a challenge.';
+    raise exception 'Choose play now, rematch, or schedule a challenge.';
   end if;
 
   v_user_low := least(p_sender_id, recipient.id);
@@ -325,7 +339,12 @@ begin
   where sender_id = p_sender_id and recipient_id = recipient.id and status = 'pending'
   limit 1;
   if inserted_challenge.id is not null then
-    return jsonb_build_object('status', 'already_pending', 'id', inserted_challenge.id);
+    return jsonb_build_object(
+      'status', 'already_pending',
+      'id', inserted_challenge.id,
+      'challengeType', inserted_challenge.challenge_type,
+      'roomCode', inserted_challenge.room_code
+    );
   end if;
 
   insert into public.game_challenges (
@@ -377,6 +396,32 @@ begin
   set status = v_status, updated_at = now()
   where id = challenge.id;
   return jsonb_build_object('status', v_status);
+end;
+$$;
+
+create or replace function public.openboard_close_rematch_challenge(
+  p_user_id uuid,
+  p_challenge_id uuid
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  closed_id uuid;
+begin
+  update public.game_challenges
+  set status = 'expired', updated_at = now()
+  where id = p_challenge_id
+    and challenge_type = 'rematch'
+    and status = 'pending'
+    and (sender_id = p_user_id or recipient_id = p_user_id)
+  returning id into closed_id;
+  if closed_id is null then
+    raise exception 'That rematch notification is no longer active.';
+  end if;
+  return jsonb_build_object('status', 'expired');
 end;
 $$;
 
@@ -617,6 +662,7 @@ $$;
 revoke all on function public.openboard_social_overview(uuid) from public, anon, authenticated;
 revoke all on function public.openboard_create_game_challenge(uuid, text, text, text, timestamptz) from public, anon, authenticated;
 revoke all on function public.openboard_respond_game_challenge(uuid, uuid, boolean) from public, anon, authenticated;
+revoke all on function public.openboard_close_rematch_challenge(uuid, uuid) from public, anon, authenticated;
 revoke all on function public.openboard_load_online_game_history(uuid) from public, anon, authenticated;
 revoke all on function public.openboard_send_friend_request(uuid, text) from public, anon, authenticated;
 revoke all on function public.openboard_respond_friend_request(uuid, uuid, boolean) from public, anon, authenticated;
@@ -625,6 +671,7 @@ revoke all on function public.openboard_load_direct_messages(uuid, uuid) from pu
 grant execute on function public.openboard_social_overview(uuid) to service_role;
 grant execute on function public.openboard_create_game_challenge(uuid, text, text, text, timestamptz) to service_role;
 grant execute on function public.openboard_respond_game_challenge(uuid, uuid, boolean) to service_role;
+grant execute on function public.openboard_close_rematch_challenge(uuid, uuid) to service_role;
 grant execute on function public.openboard_load_online_game_history(uuid) to service_role;
 grant execute on function public.openboard_send_friend_request(uuid, text) to service_role;
 grant execute on function public.openboard_respond_friend_request(uuid, uuid, boolean) to service_role;

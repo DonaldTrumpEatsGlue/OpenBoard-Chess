@@ -550,6 +550,16 @@ async function verifyPasswordRecovery(identity, token) {
   return result;
 }
 
+function closeRematchChallenge(challengeId, userId) {
+  if (!challengeId || !userId) return;
+  void callSocialRpc('openboard_close_rematch_challenge', {
+    p_user_id: userId,
+    p_challenge_id: challengeId,
+  }).catch((error) => {
+    console.error('Could not close the rematch inbox notification:', error.message);
+  });
+}
+
 function send(socket, payload) {
   if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(payload));
 }
@@ -984,11 +994,13 @@ function leaveRoom(player, reason = 'disconnect') {
       const requesterColor = room.rematch.by;
       const requesterSocket = room.players[requesterColor].socket;
       if (requesterColor === leavingColor) {
+        closeRematchChallenge(room.rematch.challengeId, slot.accountId);
         send(opponentSocket, {
           type: reason === 'disconnect' ? 'rematch-opponent-disconnected' : 'rematch-cancelled',
           message: reason === 'disconnect' ? 'Your opponent disconnected before the rematch started.' : 'Your opponent cancelled the rematch request.',
         });
       } else {
+        closeRematchChallenge(room.rematch.challengeId, room.players[requesterColor].accountId);
         send(requesterSocket, {
           type: reason === 'disconnect' ? 'rematch-opponent-disconnected' : 'rematch-opponent-left',
           message: reason === 'disconnect' ? 'Your opponent disconnected before responding to the rematch.' : 'Your opponent returned to the menu.',
@@ -1254,6 +1266,16 @@ async function handleMessage(socket, player, rawMessage) {
         send(room.players[playerColor].socket, { ...gameStart, color: playerColor });
       }
     }
+    if (room.gameEnded && room.rematch?.expiresAt > Date.now()
+      && room.rematch.by !== color && room.rematch.challengeId) {
+      send(socket, {
+        type: 'rematch-offered',
+        requestId: room.rematch.requestId,
+        gameId: room.rematch.gameId,
+        challengeId: room.rematch.challengeId,
+        name: room.players[room.rematch.by].name,
+      });
+    }
     return;
   }
 
@@ -1346,6 +1368,7 @@ async function handleMessage(socket, player, rawMessage) {
   if (room.rematch && room.rematch.expiresAt <= Date.now()) {
     const requestColor = room.rematch.by;
     const responseColor = requestColor === 'w' ? 'b' : 'w';
+    closeRematchChallenge(room.rematch.challengeId, room.players[requestColor].accountId);
     room.rematch = null;
     send(room.players[requestColor].socket, { type: 'rematch-expired' });
     send(room.players[responseColor].socket, { type: 'rematch-expired' });
@@ -1419,24 +1442,49 @@ async function handleMessage(socket, player, rawMessage) {
     }
     const opponentColor = player.color === 'w' ? 'b' : 'w';
     const opponent = room.players[opponentColor];
-    if (opponent.socket?.readyState !== WebSocket.OPEN) {
-      send(socket, { type: 'error', message: 'Your opponent is not connected to accept a rematch.' });
+    const opponentConnected = opponent.socket?.readyState === WebSocket.OPEN;
+    if (!opponentConnected && !opponent.accountId) {
+      send(socket, { type: 'error', message: 'This opponent cannot receive an inbox rematch request.' });
       return;
     }
     const requestId = crypto.randomUUID();
+    let challengeId = null;
+    if (!opponentConnected) {
+      const challenge = await callSocialRpc('openboard_create_game_challenge', {
+        p_sender_id: player.identity.id,
+        p_username_key: opponent.name.toLowerCase(),
+        p_challenge_type: 'rematch',
+        p_room_code: room.code,
+        p_scheduled_at: null,
+      });
+      if (challenge.status === 'already_pending'
+        && (challenge.challengeType !== 'rematch' || challenge.roomCode !== room.code)) {
+        send(socket, {
+          type: 'error',
+          message: 'Resolve your existing pending challenge before sending a rematch request.',
+        });
+        return;
+      }
+      challengeId = challenge.id;
+      if (!challengeId) throw new Error('The rematch inbox notification could not be saved.');
+    }
     room.rematch = {
       requestId,
       gameId: room.gameId,
       by: player.color,
-      expiresAt: Date.now() + rematchRequestLifetimeMs,
+      ...(challengeId ? { challengeId } : {}),
+      expiresAt: Date.now() + (challengeId ? roomLifetimeMs : rematchRequestLifetimeMs),
     };
+    if (challengeId) room.expiresAt = Date.now() + roomLifetimeMs;
     send(socket, { type: 'rematch-waiting', requestId, gameId: room.gameId });
-    send(opponent.socket, {
-      type: 'rematch-offered',
-      requestId,
-      gameId: room.gameId,
-      name: player.identity.username,
-    });
+    if (opponentConnected) {
+      send(opponent.socket, {
+        type: 'rematch-offered',
+        requestId,
+        gameId: room.gameId,
+        name: player.identity.username,
+      });
+    }
     return;
   }
 
@@ -1448,6 +1496,7 @@ async function handleMessage(socket, player, rawMessage) {
       return;
     }
     const opponent = room.players[player.color === 'w' ? 'b' : 'w'];
+    closeRematchChallenge(room.rematch.challengeId, player.identity.id);
     room.rematch = null;
     send(socket, { type: 'rematch-request-cancelled' });
     send(opponent.socket, { type: 'rematch-cancelled', message: 'Your opponent cancelled the rematch request.' });
@@ -1469,6 +1518,13 @@ async function handleMessage(socket, player, rawMessage) {
       room.rematch = null;
       send(socket, { type: 'rematch-opponent-disconnected', message: 'Your opponent disconnected before the rematch started.' });
       return;
+    }
+    if (pending.challengeId) {
+      await callSocialRpc('openboard_respond_game_challenge', {
+        p_user_id: player.identity.id,
+        p_challenge_id: pending.challengeId,
+        p_accept: message.accept,
+      });
     }
     room.rematch = null;
     if (!message.accept) {
@@ -2160,6 +2216,7 @@ const cleanupTimer = setInterval(() => {
     if (room.rematch?.expiresAt <= now) {
       const requestColor = room.rematch.by;
       const responseColor = requestColor === 'w' ? 'b' : 'w';
+      closeRematchChallenge(room.rematch.challengeId, room.players[requestColor].accountId);
       room.rematch = null;
       send(room.players[requestColor].socket, { type: 'rematch-expired' });
       send(room.players[responseColor].socket, { type: 'rematch-expired' });

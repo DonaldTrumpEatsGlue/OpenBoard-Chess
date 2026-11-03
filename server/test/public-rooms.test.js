@@ -319,6 +319,7 @@ before(async () => {
         '/rest/v1/rpc/openboard_block_user',
         '/rest/v1/rpc/openboard_create_game_challenge',
         '/rest/v1/rpc/openboard_respond_game_challenge',
+        '/rest/v1/rpc/openboard_close_rematch_challenge',
         '/rest/v1/rpc/openboard_load_online_game_history',
       ].includes(request.url)) {
       if (socialSchemaMissing) {
@@ -446,7 +447,12 @@ before(async () => {
           && entry.status === 'pending'
         ));
         if (existing) {
-          result = { status: 'already_pending', id: existing.id };
+          result = {
+            status: 'already_pending',
+            id: existing.id,
+            challengeType: existing.challengeType,
+            roomCode: existing.roomCode,
+          };
         } else {
           const entry = {
             id: nextSocialId(),
@@ -473,6 +479,19 @@ before(async () => {
         }
         challenge.status = body.p_accept ? 'accepted' : 'declined';
         result = { status: challenge.status };
+      } else if (request.url === '/rest/v1/rpc/openboard_close_rematch_challenge') {
+        const challenge = socialChallenges.find((entry) => (
+          entry.id === body.p_challenge_id
+          && entry.challengeType === 'rematch'
+          && entry.status === 'pending'
+          && (entry.senderId === body.p_user_id || entry.recipientId === body.p_user_id)
+        ));
+        if (!challenge) {
+          response.writeHead(400).end(JSON.stringify({ message: 'That rematch notification is no longer active.' }));
+          return;
+        }
+        challenge.status = 'expired';
+        result = { status: 'expired' };
       } else if (request.url === '/rest/v1/rpc/openboard_send_friend_request') {
         const recipient = [...authUsers.values()].find((candidate) => (
           candidate.username.toLowerCase() === body.p_username_key
@@ -1450,6 +1469,63 @@ test('a pending rematch is cancelled when a player returns to menu or disconnect
       white.close();
       black.close();
     }
+  }
+});
+
+test('a rematch requested after the opponent returns to the menu appears in their inbox and can be accepted', async () => {
+  const whiteToken = createAccount('InboxRematchSender');
+  const blackToken = createAccount('InboxRematchRecipient');
+  const white = await connectWithAccessToken(whiteToken, 'InboxRematchSender');
+  const black = await connectWithAccessToken(blackToken, 'InboxRematchRecipient');
+  try {
+    const room = await request(white, { type: 'create-room', lobbyName: 'Inbox rematch' });
+    const whiteStart = waitForMessage(white, (message) => message.type === 'game-start');
+    await Promise.all([
+      whiteStart,
+      request(black, { type: 'join-room', code: room.code }),
+    ]);
+
+    const whiteEnded = waitForMessage(white, (message) => message.type === 'game-ended');
+    const blackEnded = waitForMessage(black, (message) => message.type === 'game-ended');
+    white.send(JSON.stringify({ type: 'resign' }));
+    const [whiteResult] = await Promise.all([whiteEnded, blackEnded]);
+
+    const opponentReturned = waitForMessage(white, (message) => message.type === 'opponent-returned-to-menu');
+    await request(black, { type: 'leave-room' });
+    await opponentReturned;
+
+    const requestId = await sendAndWait(white, {
+      type: 'rematch-request',
+      gameId: whiteResult.gameId,
+    }, (message) => message.type === 'rematch-waiting');
+    const inbox = await getJson(socialUrl('/social/overview'), blackToken);
+    const challenge = inbox.body.challengeNotifications.find((item) => item.challengeType === 'rematch');
+    assert.ok(challenge);
+    assert.equal(challenge.isIncoming, true);
+    assert.equal(challenge.status, 'pending');
+    assert.equal(challenge.roomCode, room.code);
+
+    const returnedToGame = waitForMessage(black, (message) => message.type === 'game-start');
+    const offer = waitForMessage(black, (message) => message.type === 'rematch-offered');
+    black.send(JSON.stringify({ type: 'join-room', code: room.code }));
+    await returnedToGame;
+    const receivedOffer = await offer;
+    assert.equal(receivedOffer.requestId, requestId.requestId);
+    assert.equal(receivedOffer.challengeId, challenge.id);
+
+    const whiteAccepted = waitForMessage(white, (message) => message.type === 'rematch-accepted');
+    const blackAccepted = waitForMessage(black, (message) => message.type === 'rematch-accepted');
+    black.send(JSON.stringify({
+      type: 'rematch-response',
+      requestId: receivedOffer.requestId,
+      gameId: receivedOffer.gameId,
+      accept: true,
+    }));
+    await Promise.all([whiteAccepted, blackAccepted]);
+    assert.equal(socialChallenges.find((item) => item.id === challenge.id).status, 'accepted');
+  } finally {
+    white.close();
+    black.close();
   }
 });
 

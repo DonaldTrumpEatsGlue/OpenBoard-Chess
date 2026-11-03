@@ -254,6 +254,7 @@ let onlinePreviousRules = null;
 let currentOnlineGameId = null;
 let pendingRematchRequestId = null;
 let rematchRequestPending = false;
+let joiningGameChallengeType = '';
 let resignationPending = false;
 let customRulesDialogContext = 'game';
 let publicRooms = [];
@@ -2174,6 +2175,7 @@ function joinGameChallenge(challenge) {
     return;
   }
   joiningGameChallengeId = challenge.id;
+  joiningGameChallengeType = challenge.challengeType;
   document.querySelector('#online-room-code').value = challenge.roomCode;
   document.querySelector('#online-password-enabled').checked = false;
   document.querySelector('#online-lobby-password').value = '';
@@ -2183,8 +2185,11 @@ function joinGameChallenge(challenge) {
 
 async function acknowledgeJoinedGameChallenge() {
   const challengeId = joiningGameChallengeId;
+  const challengeType = joiningGameChallengeType;
   if (!challengeId) return;
   joiningGameChallengeId = '';
+  joiningGameChallengeType = '';
+  if (challengeType === 'rematch') return;
   try {
     await requestSocialApi('/social/challenges/respond', 'POST', { challengeId, accept: true });
     await refreshSocialOverview();
@@ -3476,6 +3481,10 @@ function renderSocialNotifications() {
         description = item.isIncoming
           ? `Scheduled a game with you for ${formattedDate}`
           : `Scheduled challenge to @${username} · ${formattedDate}`;
+      } else if (item.status === 'pending' && item.challengeType === 'rematch') {
+        description = item.isIncoming
+          ? 'Wants a rematch from your recent game'
+          : `Rematch request sent to @${username}`;
       } else if (item.status === 'pending') {
         description = item.isIncoming
           ? 'Challenged you to play now'
@@ -3488,12 +3497,19 @@ function renderSocialNotifications() {
     const actions = document.createElement('span');
     actions.className = 'social-item-actions';
     if (challenge && item.status === 'pending' && item.isIncoming) {
-      if (item.challengeType === 'now') {
-        actions.append(createSocialAction('Join game', () => joinGameChallenge(item), true));
+      if (item.challengeType === 'now' || item.challengeType === 'rematch') {
+        actions.append(createSocialAction(
+          item.challengeType === 'rematch' ? 'Open rematch' : 'Join game',
+          () => joinGameChallenge(item),
+          true,
+        ));
+        if (item.challengeType !== 'rematch') {
+          actions.append(createSocialAction('Decline', () => respondToGameChallenge(item.id, false)));
+        }
       } else {
         actions.append(createSocialAction('Accept', () => respondToGameChallenge(item.id, true), true));
+        actions.append(createSocialAction('Decline', () => respondToGameChallenge(item.id, false)));
       }
-      actions.append(createSocialAction('Decline', () => respondToGameChallenge(item.id, false)));
     } else if (request) {
       actions.append(createSocialAction('Accept', () => respondToFriendRequest(item.id, true), true));
     } else if (notification.type === 'message') {
@@ -4687,46 +4703,58 @@ function handleOnlineMessage(socket, message) {
     document.querySelector('#rematch-accept').disabled = false;
     document.querySelector('#rematch-decline').disabled = false;
     pendingRematchRequestId = message.requestId;
+    document.querySelector('#rematch-offer-bubble').hidden = false;
     document.querySelector('#rematch-offer-message').textContent =
       `${message.name || 'Your opponent'} wants a rematch. Accept to start a new game with colors switched.`;
-    if (!rematchOfferDialog.open) rematchOfferDialog.showModal();
+    if (gameOverDialog.open) {
+      document.querySelector('#rematch-offer-bubble').hidden = true;
+      if (!rematchOfferDialog.open) rematchOfferDialog.showModal();
+    }
     setGameOverStatus('Your opponent requested a rematch.');
     return;
   }
   if (message.type === 'rematch-request-cancelled') {
     pendingRematchRequestId = null;
     rematchRequestPending = false;
+    setRematchOfferBubble(false);
     const rematchButton = document.querySelector('#game-over-rematch');
     rematchButton.disabled = false;
     rematchButton.textContent = 'Rematch';
     setGameOverStatus('Rematch request cancelled.');
+    refreshRematchNotifications();
     return;
   }
   if (message.type === 'rematch-declined') {
     pendingRematchRequestId = null;
     rematchRequestPending = false;
+    setRematchOfferBubble(false);
     document.querySelector('#game-over-rematch').textContent = 'Rematch';
     setGameOverStatus('Your opponent declined the rematch.');
+    refreshRematchNotifications();
     return;
   }
   if (message.type === 'rematch-declined-confirmed') {
     pendingRematchRequestId = null;
     rematchRequestPending = false;
+    setRematchOfferBubble(false);
     document.querySelector('#rematch-accept').disabled = false;
     document.querySelector('#rematch-decline').disabled = false;
     if (rematchOfferDialog.open) rematchOfferDialog.close();
     setGameOverStatus('You declined the rematch.');
+    refreshRematchNotifications();
     return;
   }
   if (message.type === 'rematch-expired') {
     pendingRematchRequestId = null;
     rematchRequestPending = false;
+    setRematchOfferBubble(false);
     document.querySelector('#game-over-rematch').disabled = false;
     document.querySelector('#game-over-rematch').textContent = 'Rematch';
     document.querySelector('#rematch-accept').disabled = false;
     document.querySelector('#rematch-decline').disabled = false;
     if (rematchOfferDialog.open) rematchOfferDialog.close();
     setGameOverStatus('The rematch request expired without a response.');
+    refreshRematchNotifications();
     return;
   }
   if (message.type === 'rematch-cancelled' || message.type === 'rematch-opponent-left'
@@ -4734,18 +4762,22 @@ function handleOnlineMessage(socket, message) {
     || message.type === 'opponent-disconnected') {
     pendingRematchRequestId = null;
     rematchRequestPending = false;
+    setRematchOfferBubble(false);
     document.querySelector('#game-over-rematch').textContent = 'Rematch';
     if (rematchOfferDialog.open) rematchOfferDialog.close();
     setGameOverStatus(message.message || (message.type === 'opponent-returned-to-menu'
       ? 'Your opponent returned to the menu.'
       : 'Your opponent disconnected.'));
+    refreshRematchNotifications();
     return;
   }
   if (message.type === 'rematch-accepted') {
     pendingRematchRequestId = null;
     rematchRequestPending = false;
+    setRematchOfferBubble(false);
     if (rematchOfferDialog.open) rematchOfferDialog.close();
     setGameOverStatus('Your opponent accepted. Starting the rematch...');
+    refreshRematchNotifications();
     return;
   }
   if (message.type === 'draw-offer-sent') {
@@ -5063,6 +5095,17 @@ function setGameOverStatus(message) {
   status.hidden = !message;
 }
 
+function setRematchOfferBubble(visible) {
+  document.querySelector('#rematch-offer-bubble').hidden = !visible;
+}
+
+function refreshRematchNotifications() {
+  if (!authSession?.access_token) return;
+  void refreshSocialOverview().catch((error) => {
+    console.error('Could not refresh rematch notifications:', error);
+  });
+}
+
 function resetRematchUi() {
   pendingRematchRequestId = null;
   rematchRequestPending = false;
@@ -5071,6 +5114,7 @@ function resetRematchUi() {
   rematchButton.disabled = false;
   document.querySelector('#rematch-accept').disabled = false;
   document.querySelector('#rematch-decline').disabled = false;
+  setRematchOfferBubble(false);
   setGameOverStatus('');
 }
 
@@ -6097,6 +6141,21 @@ document.querySelector('#game-over-menu').addEventListener('click', () => {
   }
 });
 
+document.querySelector('#game-over-close').addEventListener('click', () => {
+  gameOverDialog.close();
+});
+
+document.querySelector('#rematch-offer-bubble').addEventListener('click', () => {
+  if (!pendingRematchRequestId || onlineSocket?.readyState !== WebSocket.OPEN) return;
+  setRematchOfferBubble(false);
+  if (!rematchOfferDialog.open) rematchOfferDialog.showModal();
+});
+
+document.querySelector('#rematch-offer-later').addEventListener('click', () => {
+  if (rematchOfferDialog.open) rematchOfferDialog.close();
+  setRematchOfferBubble(Boolean(pendingRematchRequestId));
+});
+
 document.querySelector('#rematch-accept').addEventListener('click', () => {
   if (!pendingRematchRequestId || !currentOnlineGameId
     || onlineSocket?.readyState !== WebSocket.OPEN) return;
@@ -6127,7 +6186,8 @@ document.querySelector('#rematch-decline').addEventListener('click', () => {
 
 rematchOfferDialog.addEventListener('cancel', (event) => {
   event.preventDefault();
-  document.querySelector('#rematch-decline').click();
+  rematchOfferDialog.close();
+  setRematchOfferBubble(Boolean(pendingRematchRequestId));
 });
 
 document.querySelector('#offer-draw').addEventListener('click', () => {

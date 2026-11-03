@@ -447,6 +447,7 @@
     </dialog>
     <dialog id="game-over-dialog" class="game-over-dialog" aria-labelledby="game-over-title">
       <div class="game-over-content">
+        <button class="game-over-close" id="game-over-close" type="button" aria-label="Close game over dialog">×</button>
         <span class="game-over-icon" id="game-over-icon" aria-hidden="true">♟</span>
         <p class="eyebrow" id="game-over-result">GAME OVER</p>
         <h2 id="game-over-title">Game over</h2>
@@ -466,8 +467,12 @@
           <button class="primary-button" id="rematch-accept" type="button">Accept Rematch</button>
           <button class="secondary-button" id="rematch-decline" type="button">Decline</button>
         </div>
+        <button class="secondary-button" id="rematch-offer-later" type="button">Later</button>
       </div>
     </dialog>
+    <button id="rematch-offer-bubble" class="rematch-offer-bubble" type="button" hidden>
+      Rematch requested <span aria-hidden="true">→</span>
+    </button>
     <dialog id="online-draw-offer-dialog" aria-labelledby="online-draw-offer-title">
       <div class="message-dialog-content">
         <h2 id="online-draw-offer-title">Draw offer</h2>

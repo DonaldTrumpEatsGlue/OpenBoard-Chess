@@ -395,13 +395,17 @@ body[data-interface-theme="light"] .social-settings-view > label:not(.social-sou
 .message-dialog-actions button, .game-over-actions button { min-height: 42px; justify-content: center; }
 .game-over-dialog { width: min(440px, calc(100vw - 28px)); padding: 0; border: 1px solid #c8e36a4a; border-radius: 16px; color: #e8eee6; background: linear-gradient(155deg, #24352d, #17231f 72%); box-shadow: 0 24px 80px #0009; }
 .game-over-dialog::backdrop { background: #070d0bd9; backdrop-filter: blur(5px); }
-.game-over-content { display: grid; justify-items: center; gap: 11px; padding: clamp(24px, 6vw, 38px); text-align: center; }
+.game-over-content { position: relative; display: grid; justify-items: center; gap: 11px; padding: clamp(24px, 6vw, 38px); text-align: center; }
+.game-over-close { position: absolute; top: 10px; right: 10px; display: grid; width: 34px; height: 34px; place-items: center; border: 1px solid #ffffff20; border-radius: 50%; color: #e8eee6; background: #101914; font-size: 22px; cursor: pointer; }
+.game-over-close:hover { border-color: #c8e36a70; color: var(--lime); }
 .game-over-icon { display: grid; width: 64px; height: 64px; place-items: center; border: 1px solid #c8e36a45; border-radius: 50%; color: var(--lime); background: #c8e36a14; font-size: 34px; }
 .game-over-content h2 { margin: 0; font-size: clamp(23px, 5vw, 31px); }
 .game-over-content > p:not(.eyebrow) { margin: 0; color: var(--muted); line-height: 1.6; }
 .game-over-content .eyebrow { margin: 7px 0 0; color: var(--lime); }
 .game-over-status { width: 100%; padding: 10px 12px; border: 1px solid #c8e36a35; border-radius: 8px; color: #e8eee6 !important; background: #c8e36a0c; font-size: 12px; }
 .game-over-actions { width: 100%; margin-top: 8px; }
+.rematch-offer-bubble { position: fixed; z-index: 20; right: max(18px, env(safe-area-inset-right)); bottom: max(18px, env(safe-area-inset-bottom)); display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 0 18px; border: 1px solid #c8e36a80; border-radius: 999px; color: #10170c; background: var(--lime); box-shadow: 0 8px 28px #0008; font: 700 14px/1 inherit; cursor: pointer; }
+.rematch-offer-bubble[hidden] { display: none; }
 .game-over-dialog[data-result="defeat"] .game-over-icon { border-color: #e58b7e55; color: #f0a195; background: #e58b7e13; }
 .game-over-dialog[data-result="draw"] .game-over-icon { border-color: #91a5d555; color: #b7c8f2; background: #91a5d513; }
 @media (max-width: 380px) {
