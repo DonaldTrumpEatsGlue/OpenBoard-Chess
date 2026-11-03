@@ -2242,15 +2242,30 @@ function initializeAuthSession() {
       token_type: fragment.get('token_type') || 'bearer',
     });
     history.replaceState(null, '', `${location.pathname}${location.search}`);
-    document.querySelector('#online-auth-status').textContent = passwordRecoveryMode
+    updateAccountUI(passwordRecoveryMode
       ? 'Choose a new password for your account.'
-      : 'Signed in. You can now join or create a lobby.';
+      : fragment.get('type') === 'signup'
+        ? 'Email confirmed successfully. Your account is verified and signed in.'
+        : 'Signed in. You can now join or create a lobby.');
+    accountDialog.showModal();
     return;
   }
 
-  if (fragment.has('error_description')) {
-    document.querySelector('#online-auth-status').textContent = fragment.get('error_description').replace(/\+/g, ' ');
-    history.replaceState(null, '', `${location.pathname}${location.search}`);
+  const query = new URLSearchParams(location.search);
+  const callbackError = fragment.get('error_description')
+    || fragment.get('error')
+    || query.get('error_description')
+    || query.get('error');
+  if (callbackError) {
+    authMode = 'signin';
+    query.delete('error');
+    query.delete('error_description');
+    query.delete('error_code');
+    const remainingQuery = query.toString();
+    history.replaceState(null, '', `${location.pathname}${remainingQuery ? `?${remainingQuery}` : ''}`);
+    updateAccountUI(callbackError);
+    accountDialog.showModal();
+    return;
   }
   try {
     const savedSession = JSON.parse(localStorage.getItem(authSessionStorageKey) || 'null');
@@ -2403,6 +2418,13 @@ async function requestSupabaseAuth(path, body, accessToken = '') {
   return result;
 }
 
+function getEmailConfirmationRedirectUrl() {
+  const redirectUrl = new URL('./', location.href);
+  redirectUrl.search = '';
+  redirectUrl.hash = '';
+  return redirectUrl.toString();
+}
+
 async function requestServerSignup(username, email, password) {
   if (!onlineServerUrl) {
     throw new Error('Account signup is unavailable because the online server is not configured.');
@@ -2415,7 +2437,12 @@ async function requestServerSignup(username, email, password) {
   const response = await fetch(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, email, password }),
+    body: JSON.stringify({
+      username,
+      email,
+      password,
+      redirectTo: getEmailConfirmationRedirectUrl(),
+    }),
     signal: AbortSignal.timeout(10000),
   });
   let result;
@@ -5882,7 +5909,7 @@ document.querySelector('#online-auth-mode').addEventListener('click', () => {
     authMode === 'signup' ? 'new-password' : 'current-password',
   );
   updateAccountUI(authMode === 'signup'
-    ? 'Create an account. Email confirmation is disabled for this free setup.'
+    ? 'Create an account. We will email you a confirmation link to verify your address.'
     : 'Sign in with your email or username and password.');
 });
 document.querySelector('#online-auth-signout').addEventListener('click', signOutOnlineAccount);

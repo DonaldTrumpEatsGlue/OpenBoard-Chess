@@ -259,7 +259,7 @@ before(async () => {
     response.setHeader('Content-Type', 'application/json');
     const token = request.headers.authorization?.split(/\s+/, 2)[1] || '';
     const user = authUsers.get(token);
-    if (request.url === '/auth/v1/signup') {
+    if (new URL(request.url, 'http://localhost').pathname === '/auth/v1/signup') {
       let rawBody = '';
       for await (const chunk of request) rawBody += chunk;
       const { email, password, data } = JSON.parse(rawBody);
@@ -267,7 +267,11 @@ before(async () => {
       const account = authUsers.get(accessToken);
       account.email = email;
       account.password = password;
-      signupRequests.push({ username: data.username, countryCode: data.country_code || null });
+      signupRequests.push({
+        username: data.username,
+        countryCode: data.country_code || null,
+        redirectTo: new URL(request.url, 'http://localhost').searchParams.get('redirect_to'),
+      });
       response.writeHead(200).end(JSON.stringify({
         access_token: accessToken,
         refresh_token: `test-refresh-${accessToken}`,
@@ -970,15 +974,27 @@ test('signup derives and stores an approximate country code from the request IP'
   signupUrl.search = '';
   signupUrl.hash = '';
 
+  const redirectTo = 'https://sample-user.github.io/OpenBoard-Chess/';
   const result = await postJson(signupUrl, {
     username: 'GeoProfile',
     email: 'geo@example.test',
     password: 'secure-password-123',
     countryCode: 'ZZ',
+    redirectTo,
   }, 'https://sample-user.github.io', { 'x-forwarded-for': '8.8.8.8, 1.1.1.1' });
   assert.equal(result.status, 200);
   assert.equal(signupRequests.at(-1).username, 'GeoProfile');
   assert.equal(signupRequests.at(-1).countryCode, 'US');
+  assert.equal(signupRequests.at(-1).redirectTo, redirectTo);
+
+  const rejectedRedirect = await postJson(signupUrl, {
+    username: 'UnsafeRedirect',
+    email: 'unsafe@example.test',
+    password: 'secure-password-123',
+    redirectTo: 'https://example.com/',
+  });
+  assert.equal(rejectedRedirect.status, 400);
+  assert.match(rejectedRedirect.body.message, /confirmation destination/i);
 
   const profileUrl = new URL(endpoint);
   profileUrl.protocol = 'http:';

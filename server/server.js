@@ -565,11 +565,37 @@ function countryCodeForRequest(request) {
   return /^[A-Z]{2}$/.test(countryCode || '') ? countryCode : null;
 }
 
-async function createAccountWithCountry({ username, email, password, countryCode }) {
+function validateSignupRedirectUrl(value, requestOrigin) {
+  let origin;
+  let redirectUrl;
+  try {
+    origin = new URL(requestOrigin);
+    redirectUrl = new URL(value);
+  } catch {
+    throw new Error('Enter a valid email confirmation destination.');
+  }
+  if (!['https:', 'http:'].includes(origin.protocol)
+    || !['https:', 'http:'].includes(redirectUrl.protocol)
+    || redirectUrl.origin !== origin.origin
+    || !isAllowedOrigin(redirectUrl.origin)
+    || redirectUrl.username
+    || redirectUrl.password
+    || redirectUrl.search
+    || redirectUrl.hash
+    || !redirectUrl.pathname.endsWith('/')
+    || redirectUrl.pathname.length > 512) {
+    throw new Error('Enter a valid email confirmation destination.');
+  }
+  return redirectUrl.toString();
+}
+
+async function createAccountWithCountry({ username, email, password, countryCode, redirectTo }) {
   if (!supabaseUrl || !supabaseAnonKey) {
     throw new Error('Online accounts are not configured on this server yet.');
   }
-  const response = await fetch(`${supabaseUrl}/auth/v1/signup`, {
+  const signupUrl = new URL(`${supabaseUrl}/auth/v1/signup`);
+  signupUrl.searchParams.set('redirect_to', redirectTo);
+  const response = await fetch(signupUrl, {
     method: 'POST',
     headers: {
       apikey: supabaseAnonKey,
@@ -1900,12 +1926,23 @@ const server = http.createServer(async (request, response) => {
         }).end(JSON.stringify({ message: 'Enter a valid username, email address, and password.' }));
         return;
       }
+      let redirectTo;
+      try {
+        redirectTo = validateSignupRedirectUrl(credentials?.redirectTo, request.headers.origin);
+      } catch (error) {
+        response.writeHead(400, {
+          'Cache-Control': 'no-store',
+          'Content-Type': 'application/json; charset=utf-8',
+        }).end(JSON.stringify({ message: error.message }));
+        return;
+      }
       try {
         const { status, result } = await createAccountWithCountry({
           username,
           email,
           password,
           countryCode: countryCodeForRequest(request),
+          redirectTo,
         });
         response.writeHead(status >= 200 && status < 300 ? status : status === 400 || status === 422 ? status : 503, {
           'Cache-Control': 'no-store',
