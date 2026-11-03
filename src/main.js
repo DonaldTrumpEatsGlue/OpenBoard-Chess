@@ -4337,9 +4337,9 @@ function handleOnlineMessage(socket, message) {
     onlineReady = true;
     playerColor = message.color === 'w' ? 'w' : 'b';
     if (onlineSpectating) {
-      renderSpectatorPlayers(message.players, message.playerCountries, message.playerProfiles);
       setOnlineChatHistory({ players: message.playerChat, spectators: message.spectatorChat });
       restoreOnlinePosition(message);
+      renderSpectatorPlayers(message.players, message.playerCountries, message.playerProfiles);
       if (message.gameOver) finishOnlineGameFromServer(message);
       updateOnlineStatus(`Spectating ${message.players?.w || 'White'} vs ${message.players?.b || 'Black'}.`);
       renderBoard();
@@ -4347,6 +4347,11 @@ function handleOnlineMessage(socket, message) {
       return;
     }
     const otherColor = playerColor === 'w' ? 'b' : 'w';
+    setOnlineChatHistory({ players: message.playerChat, spectators: message.spectatorChat });
+    updateOnlineChatAvailability();
+    playColorSelect.value = playerColor;
+    flipped = playerColor === 'b';
+    if (!restoreOnlinePosition(message)) return;
     const localProfile = message.playerProfiles?.[playerColor];
     if (localProfile?.id) document.querySelector('.human-row').dataset.playerId = localProfile.id;
     const opponentProfile = message.playerProfiles?.[otherColor] || (
@@ -4359,11 +4364,6 @@ function handleOnlineMessage(socket, message) {
         : null
     );
     renderOnlineOpponentProfile(opponentProfile, otherColor);
-    setOnlineChatHistory({ players: message.playerChat, spectators: message.spectatorChat });
-    updateOnlineChatAvailability();
-    playColorSelect.value = playerColor;
-    flipped = playerColor === 'b';
-    if (!restoreOnlinePosition(message)) return;
     if (message.gameOver) finishOnlineGameFromServer(message);
     updateOnlineStatus(`Connected to room ${onlineRoomCode}. You are ${playerColor === 'w' ? 'White' : 'Black'}.`);
     renderBoard();
@@ -4378,10 +4378,10 @@ function handleOnlineMessage(socket, message) {
     playerColor = 'w';
     playColorSelect.value = playerColor;
     flipped = false;
-    renderSpectatorPlayers(message.players, message.playerCountries, message.playerProfiles);
     setOnlineChatHistory({ players: message.playerChat, spectators: message.spectatorChat });
     updateOnlineChatAvailability();
     if (!restoreOnlinePosition(message)) return;
+    renderSpectatorPlayers(message.players, message.playerCountries, message.playerProfiles);
     if (message.gameOver) finishOnlineGameFromServer(message);
     const watching = `${message.spectators || 1} ${message.spectators === 1 ? 'spectator' : 'spectators'}`;
     updateOnlineStatus(message.waiting
