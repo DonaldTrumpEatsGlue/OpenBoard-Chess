@@ -3,7 +3,7 @@ create table if not exists public.profiles (
   username text not null,
   username_key text not null unique,
   country_code text check (country_code is null or country_code ~ '^[A-Z]{2}$'),
-  online_elo integer not null default 1000 check (online_elo >= 100),
+  online_elo integer not null default 1200 check (online_elo >= 100),
   online_games integer not null default 0 check (online_games >= 0),
   online_wins integer not null default 0 check (online_wins >= 0),
   online_draws integer not null default 0 check (online_draws >= 0),
@@ -14,11 +14,17 @@ create table if not exists public.profiles (
 
 alter table public.profiles
   add column if not exists country_code text check (country_code is null or country_code ~ '^[A-Z]{2}$'),
-  add column if not exists online_elo integer not null default 1000 check (online_elo >= 100),
+  add column if not exists online_elo integer not null default 1200 check (online_elo >= 100),
   add column if not exists online_games integer not null default 0 check (online_games >= 0),
   add column if not exists online_wins integer not null default 0 check (online_wins >= 0),
   add column if not exists online_draws integer not null default 0 check (online_draws >= 0),
   add column if not exists online_losses integer not null default 0 check (online_losses >= 0);
+
+alter table public.profiles alter column online_elo set default 1200;
+
+update public.profiles
+set online_elo = 1200
+where online_games = 0 and online_elo = 1000;
 
 alter table public.profiles enable row level security;
 
@@ -325,6 +331,35 @@ grant execute on function public.openboard_send_friend_request(uuid, text) to se
 grant execute on function public.openboard_respond_friend_request(uuid, uuid, boolean) to service_role;
 grant execute on function public.openboard_send_direct_message(uuid, text, text) to service_role;
 grant execute on function public.openboard_load_direct_messages(uuid, uuid) to service_role;
+
+create or replace function public.openboard_set_profile_country(p_user_id uuid, p_country_code text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  updated_country_code text;
+begin
+  if p_country_code is null or p_country_code !~ '^[A-Za-z]{2}$' then
+    raise exception 'Choose a valid two-letter country code.';
+  end if;
+
+  update public.profiles
+  set country_code = upper(p_country_code)
+  where id = p_user_id
+  returning country_code into updated_country_code;
+
+  if updated_country_code is null then
+    raise exception 'Your player profile could not be found.';
+  end if;
+
+  return jsonb_build_object('countryCode', updated_country_code);
+end;
+$$;
+
+revoke all on function public.openboard_set_profile_country(uuid, text) from public, anon, authenticated;
+grant execute on function public.openboard_set_profile_country(uuid, text) to service_role;
 
 create or replace function public.settle_openboard_rated_game(
   p_white_id uuid,

@@ -226,7 +226,7 @@ function getOfflineRating() {
   const saved = offlineRatings[offlineRatingKey()];
   if (!saved || !Number.isInteger(saved.rating) || saved.rating < 100
     || !['games', 'wins', 'draws', 'losses'].every((field) => Number.isInteger(saved[field]) && saved[field] >= 0)) {
-    return { rating: 1000, games: 0, wins: 0, draws: 0, losses: 0 };
+    return { rating: 1200, games: 0, wins: 0, draws: 0, losses: 0 };
   }
   return saved;
 }
@@ -234,7 +234,7 @@ function getOfflineRating() {
 function recordOfflineRating(score) {
   if (offlineRatingRecorded || onlineMode || onlineSpectating || analysisMode || puzzleMode) return;
   const current = getOfflineRating();
-  const opponentRating = bots[difficultySelect.value]?.elo ?? 1000;
+  const opponentRating = bots[difficultySelect.value]?.elo ?? 1200;
   const expected = 1 / (1 + (10 ** ((opponentRating - current.rating) / 400)));
   const rating = Math.max(100, Math.round(current.rating + (32 * (score - expected))));
   const result = score === 1 ? 'wins' : score === 0.5 ? 'draws' : 'losses';
@@ -1657,11 +1657,31 @@ async function requestPlayerProfile(username = '') {
   return profile;
 }
 
+function populateCountryOptions() {
+  const countrySelect = document.querySelector('#profile-country-select');
+  const regionNames = new Intl.DisplayNames([navigator.language || 'en'], { type: 'region' });
+  const countryCodes = 'AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS XK YE YT ZA ZM ZW'.split(' ');
+  const options = countryCodes
+    .map((code) => ({ code, name: regionNames.of(code) || code }))
+    .sort((left, right) => left.name.localeCompare(right.name));
+  for (const { code, name } of options) {
+    const option = document.createElement('option');
+    option.value = code;
+    option.textContent = name;
+    countrySelect.append(option);
+  }
+}
+
 function renderPlayerProfile(profile, isOwnProfile = false) {
   const card = document.querySelector('#profile-card');
   document.querySelector('#profile-avatar').textContent = [...profile.username][0].toUpperCase();
   document.querySelector('#profile-username').textContent = `${countryFlagEmoji(profile.countryCode)} @${profile.username}`.trim();
   document.querySelector('#profile-country').textContent = countryLabel(profile.countryCode) || 'Country not available';
+  const countryForm = document.querySelector('#profile-country-form');
+  countryForm.hidden = !isOwnProfile;
+  if (isOwnProfile) {
+    document.querySelector('#profile-country-select').value = profile.countryCode || '';
+  }
   document.querySelector('#profile-online-elo').textContent = Number(profile.onlineElo).toLocaleString();
   const games = Number(profile.onlineGames) || 0;
   const ratingLabel = games < 10 ? `Provisional · ${games} rated ${games === 1 ? 'game' : 'games'}` : `${games} rated games`;
@@ -3934,6 +3954,39 @@ document.querySelector('#profile-search-form').addEventListener('submit', (event
   url.searchParams.set('username', username);
   history.replaceState({ page: 'profiles' }, '', url);
   loadPlayerProfile(username);
+});
+populateCountryOptions();
+document.querySelector('#profile-country-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const status = document.querySelector('#profile-status');
+  const countryCode = document.querySelector('#profile-country-select').value;
+  if (!countryCode) {
+    status.textContent = 'Choose a country or region first.';
+    return;
+  }
+  const button = event.currentTarget.querySelector('button[type="submit"]');
+  button.disabled = true;
+  status.textContent = 'Saving your country…';
+  try {
+    const session = await getValidAuthSession();
+    if (!session?.access_token) throw new Error('Sign in to update your player profile.');
+    const response = await fetch(profileEndpoint('/profile/me'), {
+      method: 'PATCH',
+      headers: {
+        Authorization: makeAuthorizationHeader(session.access_token),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ countryCode }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message || 'Could not save your country.');
+    await loadPlayerProfile();
+  } catch (error) {
+    console.error('Could not update profile country:', error);
+    status.textContent = error.message || 'Could not save your country.';
+  } finally {
+    button.disabled = false;
+  }
 });
 document.querySelectorAll('[data-social-panel]').forEach((button) => {
   button.addEventListener('click', () => openSocialPanel(button.dataset.socialPanel));

@@ -63,7 +63,7 @@ function createAccount(username, verified = false, countryCode = null) {
     username,
     country_code: countryCode,
     email: `${username.toLowerCase()}@example.test`,
-    online_elo: 1000,
+    online_elo: 1200,
     online_games: 0,
     online_wins: 0,
     online_draws: 0,
@@ -147,6 +147,30 @@ function getJson(url, accessToken = '', origin = 'https://sample-user.github.io'
     });
     request.on('error', reject);
     request.end();
+  });
+}
+
+function patchJson(url, payload, accessToken, origin = 'https://sample-user.github.io') {
+  return new Promise((resolve, reject) => {
+    const request = http.request(url, {
+      method: 'PATCH',
+      headers: {
+        Origin: origin,
+        Authorization: makeAuthorizationHeader(accessToken),
+        'Content-Type': 'application/json',
+      },
+    }, (response) => {
+      let rawBody = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk) => { rawBody += chunk; });
+      response.on('end', () => resolve({
+        status: response.statusCode,
+        headers: response.headers,
+        body: JSON.parse(rawBody),
+      }));
+    });
+    request.on('error', reject);
+    request.end(JSON.stringify(payload));
   });
 }
 
@@ -279,6 +303,7 @@ before(async () => {
         '/rest/v1/rpc/openboard_respond_friend_request',
         '/rest/v1/rpc/openboard_send_direct_message',
         '/rest/v1/rpc/openboard_load_direct_messages',
+        '/rest/v1/rpc/openboard_set_profile_country',
       ].includes(request.url)) {
       if (socialSchemaMissing) {
         response.writeHead(404).end(JSON.stringify({
@@ -421,6 +446,14 @@ before(async () => {
           (message.senderId === body.p_user_id && message.recipientId === body.p_peer_id)
           || (message.senderId === body.p_peer_id && message.recipientId === body.p_user_id)
         ));
+      } else if (request.url === '/rest/v1/rpc/openboard_set_profile_country') {
+        const account = [...authUsers.values()].find((candidate) => candidate.id === body.p_user_id);
+        if (!account) {
+          response.writeHead(400).end(JSON.stringify({ message: 'Your player profile could not be found.' }));
+          return;
+        }
+        account.country_code = body.p_country_code;
+        result = { countryCode: account.country_code };
       }
       response.writeHead(200).end(JSON.stringify(result));
       return;
@@ -604,6 +637,8 @@ test('database schema reserves usernames and keeps social data behind server-onl
   assert.match(schema, /revoke all on public\.friend_requests, public\.friendships, public\.direct_messages from public, anon, authenticated/i);
   assert.match(schema, /grant execute on function public\.openboard_social_overview\(uuid\) to service_role/i);
   assert.match(schema, /grant execute on function public\.openboard_send_direct_message\(uuid, text, text\) to service_role/i);
+  assert.match(schema, /online_elo integer not null default 1200/i);
+  assert.match(schema, /openboard_set_profile_country\(p_user_id uuid, p_country_code text\)/i);
 });
 
 test('online actions require an account and use its reserved username without email verification', async () => {
@@ -765,7 +800,7 @@ test('public player profiles show online ratings but never expose account emails
   assert.deepEqual(publicProfile.body, {
     username: 'PublicProfileOwner',
     countryCode: 'CA',
-    onlineElo: 1000,
+    onlineElo: 1200,
     onlineGames: 0,
     onlineWins: 0,
     onlineDraws: 0,
@@ -784,6 +819,11 @@ test('public player profiles show online ratings but never expose account emails
   assert.equal(ownProfile.body.username, 'PublicProfileOwner');
   assert.equal(ownProfile.body.countryCode, 'CA');
   assert.equal(JSON.stringify(ownProfile.body).includes('@example.test'), false);
+
+  const updatedCountry = await patchJson(privateProfileUrl, { countryCode: 'GB' }, token);
+  assert.equal(updatedCountry.status, 200);
+  assert.deepEqual(updatedCountry.body, { countryCode: 'GB' });
+  assert.equal((await getJson(profileUrl)).body.countryCode, 'GB');
 });
 
 test('completed online games update both player ratings and records exactly once', async () => {
@@ -817,10 +857,10 @@ test('completed online games update both player ratings and records exactly once
       getJson(whiteProfileUrl),
       getJson(blackProfileUrl),
     ]);
-    assert.equal(whiteProfile.body.onlineElo, 1016);
+    assert.equal(whiteProfile.body.onlineElo, 1216);
     assert.equal(whiteProfile.body.onlineGames, 1);
     assert.equal(whiteProfile.body.onlineWins, 1);
-    assert.equal(blackProfile.body.onlineElo, 984);
+    assert.equal(blackProfile.body.onlineElo, 1184);
     assert.equal(blackProfile.body.onlineGames, 1);
     assert.equal(blackProfile.body.onlineLosses, 1);
     assert.equal(ratedGameRequests.length, 1);
@@ -1613,7 +1653,7 @@ test('player search and account identity remain usable before optional profile m
     assert.deepEqual(publicProfile.body, {
       username: 'LegacyProfileUser',
       countryCode: null,
-      onlineElo: 1000,
+      onlineElo: 1200,
       onlineGames: 0,
       onlineWins: 0,
       onlineDraws: 0,
@@ -1623,7 +1663,7 @@ test('player search and account identity remain usable before optional profile m
     const ownProfile = await getJson(socialUrl('/profile/me'), token);
     assert.equal(ownProfile.status, 200);
     assert.equal(ownProfile.body.username, 'LegacyProfileUser');
-    assert.equal(ownProfile.body.onlineElo, 1000);
+    assert.equal(ownProfile.body.onlineElo, 1200);
 
     socket = new WebSocket(endpoint);
     await once(socket, 'open');

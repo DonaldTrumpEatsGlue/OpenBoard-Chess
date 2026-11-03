@@ -395,8 +395,13 @@ body[data-interface-theme="light"] .social-settings-view > label:not(.social-sou
 .profile-rating > span { color: #a7b3a9; font-size: 8px; font-weight: 700; letter-spacing: .07em; }
 .profile-rating strong { color: var(--lime); font-family: Manrope, sans-serif; font-size: 23px; }
 .profile-rating small { color: #a7b3a9; font-size: 9px; line-height: 1.5; }
+.profile-country-form { display: grid; gap: 7px; margin-top: 12px; }
+.profile-country-form > label { color: #c3cdc5; font-size: 10px; font-weight: 700; }
+.profile-country-form > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.profile-country-form select { min-width: 0; height: 36px; padding: 0 9px; border: 1px solid #ffffff1b; border-radius: 7px; color: #eaf0e8; background: #101914; font: inherit; font-size: 10px; }
+.profile-country-form small { color: #a7b3a9; font-size: 9px; }
 .profile-disclaimer { margin: 13px 0 0 !important; color: #89978d !important; font-size: 9px !important; }
-.profile-card[hidden], .profile-rating[hidden] { display: none; }
+.profile-card[hidden], .profile-rating[hidden], .profile-country-form[hidden] { display: none; }
 .directory-filters { display: grid; grid-template-columns: 1fr 170px; gap: 9px; margin-bottom: 14px; }
 .directory-filters input, .directory-filters select { min-width: 0; height: 38px; padding: 0 11px; border: 1px solid #ffffff1b; border-radius: 7px; color: #eaf0e8; background: #17231f; font: inherit; font-size: 11px; }
 .directory-bot-grid { display: grid; }
@@ -462,6 +467,8 @@ body[data-interface-theme="light"] .profiles-page { color: #27382d; }
 body[data-interface-theme="light"] .profile-search input { color: #27382d; border-color: #243d2a24; background: #fff; }
 body[data-interface-theme="light"] .profile-rating { border-color: #243d2a20; background: #fff; }
 body[data-interface-theme="light"] .profile-rating > span, body[data-interface-theme="light"] .profile-rating small { color: #617267; }
+body[data-interface-theme="light"] .profile-country-form > label { color: #3e5144; }
+body[data-interface-theme="light"] .profile-country-form select { border-color: #243d2a25; color: #27382d; background: #fff; }
 body[data-interface-theme="light"] .profile-card-heading h2, body[data-interface-theme="light"] .profile-country { color: #27382d; }
 body[data-interface-theme="light"] .online-account, body[data-interface-theme="light"] .online-lobby-settings { border-color: #243d2a20; background: #ffffff; }
 body[data-interface-theme="light"] .online-account-heading strong { color: #27382d; }

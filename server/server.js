@@ -355,7 +355,7 @@ async function loadProfile(queryName, queryValue) {
   return {
     username: profile.username,
     countryCode: profile.country_code || null,
-    onlineElo: profile.online_elo ?? 1000,
+    onlineElo: profile.online_elo ?? 1200,
     onlineGames: profile.online_games ?? 0,
     onlineWins: profile.online_wins ?? 0,
     onlineDraws: profile.online_draws ?? 0,
@@ -1037,14 +1037,14 @@ const server = http.createServer(async (request, response) => {
     }
     if (request.method === 'OPTIONS') {
       response.writeHead(204, {
-        'Access-Control-Allow-Methods': 'GET, OPTIONS',
+        'Access-Control-Allow-Methods': 'GET, PATCH, OPTIONS',
         'Access-Control-Allow-Headers': 'Authorization, Content-Type',
         'Access-Control-Max-Age': '600',
       }).end();
       return;
     }
-    if (request.method !== 'GET') {
-      response.writeHead(405, { Allow: 'GET, OPTIONS' }).end();
+    if (request.method !== 'GET' && !(isOwnProfileRequest && request.method === 'PATCH')) {
+      response.writeHead(405, { Allow: isOwnProfileRequest ? 'GET, PATCH, OPTIONS' : 'GET, OPTIONS' }).end();
       return;
     }
     try {
@@ -1059,6 +1059,26 @@ const server = http.createServer(async (request, response) => {
           return;
         }
         const identity = await authenticateAccessToken(accessToken);
+        if (request.method === 'PATCH') {
+          const body = await readJsonBody(request);
+          const countryCode = typeof body?.countryCode === 'string' ? body.countryCode.trim() : '';
+          if (!/^[A-Za-z]{2}$/.test(countryCode)) {
+            response.writeHead(400, {
+              'Cache-Control': 'no-store',
+              'Content-Type': 'application/json; charset=utf-8',
+            }).end(JSON.stringify({ message: 'Choose a country or region.' }));
+            return;
+          }
+          const result = await callSocialRpc('openboard_set_profile_country', {
+            p_user_id: identity.id,
+            p_country_code: countryCode.toUpperCase(),
+          });
+          response.writeHead(200, {
+            'Cache-Control': 'no-store',
+            'Content-Type': 'application/json; charset=utf-8',
+          }).end(JSON.stringify(result));
+          return;
+        }
         profile = await loadProfile('id', identity.id);
       } else {
         let username;

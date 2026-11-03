@@ -9,7 +9,7 @@
     <meta name="theme-color" content="#17231f" />
     <meta name="description" content="A free, original chess game with a built-in local AI opponent." />
     <title>Openboard — Play Chess</title>
-    <link rel="stylesheet" href="./src/style.css?v=39" />
+    <link rel="stylesheet" href="./src/style.css?v=40" />
   </head>
   <body>
     <div id="app">
@@ -224,9 +224,14 @@
         <article class="profile-card" id="profile-card" hidden>
           <div class="profile-card-heading"><span class="profile-avatar" id="profile-avatar">?</span><div><span class="eyebrow">OPENBOARD PLAYER</span><h2 id="profile-username"></h2><p class="profile-country" id="profile-country"></p></div></div>
           <div class="profile-rating-grid">
-            <div class="profile-rating"><span>ONLINE ELO · ESTIMATE</span><strong id="profile-online-elo">1000</strong><small id="profile-online-record">Provisional · 0 games</small></div>
-            <div class="profile-rating" id="profile-offline-rating-card"><span>OFFLINE ELO · THIS DEVICE</span><strong id="profile-offline-elo">1000</strong><small id="profile-offline-record">Estimated from local bot games</small></div>
+            <div class="profile-rating"><span>ONLINE ELO · ESTIMATE</span><strong id="profile-online-elo">1200</strong><small id="profile-online-record">Provisional · 0 games</small></div>
+            <div class="profile-rating" id="profile-offline-rating-card"><span>OFFLINE ELO · THIS DEVICE</span><strong id="profile-offline-elo">1200</strong><small id="profile-offline-record">Estimated from local bot games</small></div>
           </div>
+          <form class="profile-country-form" id="profile-country-form" hidden>
+            <label for="profile-country-select">Your country or region</label>
+            <div><select id="profile-country-select" required><option value="">Choose your country or region</option></select><button class="secondary-button" type="submit">Save country</button></div>
+            <small>Your choice is shown on your public player profile.</small>
+          </form>
           <p class="profile-disclaimer">These are Openboard estimates, not official or externally verified chess ratings. Offline progress is stored only in this browser.</p>
         </article>
       </main>
@@ -515,6 +520,6 @@
     <script defer src="./vendor/chess.js"></script>
     <script defer src="./src/large-board-chess.js"></script>
     <script defer src="./src/piece-studio.js"></script>
-    <script defer src="./src/main.js?v=39"></script>
+    <script defer src="./src/main.js?v=40"></script>
   </body>
 </html>
