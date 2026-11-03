@@ -1,7 +1,10 @@
 const crypto = require('node:crypto');
+const fs = require('node:fs');
 const http = require('node:http');
+const Module = require('node:module');
 const net = require('node:net');
-const { Chess } = require('chess.js');
+const path = require('node:path');
+let { Chess } = require('chess.js');
 const geoip = require('geoip-lite');
 const { WebSocketServer, WebSocket } = require('ws');
 
@@ -24,6 +27,239 @@ const allowedOrigins = (process.env.OPENBOARD_ALLOWED_ORIGINS || '')
   .split(',')
   .map((origin) => origin.trim())
   .filter(Boolean);
+const standardPieceMovements = {
+  p: { w: ['p'], b: ['p'] },
+  n: { w: ['n'], b: ['n'] },
+  b: { w: ['b'], b: ['b'] },
+  r: { w: ['r'], b: ['r'] },
+  q: { w: ['q'], b: ['q'] },
+};
+const movementTypes = new Set(['p', 'n', 'b', 'r', 'q']);
+const replacementTypes = new Set(['p', 'n', 'b', 'r', 'q']);
+const customMoveModes = new Set(['both', 'move', 'capture', 'attack']);
+
+function normalizeStudioMovement(value) {
+  if (!value || typeof value !== 'object' || value.royal === true
+    || !['step', 'slide', 'leap'].includes(value.movementType)
+    || !Number.isInteger(value.range) || value.range < 1 || value.range > 8
+    || !Array.isArray(value.vectors) || value.vectors.length < 1 || value.vectors.length > 32
+    || !customMoveModes.has(value.captureMode ?? 'both')) return null;
+  const vectors = [];
+  const seen = new Set();
+  for (const vector of value.vectors) {
+    if (!vector || !Number.isInteger(vector.dx) || !Number.isInteger(vector.dy)
+      || Math.abs(vector.dx) > 8 || Math.abs(vector.dy) > 8
+      || (vector.dx === 0 && vector.dy === 0)
+      || !customMoveModes.has(vector.mode ?? value.captureMode ?? 'both')) return null;
+    const key = `${vector.dx},${vector.dy}`;
+    if (seen.has(key)) return null;
+    seen.add(key);
+    vectors.push({
+      dx: vector.dx,
+      dy: vector.dy,
+      mode: vector.mode ?? value.captureMode ?? 'both',
+    });
+  }
+  return {
+    vectors,
+    movementType: value.movementType,
+    captureMode: value.captureMode ?? 'both',
+    range: value.range,
+    mirror: value.mirror === true,
+    jump: value.jump === true,
+    promotion: value.promotion === true,
+  };
+}
+
+function normalizeOnlineVariant(value) {
+  if (value === undefined) {
+    return {
+      boardSize: 8,
+      noDraws: false,
+      pieceMovements: structuredClone(standardPieceMovements),
+      customPieces: [],
+    };
+  }
+  if (!value || typeof value !== 'object' || value.boardSize !== 8
+    || typeof value.noDraws !== 'boolean'
+    || !value.pieceMovements || typeof value.pieceMovements !== 'object'
+    || !Array.isArray(value.customPieces) || value.customPieces.length > 10) return null;
+  const pieceMovements = {};
+  for (const type of movementTypes) {
+    const sides = value.pieceMovements[type];
+    if (!sides || typeof sides !== 'object') return null;
+    pieceMovements[type] = {};
+    for (const color of ['w', 'b']) {
+      const movements = sides[color];
+      if (!Array.isArray(movements) || movements.length < 1 || movements.length > 5
+        || movements.some((movement) => !movementTypes.has(movement))
+        || new Set(movements).size !== movements.length) return null;
+      pieceMovements[type][color] = [...movements];
+    }
+  }
+  const customPieces = [];
+  const replacementKeys = new Set();
+  const ids = new Set();
+  for (const piece of value.customPieces) {
+    if (!piece || typeof piece.id !== 'string' || piece.id.length < 1 || piece.id.length > 80
+      || ids.has(piece.id) || typeof piece.name !== 'string' || piece.name.length < 1 || piece.name.length > 18
+      || typeof piece.symbol !== 'string' || [...piece.symbol].length < 1 || [...piece.symbol].length > 4
+      || !replacementTypes.has(piece.replaces) || !['both', 'w', 'b'].includes(piece.color)) return null;
+    ids.add(piece.id);
+    const colors = piece.color === 'both' ? ['w', 'b'] : [piece.color];
+    for (const color of colors) {
+      const key = `${piece.replaces}:${color}`;
+      if (replacementKeys.has(key)) return null;
+      replacementKeys.add(key);
+    }
+    if (piece.studio !== undefined) {
+      const studio = normalizeStudioMovement(piece.studio);
+      if (!studio) return null;
+      customPieces.push({
+        id: piece.id,
+        name: piece.name,
+        symbol: piece.symbol,
+        replaces: piece.replaces,
+        color: piece.color,
+        movements: Array.isArray(piece.movements) ? piece.movements.filter((item) => movementTypes.has(item)) : [piece.replaces],
+        studio,
+      });
+    } else {
+      if (!Array.isArray(piece.movements) || piece.movements.length < 1 || piece.movements.length > 5
+        || piece.movements.some((movement) => !movementTypes.has(movement))
+        || new Set(piece.movements).size !== piece.movements.length) return null;
+      customPieces.push({
+        id: piece.id,
+        name: piece.name,
+        symbol: piece.symbol,
+        replaces: piece.replaces,
+        color: piece.color,
+        movements: [...piece.movements],
+      });
+    }
+  }
+  return { boardSize: 8, noDraws: value.noDraws, pieceMovements, customPieces };
+}
+
+function configureRoomChess(room) {
+  room.chess = new Chess();
+  room.customMovementBySquare = new Map();
+  room.customPieceBySquare = new Map();
+  room.chess.clearCustomMovements();
+  for (let rank = 1; rank <= 8; rank += 1) {
+    for (let file = 0; file < 8; file += 1) {
+      const square = `${String.fromCharCode(97 + file)}${rank}`;
+      const piece = room.chess.get(square);
+      if (!piece || piece.type === 'k') continue;
+      const customDefinition = room.variant.customPieces.find((candidate) => (
+        candidate.replaces === piece.type
+        && (candidate.color === 'both' || candidate.color === piece.color)
+      ));
+      if (customDefinition?.studio) {
+        room.customPieceBySquare.set(square, customDefinition.id);
+        room.chess.setCustomMovement(square, customDefinition.studio);
+        continue;
+      }
+      const movements = customDefinition?.movements ?? room.variant.pieceMovements[piece.type][piece.color];
+      const customMovement = movements[0] ?? piece.type;
+      if (customDefinition) room.customPieceBySquare.set(square, customDefinition.id);
+      else if (movements.length !== 1 || customMovement !== piece.type) {
+        room.customMovementBySquare.set(square, { original: piece.type, movements });
+      }
+      if (customMovement !== piece.type) {
+        room.chess.remove(square);
+        room.chess.put({ type: customMovement, color: piece.color }, square);
+      }
+    }
+  }
+}
+
+function makeRoomMove(room, from, to, promotion) {
+  const piece = room.chess.get(from);
+  if (!piece) return null;
+  const customId = room.customPieceBySquare.get(from);
+  const customDefinition = room.variant.customPieces.find((candidate) => candidate.id === customId);
+  const identity = room.customMovementBySquare.get(from);
+  const pawnIdentity = piece.type === 'p' || identity?.original === 'p'
+    || customDefinition?.replaces === 'p' || customDefinition?.studio?.promotion === true;
+  const patterns = customDefinition?.studio
+    ? [piece.type]
+    : customDefinition?.movements ?? identity?.movements ?? [piece.type];
+  const originalType = piece.type;
+  let move = null;
+  for (const pattern of patterns) {
+    if (pattern !== originalType) {
+      room.chess.remove(from);
+      room.chess.put({ type: pattern, color: piece.color }, from);
+    }
+    try {
+      move = room.chess.move({ from, to, ...(promotion ? { promotion } : {}) });
+    } catch {
+      move = null;
+    }
+    if (move) break;
+    if (pattern !== originalType) {
+      room.chess.remove(from);
+      room.chess.put(piece, from);
+    }
+  }
+  if (!move) return null;
+
+  const capturedFile = move.to.match(/^[a-z]+/)[0];
+  const capturedRank = move.from.slice(move.from.match(/[0-9]/).index);
+  const capturedSquare = move.flags.includes('e') ? `${capturedFile}${capturedRank}` : move.to;
+  room.customMovementBySquare.delete(capturedSquare);
+  room.customPieceBySquare.delete(capturedSquare);
+  const movingIdentity = room.customMovementBySquare.get(from);
+  room.customMovementBySquare.delete(from);
+  room.customMovementBySquare.delete(to);
+  if (movingIdentity) room.customMovementBySquare.set(to, movingIdentity);
+  const movingCustomId = room.customPieceBySquare.get(from);
+  room.customPieceBySquare.delete(from);
+  room.customPieceBySquare.delete(to);
+  if (movingCustomId) room.customPieceBySquare.set(to, movingCustomId);
+
+  const destinationRank = Number(to.slice(to.match(/[0-9]/).index));
+  const reachesPromotionRank = destinationRank === (piece.color === 'w' ? 8 : 1);
+  if (pawnIdentity && reachesPromotionRank && !move.promotion) {
+    const promotedType = promotion || 'q';
+    room.chess.remove(to);
+    room.chess.put({ type: promotedType, color: piece.color }, to);
+    room.customMovementBySquare.delete(to);
+    room.customPieceBySquare.delete(to);
+    move.promotion = promotedType;
+  }
+  if (move.flags.includes('k') || move.flags.includes('q')) {
+    const rank = move.color === 'w' ? '1' : '8';
+    const rookFrom = `${move.flags.includes('k') ? 'h' : 'a'}${rank}`;
+    const rookTo = `${move.flags.includes('k') ? 'f' : 'd'}${rank}`;
+    const rookMovement = room.customMovementBySquare.get(rookFrom);
+    room.customMovementBySquare.delete(rookFrom);
+    if (rookMovement) room.customMovementBySquare.set(rookTo, rookMovement);
+    const rookId = room.customPieceBySquare.get(rookFrom);
+    room.customPieceBySquare.delete(rookFrom);
+    if (rookId) room.customPieceBySquare.set(rookTo, rookId);
+  }
+  return move;
+}
+
+function isRoomGameOver(room) {
+  return room.chess.in_checkmate() || room.chess.in_stalemate()
+    || (!room.variant.noDraws && room.chess.game_over());
+}
+
+function roomPosition(room) {
+  return {
+    fen: room.chess.fen(),
+    pgn: room.chess.pgn(),
+    moves: room.chess.history({ verbose: true }).map(({ from, to, promotion }) => ({
+      from,
+      to,
+      ...(promotion ? { promotion } : {}),
+    })),
+    variant: room.variant,
+  };
+}
 
 function isAllowedOrigin(origin) {
   if (!origin || !allowedOrigins.length) return true;
@@ -562,7 +798,7 @@ function leaveRoom(player) {
 }
 
 async function handleMessage(socket, player, rawMessage) {
-  if (typeof rawMessage !== 'string' || rawMessage.length > 2048) {
+  if (typeof rawMessage !== 'string' || rawMessage.length > 32_768) {
     send(socket, { type: 'error', message: 'Message was too large.' });
     return;
   }
@@ -645,6 +881,11 @@ async function handleMessage(socket, player, rawMessage) {
       send(socket, { type: 'error', message: 'Lobby passwords must be 128 characters or fewer.' });
       return;
     }
+    const variant = normalizeOnlineVariant(message.variant);
+    if (!variant) {
+      send(socket, { type: 'error', message: 'Online custom rules must use an 8×8 board and valid piece movement settings.' });
+      return;
+    }
     if (player.room) leaveRoom(player);
     const code = generateRoomCode();
     const passwordSalt = roomPassword ? crypto.randomBytes(16) : null;
@@ -655,7 +896,10 @@ async function handleMessage(socket, player, rawMessage) {
       passwordSalt,
       passwordHash: passwordSalt ? hashRoomPassword(roomPassword, passwordSalt) : null,
       gameId: crypto.randomUUID(),
-      chess: new Chess(),
+      variant,
+      chess: null,
+      customMovementBySquare: new Map(),
+      customPieceBySquare: new Map(),
       players: {
         w: {
           socket,
@@ -672,6 +916,7 @@ async function handleMessage(socket, player, rawMessage) {
       ratingSettlementStarted: false,
       expiresAt: Date.now() + roomLifetimeMs,
     };
+    configureRoomChess(room);
     rooms.set(code, room);
     player.room = room;
     player.color = 'w';
@@ -685,6 +930,7 @@ async function handleMessage(socket, player, rawMessage) {
       isPublic: room.isPublic,
       lobbyName: room.lobbyName,
       locked: Boolean(room.passwordHash),
+      variant: room.variant,
       playerChat: room.playerChat,
       spectatorChat: room.spectatorChat,
     });
@@ -733,7 +979,7 @@ async function handleMessage(socket, player, rawMessage) {
     }
     if (player.room) leaveRoom(player);
     if (!reconnectColor && room.players[color].accountId) {
-      room.chess = new Chess();
+      configureRoomChess(room);
       room.gameId = crypto.randomUUID();
       room.gameEnded = false;
       room.ratingSettlementStarted = false;
@@ -756,8 +1002,7 @@ async function handleMessage(socket, player, rawMessage) {
       code: room.code,
       players,
       playerCountries,
-      fen: room.chess.fen(),
-      pgn: room.chess.pgn(),
+      ...roomPosition(room),
       spectators: room.spectators.size,
       playerChat: room.playerChat,
       spectatorChat: room.spectatorChat,
@@ -767,8 +1012,7 @@ async function handleMessage(socket, player, rawMessage) {
       code: room.code,
       players,
       playerCountries,
-      fen: room.chess.fen(),
-      pgn: room.chess.pgn(),
+      ...roomPosition(room),
       waiting: false,
       spectatorChat: room.spectatorChat,
     });
@@ -815,8 +1059,7 @@ async function handleMessage(socket, player, rawMessage) {
         w: room.players.w.countryCode || null,
         b: room.players.b.countryCode || null,
       },
-      fen: room.chess.fen(),
-      pgn: room.chess.pgn(),
+      ...roomPosition(room),
       waiting: !(room.players.w.socket?.readyState === WebSocket.OPEN
         && room.players.b.socket?.readyState === WebSocket.OPEN),
       spectators: room.spectators.size,
@@ -883,12 +1126,7 @@ async function handleMessage(socket, player, rawMessage) {
       send(socket, { type: 'error', message: 'Invalid move coordinates.' });
       return;
     }
-    let move;
-    try {
-      move = room.chess.move({ from, to, ...(promotion ? { promotion } : {}) });
-    } catch {
-      move = null;
-    }
+    const move = makeRoomMove(room, from, to, promotion);
     if (!move) {
       send(socket, { type: 'error', message: 'The server rejected that illegal move.' });
       return;
@@ -901,12 +1139,11 @@ async function handleMessage(socket, player, rawMessage) {
       to: move.to,
       promotion: move.promotion,
       san: move.san,
-      fen: room.chess.fen(),
-      pgn: room.chess.pgn(),
+      ...roomPosition(room),
       turn: room.chess.turn(),
-      gameOver: room.chess.game_over(),
+      gameOver: isRoomGameOver(room),
     });
-    if (room.chess.game_over()) {
+    if (isRoomGameOver(room)) {
       room.gameEnded = true;
       const whiteScore = room.chess.in_checkmate()
         ? room.chess.turn() === 'w' ? 0 : 1
@@ -1447,8 +1684,25 @@ const cleanupTimer = setInterval(() => {
 }, 60_000);
 cleanupTimer.unref();
 
-server.listen(port, '0.0.0.0', () => {
-  console.log(`Openboard online rooms listening on port ${port} (WebSocket /ws).`);
+async function startRoomServer() {
+  const { patchChessSource } = await import('../src/custom-chess-patch.js');
+  const chessPath = require.resolve('chess.js');
+  const patchedChessModule = new Module(chessPath, module);
+  patchedChessModule.filename = chessPath;
+  patchedChessModule.paths = Module._nodeModulePaths(path.dirname(chessPath));
+  patchedChessModule._compile(
+    patchChessSource(fs.readFileSync(chessPath, 'utf8')),
+    chessPath,
+  );
+  Chess = patchedChessModule.exports.Chess;
+  server.listen(port, '0.0.0.0', () => {
+    console.log(`Openboard online rooms listening on port ${port} (WebSocket /ws).`);
+  });
+}
+
+startRoomServer().catch((error) => {
+  console.error('Could not initialize the online chess rules engine:', error);
+  process.exitCode = 1;
 });
 
 function shutdown() {

@@ -1222,6 +1222,77 @@ test('one account cannot create multiple active rooms from repeated or parallel 
   }
 });
 
+test('private and public lobbies share and enforce their custom chess rules', async () => {
+  const variant = {
+    boardSize: 8,
+    noDraws: true,
+    pieceMovements: {
+      p: { w: ['n'], b: ['p'] },
+      n: { w: ['n'], b: ['n'] },
+      b: { w: ['b'], b: ['b'] },
+      r: { w: ['r'], b: ['r'] },
+      q: { w: ['q'], b: ['q'] },
+    },
+    customPieces: [],
+  };
+  const host = await connect(undefined, 'VariantPublicHost');
+  const guest = await connect(undefined, 'VariantGuest');
+  const privateHost = await connect(undefined, 'VariantPrivateHost');
+  const invalidVariantHost = await connect(undefined, 'InvalidVariantHost');
+  try {
+    const publicLobby = await request(host, {
+      type: 'create-public-room',
+      lobbyName: 'Custom public room',
+      variant,
+    });
+    assert.equal(publicLobby.type, 'room-created');
+    assert.deepEqual(publicLobby.variant, variant);
+
+    const privateLobby = await request(privateHost, {
+      type: 'create-room',
+      lobbyName: 'Custom private room',
+      variant,
+    });
+    assert.equal(privateLobby.type, 'room-created');
+    assert.deepEqual(privateLobby.variant, variant);
+
+    const hostStart = waitForMessage(host, (message) => message.type === 'game-start');
+    const guestStart = waitForMessage(guest, (message) => message.type === 'game-start');
+    guest.send(JSON.stringify({ type: 'join-public-room', code: publicLobby.code }));
+    const [hostGame, guestGame] = await Promise.all([hostStart, guestStart]);
+    assert.deepEqual(guestGame.variant, variant);
+    assert.equal(guestGame.moves.length, 0);
+    assert.match(guestGame.fen, /NNNNNNNN/);
+
+    const invalidMove = await request(host, { type: 'move', from: 'e2', to: 'e4' });
+    assert.equal(invalidMove.type, 'error');
+    assert.match(invalidMove.message, /illegal move/i);
+
+    const opponentMove = waitForMessage(guest, (message) => message.type === 'move');
+    const appliedMove = await request(host, { type: 'move', from: 'e2', to: 'f4' });
+    const guestMove = await opponentMove;
+    assert.equal(appliedMove.from, 'e2');
+    assert.equal(appliedMove.to, 'f4');
+    assert.equal(guestMove.fen, appliedMove.fen);
+    assert.equal(guestMove.moves.length, 1);
+    assert.equal(guestMove.variant.noDraws, true);
+
+    const invalidBoard = await request(invalidVariantHost, {
+      type: 'create-public-room',
+      lobbyName: 'Unsupported board',
+      variant: { ...variant, boardSize: 10 },
+    });
+    assert.equal(invalidBoard.type, 'error');
+    assert.match(invalidBoard.message, /8×8/);
+    assert.ok(hostGame.fen);
+  } finally {
+    host.close();
+    guest.close();
+    privateHost.close();
+    invalidVariantHost.close();
+  }
+});
+
 test('a player can explicitly leave a room and create another lobby', async () => {
   const host = await connect(undefined, 'LeavingHost');
   const guest = await connect(undefined, 'StayingGuest');

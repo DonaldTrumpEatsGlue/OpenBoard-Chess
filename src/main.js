@@ -244,6 +244,8 @@ let currentViewedProfile = null;
 let pendingAvatarData = null;
 let onlinePreviousClock = null;
 let onlinePreviousColor = null;
+let onlinePreviousRules = null;
+let customRulesDialogContext = 'game';
 let publicRooms = [];
 let publicRoomsTimer = null;
 const configuredOnlineServerUrl = document.querySelector('meta[name="openboard-server-url"]')?.content.trim() || '';
@@ -712,7 +714,9 @@ function updateCustomRulesSummary() {
   if (customRules.boardSize !== 8) pieces.push(`${customRules.boardSize}×${customRules.boardSize}`);
   if (!pieces.length) pieces.push('Standard chess');
   pieces.push(customRules.noDraws ? 'no draws' : 'draws allowed');
-  document.querySelector('#custom-rules-summary').textContent = `${pieces.join(' · ')} ↗`;
+  const summary = `${pieces.join(' · ')} ↗`;
+  document.querySelector('#custom-rules-summary').textContent = summary;
+  document.querySelector('#online-custom-rules-summary').textContent = summary;
   document.body.dataset.noDraws = String(customRules.noDraws);
   document.querySelector('#offer-draw').disabled = customRules.noDraws;
 }
@@ -3812,7 +3816,14 @@ function runSidebarAction(action) {
   else if (action === 'rules') openChessRules();
   else if (action === 'analysis') openPositionAnalysis();
   else if (action === 'suggest') document.querySelector('#suggest-move').click();
-  else if (action === 'variants') customRulesDialog.showModal();
+  else if (action === 'variants') {
+    if (onlineMode) showMessage('Custom rules are locked during a match', 'Set custom rules when creating a lobby. Current online-room rules cannot be changed mid-game.');
+    else {
+      customRulesDialogContext = 'game';
+      populateCustomRulesForm();
+      customRulesDialog.showModal();
+    }
+  }
   else if (action === 'history') openGameHistory();
   else if (action === 'opening-notes') {
     updateGameInsights();
@@ -3984,10 +3995,7 @@ function updateOnlineChatAvailability() {
 }
 
 function setOnlineGameState(active, spectating = false) {
-  if (active && isCustomVariantActive()) {
-    showMessage('Online games use standard chess', 'Reset your custom rules before joining a friend online. This room server currently handles orthodox chess only.');
-    return false;
-  }
+  if (active && !onlinePreviousRules) onlinePreviousRules = JSON.parse(JSON.stringify(customRules));
   if (active && onlinePreviousClock === null) {
     onlinePreviousClock = timeControlSelect.value;
     onlinePreviousColor = playerColor;
@@ -4015,6 +4023,12 @@ function setOnlineGameState(active, spectating = false) {
     timeControlSelect.value = '0';
     configureOnlineControls(true, onlineSpectating);
   } else {
+    if (onlinePreviousRules) {
+      customRules = onlinePreviousRules;
+      onlinePreviousRules = null;
+      populateCustomRulesForm();
+      updateCustomRulesSummary();
+    }
     if (onlinePreviousClock !== null) timeControlSelect.value = onlinePreviousClock;
     if (onlinePreviousColor !== null) {
       playerColor = onlinePreviousColor;
@@ -4068,15 +4082,96 @@ function applyOnlineMove(message) {
   if (!onlineSpectating) playPendingPremove();
 }
 
+function normalizeOnlineVariant(value) {
+  if (!value || typeof value !== 'object' || value.boardSize !== 8 || typeof value.noDraws !== 'boolean'
+    || !value.pieceMovements || typeof value.pieceMovements !== 'object'
+    || !Array.isArray(value.customPieces) || value.customPieces.length > 10) return null;
+  const pieceMovements = {};
+  const allowedTypes = ['p', 'n', 'b', 'r', 'q'];
+  for (const type of allowedTypes) {
+    const sides = value.pieceMovements[type];
+    if (!sides || typeof sides !== 'object') return null;
+    pieceMovements[type] = {};
+    for (const color of ['w', 'b']) {
+      const movements = sides[color];
+      if (!Array.isArray(movements) || movements.length < 1 || movements.length > allowedTypes.length
+        || movements.some((movement) => !allowedTypes.includes(movement))
+        || new Set(movements).size !== movements.length) return null;
+      pieceMovements[type][color] = [...movements];
+    }
+  }
+  const customPieces = [];
+  const ids = new Set();
+  const replacementKeys = new Set();
+  for (const piece of value.customPieces) {
+    if (!piece || typeof piece.id !== 'string' || !piece.id || piece.id.length > 80 || ids.has(piece.id)
+      || typeof piece.name !== 'string' || !piece.name || piece.name.length > 18
+      || typeof piece.symbol !== 'string' || [...piece.symbol].length < 1 || [...piece.symbol].length > 4
+      || !allowedTypes.includes(piece.replaces) || !['both', 'w', 'b'].includes(piece.color)) return null;
+    ids.add(piece.id);
+    for (const color of piece.color === 'both' ? ['w', 'b'] : [piece.color]) {
+      const key = `${piece.replaces}:${color}`;
+      if (replacementKeys.has(key)) return null;
+      replacementKeys.add(key);
+    }
+    if (piece.studio !== undefined) {
+      const studio = studioMovementPatterns(piece.studio);
+      if (!studio) return null;
+      customPieces.push({
+        id: piece.id,
+        name: piece.name,
+        symbol: piece.symbol,
+        replaces: piece.replaces,
+        color: piece.color,
+        movements: [piece.replaces],
+        studio,
+      });
+      continue;
+    }
+    if (!Array.isArray(piece.movements) || piece.movements.length < 1 || piece.movements.length > allowedTypes.length
+      || piece.movements.some((movement) => !allowedTypes.includes(movement))
+      || new Set(piece.movements).size !== piece.movements.length) return null;
+    customPieces.push({
+      id: piece.id,
+      name: piece.name,
+      symbol: piece.symbol,
+      replaces: piece.replaces,
+      color: piece.color,
+      movements: [...piece.movements],
+    });
+  }
+  return { boardSize: 8, noDraws: value.noDraws, pieceMovements, customPieces };
+}
+
+function applyOnlineVariant(value) {
+  const variant = normalizeOnlineVariant(value);
+  if (!variant) throw new Error('This room has custom rules the current app cannot load. Update the app and rejoin.');
+  customRules = variant;
+  populateCustomRulesForm();
+  updateCustomRulesSummary();
+}
+
 function restoreOnlinePosition(message) {
-  startNewGame();
   try {
-    if (typeof message.pgn === 'string' && message.pgn.trim()) {
+    applyOnlineVariant(message.variant);
+    startNewGame();
+    if (Array.isArray(message.moves)) {
+      for (const move of message.moves) {
+        makeGameMove({
+          from: move.from,
+          to: move.to,
+          promotion: move.promotion ?? 'q',
+        });
+      }
+    } else if (typeof message.pgn === 'string' && message.pgn.trim() && !isCustomVariantActive()) {
       if (!game.load_pgn(message.pgn)) throw new Error('The saved online game could not be loaded.');
     } else if (typeof message.fen === 'string' && !game.load(message.fen)) {
       throw new Error('The saved online position could not be loaded.');
     }
-    configureStartingPosition();
+    if (!Array.isArray(message.moves)) configureStartingPosition();
+    if (message.fen && game.fen() !== message.fen) {
+      throw new Error('The restored game does not match the room server position.');
+    }
     updateGameState();
     renderBoard();
     return true;
@@ -4133,6 +4228,14 @@ function handleOnlineMessage(socket, message) {
   }
   if (message.type === 'room-created') {
     setOnlineCreatePending(false);
+    try {
+      applyOnlineVariant(message.variant);
+    } catch (error) {
+      console.error('Could not apply the new room rules:', error);
+      updateOnlineStatus(error.message);
+      socket.send(JSON.stringify({ type: 'leave-room' }));
+      return;
+    }
     onlineRoomCode = message.code;
     saveOnlineRoomCode(onlineRoomCode);
     playerColor = message.color;
@@ -4324,8 +4427,8 @@ async function connectToOnlineRoom(action, roomCode = null, roomPassword = '') {
     updateOnlineStatus(`You already have room ${onlineRoomCode} open. Disconnect from it before creating another lobby.`);
     return;
   }
-  if (activeBoardSize !== 8 && action !== 'browse') {
-    updateOnlineStatus('Online rooms currently use the standard 8×8 board. Select 8×8 in Custom rules before creating or joining a room.');
+  if (isCreateAction && customRules.boardSize !== 8) {
+    updateOnlineStatus('Online rooms currently use the standard 8×8 board. Select 8×8 in Custom rules before creating a lobby.');
     return;
   }
   if (action === 'browse' && onlineSocket?.readyState === WebSocket.OPEN) {
@@ -4374,6 +4477,7 @@ async function connectToOnlineRoom(action, roomCode = null, roomPassword = '') {
     pendingRequest = {
       type: action === 'create-public' ? 'create-public-room' : 'create-room',
       lobbyName,
+      variant: customRules,
       password: document.querySelector('#online-password-enabled').checked
         ? document.querySelector('#online-lobby-password').value
         : '',
@@ -5492,6 +5596,12 @@ function loadPreferences() {
 }
 
 document.querySelector('#custom-rules-open').addEventListener('click', () => {
+  customRulesDialogContext = 'game';
+  populateCustomRulesForm();
+  customRulesDialog.showModal();
+});
+document.querySelector('#online-custom-rules-open').addEventListener('click', () => {
+  customRulesDialogContext = 'online';
   populateCustomRulesForm();
   customRulesDialog.showModal();
 });
@@ -5508,6 +5618,10 @@ document.querySelector('#reset-custom-rules').addEventListener('click', () => {
 document.querySelector('#apply-custom-rules').addEventListener('click', () => {
   const updatedRules = readCustomRulesForm();
   if (!updatedRules) return;
+  if (customRulesDialogContext === 'online' && updatedRules.boardSize !== 8) {
+    showMessage('Online games use an 8×8 board', 'Custom movement rules and draw settings work online, but larger boards are currently available only for offline games.');
+    return;
+  }
   if (onlineMode && updatedRules.boardSize !== 8) {
     showMessage('Online games use standard chess', 'Finish or disconnect from the online room before switching to a larger board.');
     return;
@@ -5517,7 +5631,8 @@ document.querySelector('#apply-custom-rules').addEventListener('click', () => {
   updateCustomRulesSummary();
   savePreferences();
   customRulesDialog.close();
-  startNewGame();
+  if (customRulesDialogContext !== 'online') startNewGame();
+  customRulesDialogContext = 'game';
 });
 
 loadPreferences();

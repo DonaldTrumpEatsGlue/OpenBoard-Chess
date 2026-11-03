@@ -280,8 +280,19 @@ dialog p { color: var(--muted); font-size: 12px; }
 #game-page.is-spectating .game-panel > .suggest-move-button,
 #game-page.is-spectating .game-insights,
 #game-page.is-spectating .game-panel > .panel-footer { display: none; }
-#game-page.is-online-game .game-panel > .suggest-move-button { display: none; }
-#game-page.is-online-game .game-panel > .puzzle-progress { display: none; }
+#game-page.is-online-game .game-heading,
+#game-page.is-online-game .match-settings,
+#game-page.is-online-game #browse-bots,
+#game-page.is-online-game #online-open,
+#game-page.is-online-game #piece-studio-open,
+#game-page.is-online-game #custom-rules-open,
+#game-page.is-online-game .game-panel > .action-row,
+#game-page.is-online-game .game-panel > .panel-header,
+#game-page.is-online-game .game-panel > .opponent-card,
+#game-page.is-online-game .play-area > .practice-coach,
+#game-page.is-online-game .game-panel > .puzzle-progress,
+#game-page.is-online-game .game-panel > .suggest-move-button,
+#game-page.is-online-game .game-panel > .secondary-actions > #offer-draw { display: none; }
 #game-page.is-spectating .game-panel { min-height: 0; margin-top: 0; padding: 16px; }
 .is-spectating .player-details > #opponent-description,
 .is-spectating .player-details > #opponent-strength { display: none; }

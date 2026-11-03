@@ -9,7 +9,7 @@
     <meta name="theme-color" content="#17231f" />
     <meta name="description" content="A free, original chess game with a built-in local AI opponent." />
     <title>Openboard — Play Chess</title>
-    <link rel="stylesheet" href="./src/style.css?v=49" />
+    <link rel="stylesheet" href="./src/style.css?v=50" />
   </head>
   <body>
     <div id="app">
@@ -637,6 +637,8 @@
         <label class="studio-field"><span>Lobby name</span><input id="online-lobby-name" maxlength="40" autocomplete="off" placeholder="My chess lobby" /></label>
         <label class="online-password-toggle"><input id="online-password-enabled" type="checkbox" /><span>Protect lobby with a password (optional)</span></label>
         <label class="studio-field" id="online-lobby-password-field" hidden><span>Lobby password</span><input id="online-lobby-password" type="password" maxlength="128" autocomplete="new-password" /></label>
+        <button class="browse-bots-button custom-rules-button" id="online-custom-rules-open" type="button"><span>Custom rules</span><span id="online-custom-rules-summary">Standard chess · draws allowed ↗</span></button>
+        <small class="online-variant-note">Custom movement rules and draw settings apply to both players. Online play uses an 8×8 board.</small>
       </section>
       <div class="online-tabs" role="tablist" aria-label="Online game options">
         <button class="online-tab active" id="online-friends-tab" type="button" role="tab" aria-selected="true" aria-controls="online-friends-panel">Friend invite</button>
@@ -748,6 +750,6 @@
     <script defer src="./src/learning-content.js?v=49"></script>
     <script defer src="./src/academy-content.js?v=1"></script>
     <script defer src="./src/profile-utils.js?v=1"></script>
-    <script defer src="./src/main.js?v=59"></script>
+    <script defer src="./src/main.js?v=60"></script>
   </body>
 </html>
