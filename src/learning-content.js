@@ -102,9 +102,11 @@ window.openboardLearningContent = {
     },
     {
       title: 'The board and setup',
-      text: 'The board is already set up here. Letters a–h name columns (files); numbers 1–8 name rows (ranks). White starts on ranks 1 and 2; Black starts on ranks 8 and 7. Along each back row, from a to h, the pieces are rook, knight, bishop, queen, king, bishop, knight, rook. The pawns stand in front. The near-right corner is light for each player: h1 for White and a8 for Black. Each queen starts on her own color: White’s queen on d1, a light square; Black’s queen on d8, a dark square. White moves first, then players take turns moving one piece to a legal square.',
+      text: 'The board has 64 squares in an 8-by-8 grid. The columns are files a–h, and the rows are ranks 1–8. White starts at the bottom and Black opposite. Each side has 16 pieces: from a to h, the back row is rook, knight, bishop, queen, king, bishop, knight, rook; the eight pawns stand in front. Each queen starts on her own color: White’s queen is on d1, a light square, and Black’s queen is on d8, a dark square. The bottom-right square for White is h1, and it is light. White moves first, then players alternate one legal move at a time. Watch the board: White moves the king’s pawn from e2 to e4. The highlighted squares mark its start and finish. A pawn may move two squares on its first move when the path is clear.',
       fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+      focusSquare: 'e2',
       moves: ['e4', 'e5', 'Nf3', 'Nc6', 'Bc4', 'Nf6'],
+      moveHighlights: [['e2', 'e4']],
       moveNotes: [
         'White moves first. The pawn moves from e2 to e4.',
         'Black takes the next turn and moves the pawn from e7 to e5.',
@@ -117,7 +119,7 @@ window.openboardLearningContent = {
         'a1', 'b1', 'c1', 'd1', 'e1', 'f1', 'g1', 'h1',
         'a8', 'b8', 'c8', 'd8', 'e8', 'f8', 'g8', 'h8',
       ],
-      demoNote: 'The highlighted squares show the back-row setup on the board. The pawns are in front, and the queens begin on d1 and d8.',
+      demoNote: 'White always moves first. Step forward to see the e2 pawn move to e4; those two squares are highlighted. Dots show where the highlighted pawn can legally move.',
       question: 'After White makes the first move, who moves next?',
       choices: ['Black', 'White moves twice', 'Both players move together'],
       answer: 0,
@@ -126,6 +128,7 @@ window.openboardLearningContent = {
       title: 'The rook',
       text: 'A rook moves any number of clear squares straight up, down, left, or right. It cannot move diagonally or jump over a piece. Rooks are useful on open rows and columns, and work well together.',
       fen: '7k/8/8/8/8/8/8/R3K3 w - - 0 1',
+      focusSquare: 'a1',
       moves: ['Ra4', 'Kh7', 'Rd4'],
       moveNotes: [
         'The rook slides from a1 to a4 along the a-file. It can travel several empty squares in one move.',
@@ -142,6 +145,7 @@ window.openboardLearningContent = {
       title: 'The knight',
       text: 'A knight moves in an L: two squares in one direction, then one square sideways. It jumps directly to its destination, so pieces in between do not block it. Knights are useful near the center, where they can reach many squares.',
       fen: '7k/8/8/3p4/2pN4/3p4/8/K7 w - - 0 1',
+      focusSquare: 'd4',
       moves: ['Nf5', 'Kh7', 'Ng3'],
       moveNotes: [
         'The knight jumps from d4 to f5: two squares up and one right. The nearby pawns do not block a knight.',
@@ -157,11 +161,12 @@ window.openboardLearningContent = {
     {
       title: 'The bishop',
       text: 'A bishop slides any number of clear squares diagonally, but cannot jump over a piece. It stays on the same square color for the whole game and can attack from far away along open diagonals.',
-      fen: '7k/8/8/8/3B4/8/8/K7 w - - 0 1',
-      moves: ['Bf6+', 'Kh7', 'Bc3'],
+      fen: '8/4k3/8/8/3B4/8/8/K7 w - - 0 1',
+      focusSquare: 'd4',
+      moves: ['Bf6+', 'Kf8', 'Bc3'],
       moveNotes: [
         'The bishop slides from d4 to f6 along a diagonal. It gives check because that diagonal reaches the black king.',
-        'Black moves the king out of check to h7.',
+        'Black moves the king from e7 to f8 to escape check.',
         'The bishop slides from f6 to c3 along another diagonal. It stays on the same square color.',
       ],
       highlightSquares: ['d4', 'f6', 'c3'],
@@ -173,11 +178,12 @@ window.openboardLearningContent = {
     {
       title: 'The queen',
       text: 'The queen combines the rook and bishop: she slides along clear rows, columns, or diagonals, but cannot jump over pieces. She is powerful, so keep her safe and avoid giving her away for free.',
-      fen: '7k/8/8/8/3Q4/8/8/K7 w - - 0 1',
-      moves: ['Qh4+', 'Kg8', 'Qd8+'],
+      fen: '8/4k3/8/8/3Q4/8/8/K7 w - - 0 1',
+      focusSquare: 'd4',
+      moves: ['Qh4+', 'Kf8', 'Qd8+'],
       moveNotes: [
         'The queen slides from d4 to h4 along rank 4. From h4 she checks the king up the h-file.',
-        'Black moves the king from h8 to g8 to escape check.',
+        'Black moves the king from e7 to f8 to escape check.',
         'The queen slides diagonally from h4 to d8 and checks again. The queen can use both rook-like and bishop-like routes.',
       ],
       highlightSquares: ['d4', 'h4', 'd8'],
@@ -190,6 +196,7 @@ window.openboardLearningContent = {
       title: 'The king',
       text: 'The king moves one safe square in any direction. It is the piece you must protect: if attacked, it is in check and you must get it safe. Castling is one way to move the king toward safety.',
       fen: '7k/8/8/8/8/8/8/4K3 w - - 0 1',
+      focusSquare: 'e1',
       moves: ['Kd2', 'Kh7', 'Ke3'],
       moveNotes: [
         'The king moves one square diagonally from e1 to d2. It may also move one square straight or sideways.',
@@ -206,6 +213,7 @@ window.openboardLearningContent = {
       title: 'The pawn',
       text: 'A pawn moves forward one square. From its starting square, it may move two squares if both are empty. It captures one square diagonally forward, not straight ahead, and cannot move backward. Pawns can claim the center and protect one another.',
       fen: '3k4/3p4/8/8/8/8/4P3/4K3 w - - 0 1',
+      focusSquare: 'e2',
       moves: ['e4', 'd5', 'exd5'],
       moveNotes: [
         'The white pawn moves two squares from e2 to e4. This two-square move is allowed only on its first move and when both squares are clear.',
@@ -223,6 +231,7 @@ window.openboardLearningContent = {
       title: 'Check and king safety',
       text: 'Check means an enemy piece is attacking your king. On your next turn, you must stop the attack: move the king, capture the attacking piece, or block its path. You cannot make a move that leaves your king in check.',
       fen: '4r2k/8/8/8/8/8/8/4K3 w - - 0 1',
+      focusSquare: 'e1',
       moves: ['Kd1', 'Kh7'],
       moveNotes: [
         'The rook on e8 attacks the white king on e1 down the e-file. The king moves to d1 to leave the attacked file.',
@@ -251,6 +260,7 @@ window.openboardLearningContent = {
       title: 'Castling',
       text: 'Castling is a special move with your king and a rook. The king moves two squares toward that rook, and the rook moves to the square beside the king. It is allowed only if both pieces have not moved, the path is clear, and the king is not in check or moving through check.',
       fen: 'r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1',
+      focusSquare: 'e1',
       moves: ['O-O'],
       moveNotes: ['The king moves from e1 to g1, and the rook from h1 to f1. Both move in the same turn.'],
       moveHighlights: [['e1', 'f1', 'g1', 'h1']],
@@ -264,6 +274,8 @@ window.openboardLearningContent = {
       title: 'En passant',
       text: 'En passant is a special pawn capture. If an enemy pawn moves two squares and stops beside your pawn, your pawn may capture it as if it had moved one square. You can do this only on your very next turn.',
       fen: '7k/3p4/8/4P3/8/8/8/K7 b - - 0 1',
+      focusSquare: 'e5',
+      focusColor: 'w',
       moves: ['d5', 'exd6'],
       moveNotes: [
         'Black moves the pawn two squares from d7 to d5, landing beside the white pawn on e5.',
@@ -280,6 +292,7 @@ window.openboardLearningContent = {
       title: 'Pawn promotion',
       text: 'When a pawn reaches the far edge of the board, it must become a queen, rook, bishop, or knight. This is called promotion. You choose the new piece; it does not have to be one that was captured.',
       fen: '7k/P7/8/8/8/8/8/7K w - - 0 1',
+      focusSquare: 'a7',
       moves: ['a8=Q+'],
       moveNotes: ['The pawn reaches a8 and promotes to a queen. Promotion happens in the same move; choosing a queen is common, but not required.'],
       moveHighlights: [['a7', 'a8']],

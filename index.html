@@ -9,7 +9,7 @@
     <meta name="theme-color" content="#17231f" />
     <meta name="description" content="A free, original chess game with a built-in local AI opponent." />
     <title>Openboard — Play Chess</title>
-    <link rel="stylesheet" href="./src/style.css?v=46" />
+    <link rel="stylesheet" href="./src/style.css?v=48" />
   </head>
   <body>
     <div id="app">
@@ -125,6 +125,20 @@
             <time class="clock" id="human-clock" hidden>05:00</time>
           </div>
           <p class="game-message" id="game-message" role="status">Your game is ready. Make a move as White.</p>
+          <section class="practice-coach" id="practice-coach" aria-labelledby="practice-coach-title" hidden>
+            <div class="practice-coach-heading">
+              <span class="practice-coach-avatar" aria-hidden="true">✦</span>
+              <div><p class="eyebrow">GUIDED PRACTICE</p><h2 id="practice-coach-title">Your chess coach</h2></div>
+            </div>
+            <p id="practice-coach-message" role="status" aria-live="polite"></p>
+            <div class="practice-coach-actions">
+              <button class="secondary-button" id="practice-hint" type="button">Next hint</button>
+              <button class="secondary-button" id="practice-reveal" type="button">Reveal a candidate</button>
+              <button class="secondary-button" id="practice-explain" type="button">Explain the last move</button>
+              <button class="secondary-button" id="practice-end" type="button">End practice</button>
+            </div>
+            <small class="practice-coach-source">Rule-based coaching from the live position; move suggestions use the local search and are not engine-certified best moves.</small>
+          </section>
         </section>
 
         <aside class="game-panel" aria-label="Game controls and move history">
@@ -436,6 +450,70 @@
         <button class="secondary-button" id="tutorial-question-back" type="button">Back to demonstration</button>
       </div>
     </dialog>
+    <dialog id="practice-setup-dialog" class="account-dialog" aria-labelledby="practice-setup-title">
+      <div class="learning-dialog-content">
+        <header class="learning-dialog-header">
+          <div><p class="eyebrow">LEARN BY PLAYING</p><h2 id="practice-setup-title">Guided practice</h2></div>
+          <button class="directory-close" id="practice-setup-close" type="button" aria-label="Close guided practice setup">×</button>
+        </header>
+        <p>Play a full game while your coach explains the basics, points out useful plans, and gives hints when you ask. No clock, and practice games do not change your rating.</p>
+        <label class="practice-field" for="practice-bot">
+          <span>Choose your opponent</span>
+          <select id="practice-bot"></select>
+        </label>
+        <label class="practice-field" for="practice-objective">
+          <span>What do you want to practice?</span>
+          <select id="practice-objective">
+            <option value="beginner">Complete beginner · rules and safe moves</option>
+            <option value="opening">Opening practice · center and development</option>
+            <option value="tactics">Tactics · checks, captures, and threats</option>
+            <option value="strategy">Positional practice · improve your pieces</option>
+            <option value="endgame">Endgames · king and pawn activity</option>
+            <option value="general">General improvement</option>
+            <option value="free">Free practice · no coaching prompts</option>
+          </select>
+        </label>
+        <div class="practice-settings-row">
+          <label class="practice-field" for="practice-color">
+            <span>Play as</span>
+            <select id="practice-color"><option value="w">White</option><option value="b">Black</option></select>
+          </label>
+          <label class="practice-field" for="practice-coach-frequency">
+            <span>Coach detail</span>
+            <select id="practice-coach-frequency">
+              <option value="every">Explain every move</option>
+              <option value="important">Important moments only</option>
+            </select>
+          </label>
+        </div>
+        <label class="practice-toggle"><input id="practice-auto-coach" type="checkbox" checked /><span>Explain moves automatically</span></label>
+        <label class="practice-toggle"><input id="practice-hints-enabled" type="checkbox" checked /><span>Hints enabled</span></label>
+        <p class="practice-setup-note">Start with Pip for a forgiving game, or choose a stronger original Openboard bot when you’re ready for a challenge. Practice does not affect your rating.</p>
+        <button class="primary-button" id="practice-start" type="button">Start guided game</button>
+      </div>
+    </dialog>
+    <dialog id="academy-dialog" class="academy-dialog" aria-labelledby="academy-title">
+      <div class="academy-shell">
+        <header class="academy-header">
+          <div><p class="eyebrow">OPENBOARD ACADEMY</p><h2 id="academy-title">Learn chess by understanding the position</h2></div>
+          <button class="directory-close" id="academy-close" type="button" aria-label="Close chess academy">×</button>
+        </header>
+        <div class="academy-progress-row">
+          <span id="academy-progress-label">Learning path</span>
+          <progress id="academy-progress" max="1" value="0"></progress>
+        </div>
+        <p class="academy-recommendation" id="academy-recommendation" aria-live="polite"></p>
+        <nav class="academy-paths" id="academy-paths" aria-label="Learning paths"></nav>
+        <div class="academy-workspace">
+          <aside class="academy-lesson-list" id="academy-lesson-list" aria-label="Lessons"></aside>
+          <section class="academy-lesson-detail" id="academy-lesson-detail" aria-live="polite">
+            <p class="eyebrow">CHOOSE A LEARNING PATH</p>
+            <h3>Start with the fundamentals</h3>
+            <p>Study a lesson on the board, explore an opening one move at a time, or practice against an opponent with coaching enabled.</p>
+          </section>
+        </div>
+      </div>
+    </dialog>
     <dialog id="rules-dialog" aria-labelledby="rules-title">
       <div class="learning-dialog-content rules-dialog-content">
         <header class="learning-dialog-header">
@@ -443,6 +521,25 @@
           <button class="directory-close" id="rules-close" type="button" aria-label="Close chess rules">×</button>
         </header>
         <div class="rules-guide-content" id="rules-guide-content"></div>
+      </div>
+    </dialog>
+    <dialog id="opening-notes-dialog" class="account-dialog" aria-labelledby="opening-notes-title">
+      <div class="learning-dialog-content">
+        <header class="learning-dialog-header">
+          <div><p class="eyebrow">LEARN FROM YOUR GAME</p><h2 id="opening-notes-title">Opening &amp; Move Notes</h2></div>
+          <button class="directory-close" id="opening-notes-close" type="button" aria-label="Close opening and move notes">×</button>
+        </header>
+        <p>As you play, Openboard identifies familiar opening patterns and adds a short note about the latest move. These notes are quick guides, not deep engine analysis.</p>
+        <section class="opening-notes-card" aria-label="Current opening">
+          <p class="eyebrow">OPENING</p>
+          <strong id="opening-notes-name"></strong>
+          <p id="opening-notes-theme"></p>
+        </section>
+        <section class="opening-notes-card" aria-label="Latest move note">
+          <p class="eyebrow">LATEST MOVE</p>
+          <p id="opening-notes-latest" role="status" aria-live="polite"></p>
+        </section>
+        <button class="primary-button" id="opening-notes-show-board" type="button">Show notes beside the game</button>
       </div>
     </dialog>
     <dialog id="analysis-dialog" aria-labelledby="analysis-title">
@@ -649,7 +746,8 @@
     <script defer src="./vendor/chess.js"></script>
     <script defer src="./src/large-board-chess.js"></script>
     <script defer src="./src/piece-studio.js"></script>
-    <script defer src="./src/learning-content.js?v=46"></script>
-    <script defer src="./src/main.js?v=48"></script>
+    <script defer src="./src/learning-content.js?v=49"></script>
+    <script defer src="./src/academy-content.js?v=1"></script>
+    <script defer src="./src/main.js?v=53"></script>
   </body>
 </html>

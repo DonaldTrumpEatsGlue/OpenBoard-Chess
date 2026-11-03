@@ -53,6 +53,20 @@ test('tutorial teaches every piece with a move-by-move board example', () => {
     assert.ok(lesson, `Missing piece lesson: ${title}`);
     assert.ok(lesson.moves.length > 0, `Missing board demonstration moves for ${title}`);
     assert.ok(lesson.moveNotes.every((note) => note.length > 20), `A move needs a clear explanation for ${title}`);
+    assert.ok(lesson.focusSquare, `Missing taught piece square for ${title}`);
+    const game = new Chess(lesson.fen);
+    const piece = game.get(lesson.focusSquare);
+    assert.ok(piece, `No piece at the highlighted square for ${title}`);
+    const focusColor = lesson.focusColor || piece.color;
+    if (game.turn() !== focusColor) {
+      const fen = game.fen().split(' ');
+      fen[1] = focusColor;
+      fen[3] = '-';
+      assert.equal(game.load(fen.join(' ')), true, `Could not prepare legal move destinations for ${title}`);
+    }
+    const legalMoves = game.moves({ square: lesson.focusSquare, verbose: true });
+    assert.ok(legalMoves.length, `No legal destinations for ${title}`);
+    assert.ok(legalMoves.every((move) => game.get(move.to)?.type !== 'k'), `The highlighted piece must not be able to capture a king in ${title}`);
   }
 
   const goal = lessons.find(({ title }) => title === 'The goal of chess');
@@ -64,7 +78,7 @@ test('tutorial teaches every piece with a move-by-move board example', () => {
   assert.equal(new Chess(stalemate.fen).in_stalemate(), true, 'The draw lesson should demonstrate stalemate');
 });
 
-test('board setup lesson teaches the starting layout and turn order on the board', () => {
+test('board setup lesson teaches the starting layout and first move on the board', () => {
   const lesson = lessons.find(({ title }) => title === 'The board and setup');
   assert.ok(lesson);
   assert.doesNotMatch(lesson.text, /^(place|set|put|arrange)\b/i);
@@ -75,10 +89,23 @@ test('board setup lesson teaches the starting layout and turn order on the board
     'a8', 'b8', 'c8', 'd8', 'e8', 'f8', 'g8', 'h8',
   ].join(','));
   assert.match(lesson.text, /White moves first/);
-  assert.match(lesson.text, /players take turns/);
+  assert.match(lesson.text, /players alternate one legal move at a time/);
   assert.match(lesson.text, /d1, a light square/);
   assert.match(lesson.text, /d8, a dark square/);
+  assert.match(lesson.text, /64 squares in an 8-by-8 grid/);
+  assert.match(lesson.text, /e2 to e4/);
+  assert.equal(Array.from(lesson.moveHighlights[0]).join(','), 'e2,e4');
   assert.equal(lesson.choices[lesson.answer], 'Black');
+});
+
+test('en passant is included as a legal capture destination in its demonstration', () => {
+  const lesson = lessons.find(({ title }) => title === 'En passant');
+  const game = new Chess(lesson.fen);
+  assert.ok(game.move(lesson.moves[0]));
+  const enPassant = game.moves({ square: lesson.focusSquare, verbose: true })
+    .find((move) => move.to === 'd6');
+  assert.ok(enPassant);
+  assert.equal(enPassant.captured, 'p');
 });
 
 test('the rule guide covers all special moves and common game endings', () => {

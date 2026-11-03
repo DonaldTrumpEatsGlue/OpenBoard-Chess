@@ -17,6 +17,9 @@ const customRulesDialog = document.querySelector('#custom-rules-dialog');
 const soundSettingsDialog = document.querySelector('#sound-settings-dialog');
 const onlineDialog = document.querySelector('#online-dialog');
 const accountDialog = document.querySelector('#account-dialog');
+const practiceSetupDialog = document.querySelector('#practice-setup-dialog');
+const practiceCoachElement = document.querySelector('#practice-coach');
+const practiceCoachHome = practiceCoachElement.parentElement;
 const profilesPage = document.querySelector('#profiles-page');
 const gamePage = document.querySelector('#game-page');
 const socialPanel = document.querySelector('#social-panel');
@@ -84,6 +87,23 @@ for (const [id, bot] of Object.entries(bots)) {
   option.textContent = `${bot.name} · ${bot.difficulty}`;
   difficultySelect.append(option);
 }
+const practiceBotOptions = [
+  { id: 'pip', label: 'Gentle · Pip (very forgiving)' },
+  { id: 'juniper', label: 'Easy · Juniper' },
+  { id: 'scout', label: 'Casual · Scout' },
+  { id: 'sage', label: 'Intermediate · Sage' },
+  { id: 'rook', label: 'Advanced · Rook' },
+  { id: 'vale', label: 'Expert · Vale' },
+  { id: 'quartz', label: 'Elite · Quartz' },
+  { id: 'max', label: 'Maximum · MAX ENGINE (very difficult)' },
+];
+const practiceBotSelect = document.querySelector('#practice-bot');
+for (const option of practiceBotOptions) {
+  const element = document.createElement('option');
+  element.value = option.id;
+  element.textContent = option.label;
+  practiceBotSelect.append(element);
+}
 const stockfishSkillByDifficulty = {
   BEGINNER: 0,
   CASUAL: 3,
@@ -126,20 +146,60 @@ let playerColor = 'w';
 let gameResult = false;
 let analysisMode = false;
 let puzzleMode = false;
+let practiceMode = false;
+let practiceGame = false;
+let practiceLastHumanMove = null;
+let practiceLastBotMove = null;
+let practiceLastMessage = '';
+let practiceObjective = 'beginner';
+let practiceCoachAuto = true;
+let practiceCoachFrequency = 'every';
+let practiceHintsEnabled = true;
+let practiceHintStep = 0;
+let practiceHintMove = null;
+let activePracticeOpening = null;
+let practiceOpeningOnBook = false;
+let pendingPracticeOpening = null;
+let academyPlaybackTimer = null;
 let puzzleSolved = 0;
 let puzzleCurrentIndex = -1;
 let tutorialLessonIndex = 0;
 let tutorialProgress = 0;
 let tutorialDemoGame = null;
 let tutorialDemoHighlights = [];
+let tutorialDemoLegalTargets = [];
+let tutorialDemoCaptureTargets = [];
 let tutorialDemoStartFen = '';
 let tutorialDemoMoves = [];
 let tutorialDemoMoveNotes = [];
 let tutorialDemoMoveHighlights = [];
+let tutorialDemoFocusSquare = '';
+let tutorialDemoFocusColor = '';
 let tutorialDemoStepIndex = 0;
 let tutorialPlaybackTimer = null;
 const learningContent = window.openboardLearningContent;
+const academyContent = window.openboardAcademyContent;
 const puzzlePositions = learningContent.puzzles;
+const academyDialog = document.querySelector('#academy-dialog');
+let academyPath = 'fundamentals';
+let academySelection = '';
+let academyStudyIndex = 0;
+let academyStudyGame = null;
+let academyVariationIndex = -1;
+let academyStudyTestMode = false;
+let academyStudyTestColor = 'w';
+let academyStudySelectedSquare = '';
+let academyStudyHintStep = 0;
+let academyStudyNoteOverride = '';
+let academyProgress = new Set();
+let academyPuzzleGame = null;
+let academyPuzzleData = null;
+let academyPuzzleSelected = '';
+let academyPuzzleHintStep = 0;
+let academyPuzzleMode = 'mate';
+let academyPuzzleInitialFen = '';
+let academyPuzzleMoveCount = 0;
+let academyPerformance = {};
 let clock = { w: 0, b: 0 };
 let clockInterval = null;
 let lastClockTick = Date.now();
@@ -249,6 +309,20 @@ function isDraw() {
     || (game.history().length >= 8 && isThreefoldRepetition()));
 }
 
+function recordAcademyExerciseAttempt(correct) {
+  const stats = academyPerformance[academySelection] ?? { attempts: 0, correct: 0 };
+  stats.attempts += 1;
+  if (correct) stats.correct += 1;
+  academyPerformance[academySelection] = stats;
+  try {
+    localStorage.setItem('openboard-academy-performance-v1', JSON.stringify(academyPerformance));
+  } catch (error) {
+    console.error('Could not save academy exercise history:', error);
+    showMessage('Exercise history not saved', 'Your browser could not save exercise results on this device.');
+  }
+  updateAcademyProgressDisplay();
+}
+
 function offlineRatingKey() {
   return authUsername ? authUsername.toLowerCase() : 'guest';
 }
@@ -263,7 +337,7 @@ function getOfflineRating() {
 }
 
 function recordOfflineRating(score) {
-  if (offlineRatingRecorded || onlineMode || onlineSpectating || analysisMode || puzzleMode) return;
+  if (offlineRatingRecorded || onlineMode || onlineSpectating || analysisMode || puzzleMode || practiceGame) return;
   const current = getOfflineRating();
   const opponentRating = bots[difficultySelect.value]?.elo ?? 1200;
   const expected = 1 / (1 + (10 ** ((opponentRating - current.rating) / 400)));
@@ -288,7 +362,7 @@ function offlineGameHistoryStorageKey() {
 }
 
 function recordOfflineMatch(score, termination) {
-  if (onlineMode || onlineSpectating || analysisMode || puzzleMode || !game.history().length) return;
+  if (onlineMode || onlineSpectating || analysisMode || puzzleMode || practiceGame || !game.history().length) return;
   const result = score === 1 ? 'win' : score === 0 ? 'loss' : 'draw';
   const storageKey = offlineGameHistoryStorageKey();
   let matches = [];
@@ -908,7 +982,8 @@ function renderBoard() {
       button.className = `square ${(rank + file) % 2 === 0 ? 'light' : 'dark'}`;
       button.dataset.square = square;
       button.setAttribute('role', 'gridcell');
-      button.setAttribute('aria-label', `${square}${piece ? `, ${piece.color === 'w' ? 'white' : 'black'} ${customIdentity?.name ?? piece.type}` : ''}`);
+      const isTutorialDestination = tutorialDemoLegalTargets.includes(square);
+      button.setAttribute('aria-label', `${square}${piece ? `, ${piece.color === 'w' ? 'white' : 'black'} ${customIdentity?.name ?? piece.type}` : ''}${isTutorialDestination ? ', legal move destination' : ''}`);
       if (tutorialDemoHighlights.includes(square)) button.classList.add('tutorial-highlight');
       if (suggestedMove?.from === square) button.classList.add('suggested-from');
       if (suggestedMove?.to === square) button.classList.add('suggested-to');
@@ -949,6 +1024,12 @@ function renderBoard() {
         pieceElement.append(symbol);
         pieceElement.setAttribute('aria-hidden', 'true');
         button.append(pieceElement);
+      }
+      if (isTutorialDestination) {
+        const destination = document.createElement('span');
+        destination.className = `tutorial-legal-destination${tutorialDemoCaptureTargets.includes(square) ? ' tutorial-capture-destination' : ''}`;
+        destination.setAttribute('aria-hidden', 'true');
+        button.append(destination);
       }
       button.draggable = Boolean(!tutorialDemoGame && piece && piece.color === playerColor && !gameResult
         && (!aiThinking || premoveWindow));
@@ -1062,18 +1143,23 @@ function renderMoveCell(history, verboseHistory, ply) {
 
 function updateGameInsights(history = game.history()) {
   const opening = window.OpenboardGameInsights.openingForHistory(history);
-  document.querySelector('#opening-name').textContent = opening?.name ?? 'Opening not identified';
-  document.querySelector('#opening-theme').textContent = opening?.theme
+  const openingName = opening?.name ?? 'Opening not identified';
+  const openingTheme = opening?.theme
     ?? 'Play a few moves to identify the opening and explain each side’s plan.';
+  document.querySelector('#opening-name').textContent = openingName;
+  document.querySelector('#opening-theme').textContent = openingTheme;
   const latest = moveInsights[history.length - 1];
   const latestElement = document.querySelector('#latest-move-insight');
   if (!latest) {
     latestElement.textContent = history.length
       ? 'This position came from a loaded game; make a move to see quick feedback.'
       : 'Move feedback appears here after each move.';
-    return;
+  } else {
+    latestElement.textContent = `${latest.color === 'w' ? 'White' : 'Black'} · ${latest.san}: ${latest.grade?.icon ?? ''} ${latest.grade?.label ?? 'Move'}${latest.detail ? ` — ${latest.detail}` : ''}`;
   }
-  latestElement.textContent = `${latest.color === 'w' ? 'White' : 'Black'} · ${latest.san}: ${latest.grade?.icon ?? ''} ${latest.grade?.label ?? 'Move'}${latest.detail ? ` — ${latest.detail}` : ''}`;
+  document.querySelector('#opening-notes-name').textContent = openingName;
+  document.querySelector('#opening-notes-theme').textContent = openingTheme;
+  document.querySelector('#opening-notes-latest').textContent = latestElement.textContent;
 }
 
 function analyzeMoveQuality(move) {
@@ -1250,7 +1336,17 @@ function playMove(from, to, promotion = 'q') {
     gameMessage.textContent = 'That move could not be made. Please choose another square.';
     return;
   }
+  if (practiceGame && activePracticeOpening && practiceOpeningOnBook
+    && appliedMove.color === playerColor) {
+    const expectedSan = activePracticeOpening.moves[game.history().length - 1]?.[0];
+    if (expectedSan !== appliedMove.san) {
+      practiceOpeningOnBook = false;
+      practiceLastMessage = `You chose ${appliedMove.san} rather than the ${activePracticeOpening.name} study move. It is still your legal choice; the bot will respond to the live position.`;
+    }
+  }
   suggestedMove = null;
+  practiceHintMove = null;
+  practiceHintStep = 0;
   const puzzle = puzzlePositions[puzzleCurrentIndex];
   if (puzzleMode && (!puzzle || from !== puzzle.from || to !== puzzle.to)) {
     undoGameMove();
@@ -1283,8 +1379,14 @@ function playMove(from, to, promotion = 'q') {
   pendingPremove = null;
   selectedSquare = null;
   legalTargets = [];
+  if (practiceMode && appliedMove.color === playerColor) {
+    practiceLastHumanMove = appliedMove;
+    practiceLastBotMove = null;
+  }
   playMoveSound(appliedMove, 'self');
   updateGameState();
+  if (practiceMode && practiceCoachAuto && practiceMoveNeedsExplanation(appliedMove)) updatePracticeCoach('human');
+  else if (practiceMode && practiceCoachAuto && practiceCoachFrequency === 'every') updatePracticeCoach('human');
   if (!isGameOver() && !gameResult && !analysisMode && !onlineMode) {
     aiThinking = true;
     gameMessage.textContent = 'The engine is thinking…';
@@ -1417,6 +1519,32 @@ function reportStockfishFailure(error, bot, token) {
 }
 
 function requestBotMove(bot, token) {
+  if (practiceGame && activePracticeOpening && practiceOpeningOnBook && game.turn() !== playerColor) {
+    const expectedSan = activePracticeOpening.moves[game.history().length]?.[0];
+    if (expectedSan) {
+      const expectedMove = game.moves({ verbose: true }).find((move) => move.san === expectedSan);
+      if (expectedMove) {
+        try {
+          const quality = analyzeMoveQuality(expectedMove);
+          const appliedMove = makeGameMove(expectedMove);
+          recordMoveInsight(appliedMove, quality);
+          playMoveSound(appliedMove, 'opponent');
+          registerClockMove();
+          gameMessage.textContent = `${activePracticeOpening.name} study reply: ${appliedMove.san}.`;
+          finishBotTurn();
+          return;
+        } catch (error) {
+          console.error(`Could not apply the ${activePracticeOpening.name} study move ${expectedSan}:`, error);
+          practiceOpeningOnBook = false;
+        }
+      } else {
+        console.error(`The ${activePracticeOpening.name} study move ${expectedSan} is illegal in the current position.`);
+        practiceOpeningOnBook = false;
+      }
+    } else {
+      practiceOpeningOnBook = false;
+    }
+  }
   const needsVariantSearch = activeBoardSize > 8 || customRules.customPieces.length > 0
     || Object.entries(customRules.pieceMovements).some(([piece, sides]) => ['w', 'b'].some((color) => {
       const movements = Array.isArray(sides) ? sides : sides?.[color] ?? [piece];
@@ -1527,8 +1655,17 @@ function applyFallbackMove(bot, token) {
 
 function finishBotTurn() {
   aiThinking = false;
+  practiceHintMove = null;
+  practiceHintStep = 0;
+  if (practiceMode) {
+    const latestMove = game.history({ verbose: true }).at(-1);
+    if (latestMove?.color !== playerColor) practiceLastBotMove = latestMove;
+  }
   updateGameState();
   renderBoard();
+  if (practiceMode && practiceCoachAuto && practiceMoveNeedsExplanation(game.history({ verbose: true }).at(-1))) {
+    updatePracticeCoach('bot');
+  }
   playPendingPremove();
 }
 
@@ -2642,7 +2779,9 @@ const sidebarSections = {
   learn: {
     title: 'Learn',
     items: [
+      { icon: '♟', label: 'Openboard Chess Academy', action: 'academy' },
       { icon: '🎓', label: 'Beginner Tutorial', action: 'tutorial' },
+      { icon: '♟', label: 'Guided Practice vs Bot', action: 'practice' },
       { icon: '📘', label: 'Opening & Move Notes', action: 'opening-notes' },
       { icon: '♟', label: 'Chess Rules', action: 'rules' },
     ],
@@ -3547,12 +3686,17 @@ function runSidebarAction(action) {
   else if (action === 'puzzle') startPuzzle();
   else if (action === 'daily-puzzle') startDailyPuzzle();
   else if (action === 'tutorial') openBeginnerTutorial();
+  else if (action === 'academy') openChessAcademy();
+  else if (action === 'practice') openPracticeSetup();
   else if (action === 'rules') openChessRules();
   else if (action === 'analysis') document.querySelector('#analysis-open').click();
   else if (action === 'suggest') document.querySelector('#suggest-move').click();
   else if (action === 'variants') customRulesDialog.showModal();
   else if (action === 'history') openGameHistory();
-  else if (action === 'opening-notes') document.querySelector('.game-insights').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  else if (action === 'opening-notes') {
+    updateGameInsights();
+    document.querySelector('#opening-notes-dialog').showModal();
+  }
   else if (action === 'settings') {
     renderSoundSettings();
     soundSettingsDialog.showModal();
@@ -3565,6 +3709,14 @@ function runSidebarAction(action) {
     showMessage('Not available yet', 'This feature is not part of Openboard yet.');
   }
 }
+
+document.querySelector('#opening-notes-close').addEventListener('click', () => {
+  document.querySelector('#opening-notes-dialog').close();
+});
+document.querySelector('#opening-notes-show-board').addEventListener('click', () => {
+  document.querySelector('#opening-notes-dialog').close();
+  document.querySelector('.game-insights').scrollIntoView({ behavior: 'smooth', block: 'center' });
+});
 
 document.querySelector('#menu-toggle').addEventListener('click', () => {
   const sidebar = document.querySelector('#site-sidebar');
@@ -4191,6 +4343,7 @@ function markGameResult(soundEvent = 'draw', humanScore = null, termination = 'd
     recordOfflineRating(score);
     recordOfflineMatch(score, termination);
   }
+  if (practiceMode) updatePracticeCoach('result');
   stopActiveSound();
   playSound(soundEvent);
 }
@@ -4434,7 +4587,23 @@ document.querySelector('#custom-rules-open-studio').addEventListener('click', ()
   document.querySelector('#piece-studio-open').click();
 });
 
-document.querySelector('#new-game').addEventListener('click', startNewGame);
+document.querySelector('#new-game').addEventListener('click', () => {
+  if (!practiceMode) {
+    practiceGame = false;
+    activePracticeOpening = null;
+    practiceOpeningOnBook = false;
+    practiceCoachHome.append(practiceCoachElement);
+    practiceCoachElement.hidden = true;
+    document.querySelector('#custom-rules-open').disabled = onlineMode;
+    startNewGame();
+    return;
+  }
+  practiceLastHumanMove = null;
+  practiceLastBotMove = null;
+  suggestedMove = null;
+  startNewGame();
+  updatePracticeCoach('start');
+});
 document.querySelector('#undo').addEventListener('click', () => {
   if (aiThinking || !game.history().length) return;
   const botMove = undoGameMove();
@@ -4472,6 +4641,7 @@ document.querySelector('#flip').addEventListener('click', () => {
   renderBoard();
 });
 difficultySelect.addEventListener('change', () => {
+  if (!practiceMode) practiceGame = false;
   const bot = bots[difficultySelect.value];
   document.querySelector('#opponent-name').textContent = bot.name;
   document.querySelector('#opponent-description').textContent = bot.description;
@@ -4542,12 +4712,14 @@ function renderSoundSettings() {
 
 difficultySelect.addEventListener('change', savePreferences);
 playColorSelect.addEventListener('change', () => {
+  practiceGame = false;
   playerColor = playColorSelect.value;
   flipped = playerColor === 'b';
   savePreferences();
   startNewGame();
 });
 timeControlSelect.addEventListener('change', () => {
+  practiceGame = false;
   savePreferences();
   startNewGame();
 });
@@ -5143,6 +5315,7 @@ document.querySelector('#custom-rules-open').addEventListener('click', () => {
 });
 document.querySelector('#close-custom-rules').addEventListener('click', () => customRulesDialog.close());
 document.querySelector('#reset-custom-rules').addEventListener('click', () => {
+  practiceGame = false;
   customRules = JSON.parse(JSON.stringify(defaultCustomRules));
   populateCustomRulesForm();
   updateCustomRulesSummary();
@@ -5157,6 +5330,7 @@ document.querySelector('#apply-custom-rules').addEventListener('click', () => {
     showMessage('Online games use standard chess', 'Finish or disconnect from the online room before switching to a larger board.');
     return;
   }
+  practiceGame = false;
   customRules = updatedRules;
   updateCustomRulesSummary();
   savePreferences();
@@ -5236,6 +5410,11 @@ function renderBeginnerLesson() {
     throw new Error(`The chess demonstration for "${lesson.title}" has an invalid position.`);
   }
   tutorialDemoHighlights = lesson.highlightSquares || [];
+  tutorialDemoFocusSquare = lesson.focusSquare || '';
+  tutorialDemoFocusColor = lesson.focusColor || tutorialDemoGame.get(tutorialDemoFocusSquare)?.color || '';
+  const legalTargets = getTutorialLegalTargets();
+  tutorialDemoLegalTargets = legalTargets.destinations;
+  tutorialDemoCaptureTargets = legalTargets.captures;
   renderBoard();
   updateTutorialPlaybackControls();
   document.querySelector('#tutorial-progress').max = learningContent.lessons.length;
@@ -5309,9 +5488,15 @@ function updateTutorialPlaybackControls() {
     : `Step ${tutorialDemoStepIndex} of ${tutorialDemoMoves.length} · ${lastMove?.san || ''}`;
   document.querySelector('#tutorial-position').textContent = position;
   const lesson = learningContent.lessons[tutorialLessonIndex];
-  document.querySelector('#tutorial-demo-note').textContent = tutorialDemoStepIndex === 0
+  const note = tutorialDemoStepIndex === 0
     ? lesson.demoNote
     : tutorialDemoMoveNotes[tutorialDemoStepIndex - 1] || `The highlighted squares show ${lastMove?.san || 'the latest move'}.`;
+  const focusPiece = tutorialDemoGame?.get(tutorialDemoFocusSquare);
+  const pieceNames = { p: 'pawn', n: 'knight', b: 'bishop', r: 'rook', q: 'queen', k: 'king' };
+  const focusHint = tutorialDemoFocusSquare
+    ? ` Dots show legal destinations for the highlighted ${pieceNames[focusPiece?.type] ?? 'piece'}; outlined squares show captures.`
+    : '';
+  document.querySelector('#tutorial-demo-note').textContent = `${note}${focusHint}`;
 }
 
 function stopTutorialPlayback() {
@@ -5350,13 +5535,24 @@ function setTutorialDemoStep(stepIndex, keepPlaying = false) {
   if (!tutorialDemoGame.load(tutorialDemoStartFen)) {
     throw new Error(`The starting position for "${learningContent.lessons[tutorialLessonIndex].title}" could not be loaded.`);
   }
+  const lesson = learningContent.lessons[tutorialLessonIndex];
+  tutorialDemoFocusSquare = lesson.focusSquare || '';
+  tutorialDemoFocusColor = lesson.focusColor
+    || tutorialDemoGame.get(tutorialDemoFocusSquare)?.color
+    || '';
   tutorialDemoStepIndex = Math.max(0, Math.min(tutorialDemoMoves.length, stepIndex));
   for (let index = 0; index < tutorialDemoStepIndex; index += 1) {
     const move = tutorialDemoGame.move(tutorialDemoMoves[index]);
     if (!move) {
       throw new Error(`Invalid tutorial move "${tutorialDemoMoves[index]}" in "${learningContent.lessons[tutorialLessonIndex].title}".`);
     }
+    if (move.from === tutorialDemoFocusSquare && move.color === tutorialDemoFocusColor) {
+      tutorialDemoFocusSquare = move.to;
+    }
   }
+  const legalTargets = getTutorialLegalTargets();
+  tutorialDemoLegalTargets = legalTargets.destinations;
+  tutorialDemoCaptureTargets = legalTargets.captures;
   if (tutorialDemoStepIndex === 0) {
     tutorialDemoHighlights = learningContent.lessons[tutorialLessonIndex].highlightSquares || [];
   } else {
@@ -5365,6 +5561,31 @@ function setTutorialDemoStep(stepIndex, keepPlaying = false) {
   }
   renderBoard();
   updateTutorialPlaybackControls();
+}
+
+function getTutorialLegalTargets() {
+  if (!tutorialDemoGame || !tutorialDemoFocusSquare || !tutorialDemoFocusColor) {
+    return { destinations: [], captures: [] };
+  }
+  const focusedPiece = tutorialDemoGame.get(tutorialDemoFocusSquare);
+  if (!focusedPiece || focusedPiece.color !== tutorialDemoFocusColor) {
+    return { destinations: [], captures: [] };
+  }
+  let legalMoveGame = tutorialDemoGame;
+  if (tutorialDemoGame.turn() !== tutorialDemoFocusColor) {
+    const fen = tutorialDemoGame.fen().split(' ');
+    fen[1] = tutorialDemoFocusColor;
+    fen[3] = '-';
+    legalMoveGame = new Chess();
+    if (!legalMoveGame.load(fen.join(' '))) {
+      throw new Error(`Legal tutorial moves could not be calculated from ${tutorialDemoGame.fen()}.`);
+    }
+  }
+  const moves = legalMoveGame.moves({ square: tutorialDemoFocusSquare, verbose: true });
+  return {
+    destinations: [...new Set(moves.map((move) => move.to))],
+    captures: [...new Set(moves.filter((move) => move.captured).map((move) => move.to))],
+  };
 }
 
 function startTutorialPlayback() {
@@ -5385,10 +5606,14 @@ function restoreTutorialBoard() {
   stopTutorialPlayback();
   tutorialDemoGame = null;
   tutorialDemoHighlights = [];
+  tutorialDemoLegalTargets = [];
+  tutorialDemoCaptureTargets = [];
   tutorialDemoStartFen = '';
   tutorialDemoMoves = [];
   tutorialDemoMoveNotes = [];
   tutorialDemoMoveHighlights = [];
+  tutorialDemoFocusSquare = '';
+  tutorialDemoFocusColor = '';
   tutorialDemoStepIndex = 0;
   renderBoard();
 }
@@ -5399,6 +5624,1004 @@ function closeBeginnerTutorial() {
   restoreTutorialBoard();
 }
 
+const academyPaths = [
+  { id: 'fundamentals', label: 'Fundamentals' },
+  { id: 'openings', label: 'Opening library' },
+  { id: 'tactics', label: 'Tactics' },
+  { id: 'strategy', label: 'Strategy' },
+  { id: 'endgames', label: 'Endgames' },
+];
+
+function academyItemsForPath(path = academyPath) {
+  if (path === 'fundamentals') return learningContent.lessons;
+  return academyContent[path] ?? [];
+}
+
+function academyItemId(item, index) {
+  return item.id ?? `${academyPath}-${index}`;
+}
+
+function saveAcademyProgress() {
+  try {
+    localStorage.setItem('openboard-academy-progress-v1', JSON.stringify([...academyProgress]));
+  } catch (error) {
+    console.error('Could not save chess academy progress:', error);
+    showMessage('Progress not saved', 'Your browser could not save academy progress on this device.');
+  }
+}
+
+function updateAcademyProgressDisplay() {
+  const items = academyItemsForPath();
+  const completed = items.filter((item, index) => academyProgress.has(academyItemId(item, index))).length;
+  const next = items.find((item, index) => !academyProgress.has(academyItemId(item, index)));
+  const allItems = [
+    ...learningContent.lessons.map((item, index) => ({ id: `fundamentals-${index}`, path: 'fundamentals', title: item.title })),
+    ...academyContent.openings.map((item) => ({ id: item.id, path: 'openings', title: item.name })),
+    ...academyContent.tactics.map((item, index) => ({ id: `tactics-${index}`, path: 'tactics', title: item.name })),
+    ...academyContent.strategy.map((item, index) => ({ id: `strategy-${index}`, path: 'strategy', title: item.name })),
+    ...academyContent.endgames.map((item, index) => ({ id: `endgames-${index}`, path: 'endgames', title: item.name })),
+  ];
+  const totalCompleted = allItems.filter((item) => academyProgress.has(item.id)).length;
+  document.querySelector('#academy-progress-label').textContent = next
+    ? `${completed} of ${items.length} in this path · ${totalCompleted} of ${allItems.length} total`
+    : `${completed} of ${items.length} in this path · ${totalCompleted} of ${allItems.length} total`;
+  const progress = document.querySelector('#academy-progress');
+  progress.max = Math.max(1, items.length);
+  progress.value = completed;
+  const weakArea = allItems
+    .filter((item) => academyPerformance[item.id]?.attempts > 0)
+    .sort((a, b) => {
+      const scoreA = academyPerformance[a.id];
+      const scoreB = academyPerformance[b.id];
+      return (scoreA.correct / scoreA.attempts) - (scoreB.correct / scoreB.attempts);
+    })[0];
+  const recommendation = document.querySelector('#academy-recommendation');
+  if (weakArea) {
+    const stats = academyPerformance[weakArea.id];
+    recommendation.textContent = `Review suggestion: ${weakArea.title} — ${stats.correct} correct of ${stats.attempts} exercise attempts. Progress is practice history, not a rating.`;
+  } else if (next) {
+    recommendation.textContent = `Suggested next: ${next.title ?? next.name}. Lessons marked “studied” are self-reported, not a mastery score.`;
+  } else {
+    recommendation.textContent = `This path is complete. Revisit any topic or choose another learning path.`;
+  }
+}
+
+function renderAcademyNavigation() {
+  const paths = document.querySelector('#academy-paths');
+  paths.replaceChildren();
+  for (const path of academyPaths) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'academy-path-button';
+    button.textContent = path.label;
+    button.setAttribute('aria-pressed', String(path.id === academyPath));
+    button.addEventListener('click', () => {
+      academyPath = path.id;
+      academySelection = '';
+      renderAcademy();
+    });
+    paths.append(button);
+  }
+  const lessonList = document.querySelector('#academy-lesson-list');
+  lessonList.replaceChildren();
+  for (const [index, item] of academyItemsForPath().entries()) {
+    const id = academyItemId(item, index);
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'academy-lesson-button';
+    button.setAttribute('aria-current', String(id === academySelection));
+    const number = document.createElement('span');
+    number.textContent = String(index + 1).padStart(2, '0');
+    const title = document.createElement('span');
+    title.textContent = item.title ?? item.name;
+    const completion = document.createElement('small');
+    completion.textContent = academyProgress.has(id) ? 'Studied' : '';
+    button.append(number, title, completion);
+    button.addEventListener('click', () => {
+      academySelection = id;
+      academyStudyIndex = 0;
+      academyVariationIndex = -1;
+      renderAcademy();
+    });
+    lessonList.append(button);
+  }
+  updateAcademyProgressDisplay();
+}
+
+function addAcademyInfoCard(container, heading, body) {
+  const card = document.createElement('article');
+  card.className = 'academy-info-card';
+  const title = document.createElement('strong');
+  title.textContent = heading;
+  const text = document.createElement('p');
+  text.textContent = body;
+  card.append(title, text);
+  container.append(card);
+}
+
+function renderAcademyStudyBoard(study, lastMove) {
+  const board = document.querySelector('#academy-study-board');
+  board.replaceChildren();
+  const position = study.board();
+  const interactive = academyStudyTestMode && study.turn() === academyStudyTestColor;
+  const legalTargets = academyStudySelectedSquare
+    ? new Set(study.moves({ square: academyStudySelectedSquare, verbose: true }).map((move) => move.to))
+    : new Set();
+  const focusedSquares = new Set((academyCurrentOpening()?.squares.match(/\b[a-h][1-8]\b/g) ?? []));
+  for (let rank = 0; rank < 8; rank += 1) {
+    for (let file = 0; file < 8; file += 1) {
+      const square = `${String.fromCharCode(97 + file)}${8 - rank}`;
+      const piece = position[rank][file];
+      const cell = document.createElement(interactive ? 'button' : 'div');
+      if (interactive) cell.type = 'button';
+      cell.className = `academy-study-square ${(rank + file) % 2 === 0 ? 'light' : 'dark'}`;
+      cell.dataset.square = square;
+      if (lastMove?.from === square) cell.classList.add('last-from');
+      if (lastMove?.to === square) cell.classList.add('last-to');
+      if (focusedSquares.has(square)) cell.classList.add('study-focus');
+      if (academyStudySelectedSquare === square) cell.classList.add('selected');
+      if (legalTargets.has(square)) {
+        const target = document.createElement('span');
+        target.className = piece ? 'move-target capture-target' : 'move-target';
+        cell.append(target);
+      }
+      cell.setAttribute('role', 'gridcell');
+      cell.setAttribute('aria-label', `${square}${piece ? `, ${piece.color === 'w' ? 'white' : 'black'} ${piece.type}` : ''}${legalTargets.has(square) ? ', legal move destination' : ''}`);
+      if (interactive) {
+        cell.addEventListener('click', () => {
+          const currentPiece = study.get(square);
+          if (academyStudySelectedSquare && legalTargets.has(square)) {
+            const line = academyCurrentOpening();
+            if (!line) throw new Error('The active opening line is unavailable.');
+            const moves = academyVariationIndex >= 0
+              ? line.alternatives[academyVariationIndex].moves
+              : line.moves.map(([san]) => san);
+            const expectedSan = moves[study.history().length];
+            const candidate = study.moves({ square: academyStudySelectedSquare, verbose: true })
+              .find((move) => move.to === square);
+            if (!candidate) return;
+            if (candidate.san !== expectedSan) {
+              academyStudyNoteOverride = `${candidate.san} is legal, but this line expects ${expectedSan ?? 'no further book move'}. Try again, ask for a hint, or reveal the line move.`;
+              renderAcademyStudyBoard(study, study.history({ verbose: true }).at(-1));
+              document.querySelector('#academy-study-note').textContent = academyStudyNoteOverride;
+              return;
+            }
+            const played = study.move({ from: academyStudySelectedSquare, to: square, promotion: 'q' });
+            if (!played) throw new Error(`Could not apply legal opening test move ${candidate.san}.`);
+            academyStudySelectedSquare = '';
+            academyStudyHintStep = 0;
+            academyStudyNoteOverride = academyVariationIndex < 0
+              ? line.moves[study.history().length - 1]?.[1] ?? `${played.san} is legal. Compare the resulting position with the opening’s plan.`
+              : `${played.san} is legal. Compare the resulting position with the ${line.name} variation.`;
+            while (study.turn() !== academyStudyTestColor && study.history().length < moves.length) {
+              const reply = study.move(moves[study.history().length]);
+              if (!reply) throw new Error(`Illegal test-mode reply in ${line.name}: ${moves[study.history().length]}.`);
+            }
+            academyStudyIndex = study.history().length;
+            if (academyStudyIndex >= moves.length) {
+              academyProgress.add(line.id);
+              saveAcademyProgress();
+              renderAcademyNavigation();
+              academyStudyNoteOverride += ' You completed the full line.';
+            } else if (study.turn() !== academyStudyTestColor) {
+              academyStudyNoteOverride += ' It is the opponent’s turn; use Next move to continue the line.';
+            }
+            renderAcademyOpeningStudy(line);
+            return;
+          }
+          if (currentPiece?.color === academyStudyTestColor) {
+            academyStudySelectedSquare = square;
+            academyStudyNoteOverride = 'The highlighted dots show legal moves. Try the expected opening move without a hint.';
+          } else {
+            academyStudySelectedSquare = '';
+          }
+          renderAcademyStudyBoard(study, study.history({ verbose: true }).at(-1));
+          if (academyStudyNoteOverride) document.querySelector('#academy-study-note').textContent = academyStudyNoteOverride;
+        });
+      }
+      if (file === 0) {
+        const coordinate = document.createElement('span');
+        coordinate.className = `coordinate rank-coordinate ${(rank + file) % 2 === 0 ? 'on-light' : 'on-dark'}`;
+        coordinate.textContent = String(8 - rank);
+        cell.append(coordinate);
+      }
+      if (rank === 7) {
+        const coordinate = document.createElement('span');
+        coordinate.className = `coordinate file-coordinate ${(rank + file) % 2 === 0 ? 'on-light' : 'on-dark'}`;
+        coordinate.textContent = String.fromCharCode(97 + file);
+        cell.append(coordinate);
+      }
+      if (piece) {
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('class', `piece ${piece.color === 'w' ? 'white-piece' : 'black-piece'}`);
+        svg.setAttribute('viewBox', '0 0 100 100');
+        svg.setAttribute('aria-hidden', 'true');
+        const symbol = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        symbol.setAttribute('x', '50');
+        symbol.setAttribute('y', '82');
+        symbol.setAttribute('text-anchor', 'middle');
+        symbol.setAttribute('font-family', pieceTheme.fontFamily);
+        symbol.textContent = pieceTheme.symbols[piece.color][piece.type];
+        svg.append(symbol);
+        cell.append(svg);
+      }
+      board.append(cell);
+    }
+  }
+  if (lastMove) {
+    const fromFile = lastMove.from.charCodeAt(0) - 97;
+    const fromRank = 8 - Number(lastMove.from[1]);
+    const toFile = lastMove.to.charCodeAt(0) - 97;
+    const toRank = 8 - Number(lastMove.to[1]);
+    const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    arrow.setAttribute('class', 'academy-board-arrow');
+    arrow.setAttribute('viewBox', '0 0 800 800');
+    arrow.setAttribute('aria-hidden', 'true');
+    const marker = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
+    marker.setAttribute('id', 'academy-arrowhead');
+    marker.setAttribute('markerWidth', '8');
+    marker.setAttribute('markerHeight', '8');
+    marker.setAttribute('refX', '5');
+    marker.setAttribute('refY', '4');
+    marker.setAttribute('orient', 'auto');
+    const head = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    head.setAttribute('d', 'M0,0 L8,4 L0,8 Z');
+    head.setAttribute('fill', '#d2ee72');
+    marker.append(head);
+    const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+    defs.append(marker);
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('x1', String((fromFile + 0.5) * 100));
+    line.setAttribute('y1', String((fromRank + 0.5) * 100));
+    line.setAttribute('x2', String((toFile + 0.5) * 100));
+    line.setAttribute('y2', String((toRank + 0.5) * 100));
+    line.setAttribute('marker-end', 'url(#academy-arrowhead)');
+    arrow.append(defs, line);
+    board.append(arrow);
+  }
+}
+
+function academyCurrentOpening() {
+  return academyContent.openings.find((opening) => opening.id === academySelection);
+}
+
+function resetAcademyOpeningTest(opening, moveList) {
+  academyStudyGame = new Chess();
+  academyStudyIndex = 0;
+  while (academyStudyGame.turn() !== academyStudyTestColor && academyStudyIndex < moveList.length) {
+    const response = academyStudyGame.move(moveList[academyStudyIndex]);
+    if (!response) throw new Error(`Illegal opening move at test setup in ${opening.name}.`);
+    academyStudyIndex += 1;
+  }
+  academyStudySelectedSquare = '';
+  academyStudyHintStep = 0;
+  academyStudyNoteOverride = `Test mode · play as ${academyStudyTestColor === 'w' ? 'White' : 'Black'}. Your opening moves are checked against this legal line; a different legal move is not illegal chess.`;
+}
+
+function renderAcademyOpeningStudy(opening) {
+  const detail = document.querySelector('#academy-lesson-detail');
+  detail.replaceChildren();
+  const heading = document.createElement('p');
+  heading.className = 'eyebrow';
+  heading.textContent = `${opening.side} repertoire · ${opening.level}`;
+  const title = document.createElement('h3');
+  title.textContent = opening.name;
+  const style = document.createElement('p');
+  style.textContent = `Style: ${opening.style}`;
+  const infoGrid = document.createElement('div');
+  infoGrid.className = 'academy-info-grid';
+  addAcademyInfoCard(infoGrid, 'Main ideas', opening.ideas);
+  addAcademyInfoCard(infoGrid, 'Plans for both sides', opening.plans);
+  addAcademyInfoCard(infoGrid, 'Advantages', opening.advantages);
+  addAcademyInfoCard(infoGrid, 'Trade-offs', opening.disadvantages);
+  addAcademyInfoCard(infoGrid, 'Important squares', opening.squares);
+  addAcademyInfoCard(infoGrid, 'Common mistakes', opening.mistakes);
+  addAcademyInfoCard(infoGrid, 'Tactical opportunities', opening.tactics);
+  addAcademyInfoCard(infoGrid, 'If they deviate', opening.unexpected);
+  const studyLayout = document.createElement('div');
+  studyLayout.className = 'academy-study-layout';
+  const boardAndControls = document.createElement('div');
+  boardAndControls.className = 'academy-board-and-controls';
+  const board = document.createElement('div');
+  board.className = 'academy-study-board';
+  board.id = 'academy-study-board';
+  board.setAttribute('role', 'grid');
+  const controls = document.createElement('div');
+  controls.className = 'academy-study-controls';
+  const linePanel = document.createElement('div');
+  linePanel.className = 'academy-study-line';
+  const lineTitle = document.createElement('strong');
+  lineTitle.id = 'academy-study-position';
+  const note = document.createElement('p');
+  note.id = 'academy-study-note';
+  note.className = 'academy-move-note';
+  const variations = document.createElement('div');
+  variations.className = 'academy-variation-list';
+  for (const [index, variation] of opening.alternatives.entries()) {
+    const variationButton = document.createElement('button');
+    variationButton.type = 'button';
+    variationButton.className = 'academy-variation';
+    variationButton.textContent = variation.name;
+    variationButton.setAttribute('aria-pressed', String(academyVariationIndex === index));
+    variationButton.addEventListener('click', () => {
+      academyStudyTestMode = false;
+      academyStudyNoteOverride = '';
+      academyVariationIndex = index;
+      academyStudyIndex = 0;
+      renderAcademy();
+    });
+    variations.append(variationButton);
+  }
+  const mainLineButton = document.createElement('button');
+  mainLineButton.type = 'button';
+  mainLineButton.className = 'academy-variation';
+  mainLineButton.textContent = 'Main line';
+  mainLineButton.setAttribute('aria-pressed', String(academyVariationIndex === -1));
+  mainLineButton.addEventListener('click', () => {
+    academyStudyTestMode = false;
+    academyStudyNoteOverride = '';
+    academyVariationIndex = -1;
+    academyStudyIndex = 0;
+    renderAcademy();
+  });
+  variations.prepend(mainLineButton);
+  const moveList = academyVariationIndex >= 0
+    ? opening.alternatives[academyVariationIndex].moves
+    : opening.moves.map(([san]) => san);
+  const actions = document.createElement('div');
+  for (const [label, action, disabled] of [
+    ['Restart', 'restart', false],
+    ['← Back', 'back', academyStudyIndex === 0 || (academyStudyTestMode && academyStudyTestColor === 'b' && academyStudyIndex === 1)],
+    ['Next move →', 'next', academyStudyIndex >= moveList.length],
+    ['Play line', 'play', false],
+  ]) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = label;
+    button.disabled = disabled;
+    button.addEventListener('click', () => {
+      if (action === 'play') {
+        if (academyStudyTestMode) return;
+        if (academyPlaybackTimer) {
+          window.clearInterval(academyPlaybackTimer);
+          academyPlaybackTimer = null;
+          button.textContent = 'Play line';
+          return;
+        }
+        button.textContent = 'Pause';
+        academyPlaybackTimer = window.setInterval(() => {
+          if (academyStudyIndex >= moveList.length || !academyDialog.open) {
+            window.clearInterval(academyPlaybackTimer);
+            academyPlaybackTimer = null;
+            renderAcademy();
+            return;
+          }
+          academyStudyIndex += 1;
+          renderAcademy();
+        }, 1300);
+        return;
+      }
+      if (academyPlaybackTimer) {
+        window.clearInterval(academyPlaybackTimer);
+        academyPlaybackTimer = null;
+      }
+      academyStudyNoteOverride = '';
+      if (academyStudyTestMode && action === 'restart') {
+        resetAcademyOpeningTest(opening, moveList);
+        renderAcademyOpeningStudy(opening);
+        return;
+      }
+      if (academyStudyTestMode && action === 'back') {
+        const previousIndex = Math.max(0, academyStudyIndex - 1);
+        academyStudyGame = new Chess();
+        for (let index = 0; index < previousIndex; index += 1) {
+          if (!academyStudyGame.move(moveList[index])) throw new Error(`Could not rewind opening line ${opening.name}.`);
+        }
+        while (academyStudyGame.history().length > 0 && academyStudyGame.turn() !== academyStudyTestColor) {
+          academyStudyGame.undo();
+        }
+        academyStudyIndex = academyStudyGame.history().length;
+        academyStudySelectedSquare = '';
+        renderAcademyOpeningStudy(opening);
+        return;
+      }
+      academyStudyIndex = action === 'restart' ? 0
+        : Math.max(0, Math.min(moveList.length, academyStudyIndex + (action === 'next' ? 1 : -1)));
+      renderAcademy();
+    });
+    controls.append(button);
+  }
+  const testControls = document.createElement('div');
+  testControls.className = 'academy-test-controls';
+  const testButton = document.createElement('button');
+  testButton.type = 'button';
+  testButton.className = 'academy-action';
+  testButton.textContent = academyStudyTestMode ? 'Exit line test' : 'Test yourself';
+  testButton.addEventListener('click', () => {
+    academyStudyTestMode = !academyStudyTestMode;
+    academyStudySelectedSquare = '';
+    academyStudyHintStep = 0;
+    academyStudyNoteOverride = '';
+    if (academyStudyTestMode) {
+      academyStudyTestColor = sideSelect.value;
+      resetAcademyOpeningTest(opening, moveList);
+      renderAcademyOpeningStudy(opening);
+      return;
+    }
+    renderAcademy();
+  });
+  const sideSelect = document.createElement('select');
+  sideSelect.className = 'academy-test-side';
+  sideSelect.setAttribute('aria-label', 'Choose side for opening test');
+  sideSelect.innerHTML = '<option value="w">Test as White</option><option value="b">Test as Black</option>';
+  sideSelect.value = academyStudyTestColor;
+  sideSelect.hidden = !academyStudyTestMode;
+  sideSelect.addEventListener('change', () => {
+    if (!academyStudyTestMode) return;
+    academyStudyTestColor = sideSelect.value;
+    resetAcademyOpeningTest(opening, moveList);
+    renderAcademyOpeningStudy(opening);
+  });
+  const hintButton = document.createElement('button');
+  hintButton.type = 'button';
+  hintButton.className = 'academy-action';
+  hintButton.textContent = 'Test hint';
+  hintButton.hidden = !academyStudyTestMode;
+  hintButton.addEventListener('click', () => {
+    const expectedSan = moveList[academyStudyGame.history().length];
+    if (!expectedSan) return;
+    academyStudyHintStep = Math.min(2, academyStudyHintStep + 1);
+    if (academyStudyHintStep === 1) academyStudyNoteOverride = `Hint 1 · ${opening.ideas}`;
+    else {
+      const expectedMove = academyStudyGame.moves({ verbose: true }).find((move) => move.san === expectedSan);
+      academyStudyNoteOverride = expectedMove
+        ? `Hint 2 · The line moves a ${expectedMove.piece} from ${expectedMove.from}. Try to choose the destination yourself.`
+        : `Hint 2 · Consider the main idea: ${opening.ideas}`;
+    }
+    renderAcademyOpeningStudy(opening);
+  });
+  const revealButton = document.createElement('button');
+  revealButton.type = 'button';
+  revealButton.className = 'academy-action';
+  revealButton.textContent = 'Show line move';
+  revealButton.hidden = !academyStudyTestMode;
+  revealButton.addEventListener('click', () => {
+    const ply = academyStudyGame.history().length;
+    const expectedSan = moveList[ply];
+    if (!expectedSan) return;
+    const expectedMove = academyStudyGame.moves({ verbose: true }).find((move) => move.san === expectedSan);
+    academyStudyNoteOverride = `Line answer: ${expectedSan}. ${academyVariationIndex < 0 ? opening.moves[ply]?.[1] ?? opening.unexpected : opening.unexpected}`;
+    if (expectedMove) {
+      suggestedMove = { from: expectedMove.from, to: expectedMove.to };
+      renderBoard();
+    }
+    renderAcademyOpeningStudy(opening);
+  });
+  testControls.append(testButton, sideSelect, hintButton, revealButton);
+  actions.append(testControls);
+  boardAndControls.append(board, controls);
+  linePanel.append(lineTitle, variations, note);
+  studyLayout.append(boardAndControls, linePanel);
+  const practiceButton = document.createElement('button');
+  practiceButton.type = 'button';
+  practiceButton.className = 'academy-action primary';
+  practiceButton.textContent = 'Practice this opening against a bot';
+  practiceButton.addEventListener('click', () => {
+    pendingPracticeOpening = opening;
+    academyDialog.close();
+    openPracticeSetup();
+  });
+  const markButton = document.createElement('button');
+  markButton.type = 'button';
+  markButton.className = 'academy-action';
+  markButton.textContent = academyProgress.has(opening.id) ? 'Studied ✓' : 'Mark opening studied';
+  markButton.addEventListener('click', () => {
+    academyProgress.add(opening.id);
+    saveAcademyProgress();
+    renderAcademy();
+  });
+  actions.append(practiceButton, markButton);
+  detail.append(heading, title, style, infoGrid, studyLayout, actions);
+  if (!academyStudyTestMode) academyStudyGame = new Chess();
+  let latest = null;
+  if (!academyStudyTestMode) {
+    for (let index = 0; index < academyStudyIndex; index += 1) {
+      const san = moveList[index];
+      latest = academyStudyGame.move(san);
+      if (!latest) throw new Error(`Invalid opening move "${san}" in ${opening.name}.`);
+    }
+  } else {
+    latest = academyStudyGame.history({ verbose: true }).at(-1);
+  }
+  renderAcademyStudyBoard(academyStudyGame, latest);
+  lineTitle.textContent = academyStudyIndex === 0
+    ? 'Starting position'
+    : `Move ${Math.ceil(academyStudyIndex / 2)} · ${latest?.san ?? ''} · ${academyStudyIndex} of ${moveList.length}`;
+  if (academyStudyNoteOverride) {
+    note.textContent = academyStudyNoteOverride;
+  } else if (academyVariationIndex >= 0) {
+    note.textContent = 'This is a legal alternative line. Move-by-move notes are provided for the main line; compare this branch to see how the position changes.';
+  } else {
+    note.textContent = academyStudyIndex === 0
+      ? 'White moves first. Select “Next move” to see the first move and why it is played.'
+      : opening.moves[academyStudyIndex - 1][1];
+  }
+  const nextButton = controls.querySelector('button:nth-child(3)');
+  if (nextButton) nextButton.disabled = academyStudyTestMode || academyStudyIndex >= moveList.length;
+  controls.querySelector('button:nth-child(4)').disabled = academyStudyTestMode;
+  testButton.textContent = academyStudyTestMode ? 'Exit line test' : 'Test yourself';
+  sideSelect.hidden = !academyStudyTestMode;
+  hintButton.hidden = !academyStudyTestMode;
+  revealButton.hidden = !academyStudyTestMode;
+}
+
+function renderAcademyPuzzleBoard(boardElement) {
+  boardElement.replaceChildren();
+  const position = academyPuzzleGame.board();
+  const legalTargets = academyPuzzleSelected
+    ? new Set(academyPuzzleGame.moves({ square: academyPuzzleSelected, verbose: true }).map((move) => move.to))
+    : new Set();
+  for (let rank = 0; rank < 8; rank += 1) {
+    for (let file = 0; file < 8; file += 1) {
+      const square = `${String.fromCharCode(97 + file)}${8 - rank}`;
+      const piece = position[rank][file];
+      const cell = document.createElement('button');
+      cell.type = 'button';
+      cell.className = `academy-study-square ${(rank + file) % 2 === 0 ? 'light' : 'dark'}`;
+      cell.dataset.square = square;
+      cell.setAttribute('role', 'gridcell');
+      cell.setAttribute('aria-label', `${square}${piece ? `, ${piece.color === 'w' ? 'white' : 'black'} ${piece.type}` : ''}${legalTargets.has(square) ? ', legal move destination' : ''}`);
+      if (academyPuzzleSelected === square) cell.classList.add('selected');
+      if (legalTargets.has(square)) {
+        const target = document.createElement('span');
+        target.className = piece ? 'move-target capture-target' : 'move-target';
+        cell.append(target);
+      }
+      if (piece) {
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('class', `piece ${piece.color === 'w' ? 'white-piece' : 'black-piece'}`);
+        svg.setAttribute('viewBox', '0 0 100 100');
+        svg.setAttribute('aria-hidden', 'true');
+        const symbol = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        symbol.setAttribute('x', '50');
+        symbol.setAttribute('y', '82');
+        symbol.setAttribute('text-anchor', 'middle');
+        symbol.setAttribute('font-family', pieceTheme.fontFamily);
+        symbol.textContent = pieceTheme.symbols[piece.color][piece.type];
+        svg.append(symbol);
+        cell.append(svg);
+      }
+      cell.addEventListener('click', () => {
+        const puzzleStatus = document.querySelector('#academy-puzzle-status');
+        if (academyPuzzleSelected && legalTargets.has(square)) {
+          const isSolution = academyPuzzleSelected === academyPuzzleData.from && square === academyPuzzleData.to;
+          if (isSolution) {
+            const move = academyPuzzleGame.move({ from: academyPuzzleSelected, to: square, promotion: 'q' });
+            if (!move || !academyPuzzleGame.in_checkmate()) {
+              throw new Error(`The academy puzzle solution ${academyPuzzleData.from}-${academyPuzzleData.to} is not checkmate.`);
+            }
+            academyPuzzleSelected = '';
+            puzzleStatus.textContent = `Correct: ${move.san} is checkmate. ${academyPuzzleData.hint}`;
+            recordAcademyExerciseAttempt(true);
+            academyProgress.add(academySelection);
+            saveAcademyProgress();
+            renderAcademyNavigation();
+            renderAcademyPuzzleBoard(boardElement);
+            return;
+          }
+          recordAcademyExerciseAttempt(false);
+          puzzleStatus.textContent = 'That is legal, but it does not solve this mate-in-one. Try another move or use a hint.';
+          academyPuzzleSelected = '';
+        } else if (piece?.color === 'w') {
+          academyPuzzleSelected = square;
+          puzzleStatus.textContent = 'The highlighted squares are legal destinations. Find the move that checkmates.';
+        } else {
+          academyPuzzleSelected = '';
+        }
+        renderAcademyPuzzleBoard(boardElement);
+      });
+      boardElement.append(cell);
+    }
+  }
+}
+
+function renderAcademyExerciseBoard(boardElement, game, selectedSquare, onSquare, focusSquares = []) {
+  boardElement.replaceChildren();
+  const position = game.board();
+  const legalTargets = selectedSquare
+    ? new Set(game.moves({ square: selectedSquare, verbose: true }).map((move) => move.to))
+    : new Set();
+  for (let rank = 0; rank < 8; rank += 1) {
+    for (let file = 0; file < 8; file += 1) {
+      const square = `${String.fromCharCode(97 + file)}${8 - rank}`;
+      const piece = position[rank][file];
+      const cell = document.createElement('button');
+      cell.type = 'button';
+      cell.className = `academy-study-square ${(rank + file) % 2 === 0 ? 'light' : 'dark'}`;
+      if (focusSquares.includes(square)) cell.classList.add('study-focus');
+      if (selectedSquare === square) cell.classList.add('selected');
+      cell.setAttribute('role', 'gridcell');
+      cell.setAttribute('aria-label', `${square}${piece ? `, ${piece.color === 'w' ? 'white' : 'black'} ${piece.type}` : ''}${legalTargets.has(square) ? ', legal move destination' : ''}`);
+      if (legalTargets.has(square)) {
+        const target = document.createElement('span');
+        target.className = piece ? 'move-target capture-target' : 'move-target';
+        cell.append(target);
+      }
+      if (file === 0) {
+        const coordinate = document.createElement('span');
+        coordinate.className = `coordinate rank-coordinate ${(rank + file) % 2 === 0 ? 'on-light' : 'on-dark'}`;
+        coordinate.textContent = String(8 - rank);
+        cell.append(coordinate);
+      }
+      if (rank === 7) {
+        const coordinate = document.createElement('span');
+        coordinate.className = `coordinate file-coordinate ${(rank + file) % 2 === 0 ? 'on-light' : 'on-dark'}`;
+        coordinate.textContent = String.fromCharCode(97 + file);
+        cell.append(coordinate);
+      }
+      if (piece) {
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('class', `piece ${piece.color === 'w' ? 'white-piece' : 'black-piece'}`);
+        svg.setAttribute('viewBox', '0 0 100 100');
+        svg.setAttribute('aria-hidden', 'true');
+        const symbol = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        symbol.setAttribute('x', '50');
+        symbol.setAttribute('y', '82');
+        symbol.setAttribute('text-anchor', 'middle');
+        symbol.setAttribute('font-family', pieceTheme.fontFamily);
+        symbol.textContent = pieceTheme.symbols[piece.color][piece.type];
+        svg.append(symbol);
+        cell.append(svg);
+      }
+      cell.addEventListener('click', () => onSquare(square, game.get(square), legalTargets.has(square)));
+      boardElement.append(cell);
+    }
+  }
+}
+
+function addAcademyTacticalExercise(detail, exercise) {
+  const section = document.createElement('section');
+  section.className = 'academy-puzzle-exercise';
+  const heading = document.createElement('h4');
+  heading.textContent = exercise.kind === 'move' ? 'Find the tactical move' : 'Spot the tactical feature';
+  const intro = document.createElement('p');
+  intro.textContent = exercise.prompt
+    ?? 'Find the legal move that demonstrates this motif. This is a curated motif exercise, not an engine claim that this is the only good move in chess.';
+  const board = document.createElement('div');
+  board.className = 'academy-study-board academy-puzzle-board';
+  board.setAttribute('role', 'grid');
+  const controls = document.createElement('div');
+  controls.className = 'academy-study-controls';
+  const hintButton = document.createElement('button');
+  hintButton.type = 'button';
+  hintButton.textContent = 'Hint';
+  const revealButton = document.createElement('button');
+  revealButton.type = 'button';
+  revealButton.textContent = 'Reveal answer';
+  const restartButton = document.createElement('button');
+  restartButton.type = 'button';
+  restartButton.textContent = 'Restart';
+  const status = document.createElement('p');
+  status.className = 'academy-move-note';
+  let game = new Chess(exercise.fen);
+  let selected = '';
+  let hintStep = 0;
+  let complete = false;
+  const render = (focus = []) => renderAcademyExerciseBoard(board, game, selected, (square, piece, isLegalTarget) => {
+    if (complete) return;
+    if (exercise.kind === 'identify') {
+      selected = piece ? square : '';
+      if (square === exercise.square) {
+        complete = true;
+        selected = '';
+        status.textContent = `Correct. ${exercise.explanation}`;
+        recordAcademyExerciseAttempt(true);
+        academyProgress.add(academySelection);
+        saveAcademyProgress();
+        renderAcademyNavigation();
+      } else {
+        if (piece) recordAcademyExerciseAttempt(false);
+        status.textContent = piece ? `You selected the ${piece.color === 'w' ? 'white' : 'black'} ${piece.type} on ${square}. Trace the relevant line or protection relationship.` : 'Select a piece to inspect it.';
+      }
+      render(hintStep >= 3 && !complete ? [exercise.square] : []);
+      return;
+    }
+    if (selected && isLegalTarget) {
+      if (selected !== exercise.from || square !== exercise.to) {
+        recordAcademyExerciseAttempt(false);
+        status.textContent = 'That move is legal, but it does not demonstrate the target motif in this exercise. Try another move; legal chess alternatives are not necessarily mistakes.';
+        selected = '';
+        render(hintStep >= 3 ? [exercise.from, exercise.to] : []);
+        return;
+      }
+      const move = game.move({ from: selected, to: square, promotion: 'q' });
+      if (!move || move.san !== exercise.san) throw new Error(`Tactical exercise solution is inconsistent for ${academySelection}.`);
+      complete = true;
+      selected = '';
+      status.textContent = `Correct: ${move.san}. ${exercise.explanation}`;
+      recordAcademyExerciseAttempt(true);
+      academyProgress.add(academySelection);
+      saveAcademyProgress();
+      renderAcademyNavigation();
+      render([exercise.from, exercise.to]);
+      return;
+    }
+    selected = piece?.color === game.turn() ? square : '';
+    status.textContent = selected
+      ? 'The dots show legal destinations. Look for the move that matches the motif.'
+      : 'Select a piece whose turn it is to move.';
+    render(hintStep >= 3 ? [exercise.from, exercise.to].filter(Boolean) : []);
+  });
+  hintButton.addEventListener('click', () => {
+    hintStep = Math.min(3, hintStep + 1);
+    status.textContent = hintStep === 1
+      ? `Hint 1: Look for the relationship described by this motif. ${exercise.hint}`
+      : hintStep === 2
+        ? `Hint 2: ${exercise.hint}`
+        : exercise.kind === 'move'
+          ? `Hint 3: Consider the move ${exercise.from} to ${exercise.to}, then verify it is legal.`
+          : `Hint 3: Inspect ${exercise.square}.`;
+    render(hintStep >= 3 && !complete ? [exercise.from, exercise.to, exercise.square].filter(Boolean) : []);
+  });
+  revealButton.addEventListener('click', () => {
+    if (exercise.kind === 'move') {
+      status.textContent = `Answer: ${exercise.san}. ${exercise.explanation}`;
+      selected = exercise.from;
+      render([exercise.from, exercise.to]);
+    } else {
+      status.textContent = `Answer: ${exercise.square}. ${exercise.explanation}`;
+      render([exercise.square]);
+    }
+  });
+  restartButton.addEventListener('click', () => {
+    game = new Chess(exercise.fen);
+    selected = '';
+    hintStep = 0;
+    complete = false;
+    status.textContent = 'Try the position again. Read the prompt and inspect the board before asking for a hint.';
+    render();
+  });
+  controls.append(hintButton, revealButton, restartButton);
+  status.textContent = 'Select a piece to see its legal moves, or select the piece that matches the prompt.';
+  section.append(heading, intro, board, controls, status);
+  detail.append(section);
+  render();
+}
+
+function addAcademyPositionLab(detail, fen, title) {
+  const section = document.createElement('section');
+  section.className = 'academy-puzzle-exercise';
+  const heading = document.createElement('h4');
+  heading.textContent = 'Explore this position';
+  const intro = document.createElement('p');
+  intro.textContent = `Move pieces on the board to explore “${title}.” All moves are validated by the chess rules. This is a study sandbox, not an engine evaluation or a claim that one move is best.`;
+  const board = document.createElement('div');
+  board.className = 'academy-study-board academy-puzzle-board';
+  board.setAttribute('role', 'grid');
+  const controls = document.createElement('div');
+  controls.className = 'academy-study-controls';
+  const undoButton = document.createElement('button');
+  undoButton.type = 'button';
+  undoButton.textContent = 'Undo';
+  const restartButton = document.createElement('button');
+  restartButton.type = 'button';
+  restartButton.textContent = 'Restart position';
+  const hintButton = document.createElement('button');
+  hintButton.type = 'button';
+  hintButton.textContent = 'What should I inspect?';
+  const status = document.createElement('p');
+  status.className = 'academy-move-note';
+  const history = document.createElement('p');
+  history.className = 'academy-move-note';
+  history.setAttribute('aria-label', 'Exploration move history');
+  let game = new Chess(fen);
+  let selected = '';
+  const updateHistory = () => {
+    const sans = game.history();
+    history.textContent = sans.length
+      ? `Exploration: ${sans.map((san, index) => `${index % 2 === 0 ? `${Math.floor(index / 2) + 1}. ` : ''}${san}`).join(' ')}`
+      : 'Exploration move history appears here.';
+    undoButton.disabled = sans.length === 0;
+  };
+  const render = () => renderAcademyExerciseBoard(board, game, selected, (square, piece, isLegalTarget) => {
+    if (selected && isLegalTarget) {
+      const move = game.move({ from: selected, to: square, promotion: 'q' });
+      if (!move) throw new Error(`Could not apply legal study move from ${selected} to ${square}.`);
+      selected = '';
+      status.textContent = move.san.includes('#')
+        ? `${move.san} is checkmate in this position.`
+        : move.san.includes('+')
+          ? `${move.san} gives check. Check the opponent’s legal replies before planning further.`
+          : move.captured
+            ? `${move.san} captures a ${move.captured}. Recount the material and inspect the new lines.`
+            : `${move.san} is legal. Inspect what it attacks, what it leaves undefended, and how the pawn structure changes.`;
+      render();
+      updateHistory();
+      return;
+    }
+    selected = piece?.color === game.turn() ? square : '';
+    status.textContent = selected
+      ? `Selected ${piece.type} on ${square}. The dots show its legal moves.`
+      : `It is ${game.turn() === 'w' ? 'White' : 'Black'} to move. Select a piece to inspect legal moves.`;
+    render();
+  });
+  undoButton.addEventListener('click', () => {
+    game.undo();
+    selected = '';
+    status.textContent = 'Last move undone. Compare the position before and after that decision.';
+    render();
+    updateHistory();
+  });
+  restartButton.addEventListener('click', () => {
+    game = new Chess(fen);
+    selected = '';
+    status.textContent = 'Position restored. Try a different legal plan.';
+    render();
+    updateHistory();
+  });
+  hintButton.addEventListener('click', () => {
+    const moves = game.moves({ verbose: true });
+    const checks = moves.filter((move) => move.san.includes('+') || move.san.includes('#')).map((move) => move.san);
+    const captures = moves.filter((move) => move.captured).map((move) => move.san);
+    const details = [
+      checks.length ? `Legal checks: ${checks.slice(0, 5).join(', ')}.` : 'There is no immediate legal check.',
+      captures.length ? `Legal captures: ${captures.slice(0, 5).join(', ')}.` : 'There is no immediate legal capture.',
+      `There are ${moves.length} legal moves. Compare king safety, piece activity, and pawn routes without assuming an engine-backed best move.`,
+    ];
+    status.textContent = details.join(' ');
+  });
+  controls.append(undoButton, restartButton, hintButton);
+  section.append(heading, intro, board, controls, status, history);
+  detail.append(section);
+  render();
+  updateHistory();
+}
+
+function addAcademyPuzzleExercise(detail) {
+  const section = document.createElement('section');
+  section.className = 'academy-puzzle-exercise';
+  const heading = document.createElement('h4');
+  heading.textContent = 'General forcing-move warm-up';
+  const intro = document.createElement('p');
+  intro.textContent = 'Try a verified mate-in-one position. This practices checking forcing moves and calculating the result; it is not labeled as a specific tactic motif.';
+  const startButton = document.createElement('button');
+  startButton.type = 'button';
+  startButton.className = 'academy-action primary';
+  startButton.textContent = 'Load a mate-in-one exercise';
+  const content = document.createElement('div');
+  content.className = 'academy-puzzle-content';
+  content.hidden = true;
+  const board = document.createElement('div');
+  board.className = 'academy-study-board academy-puzzle-board';
+  board.setAttribute('role', 'grid');
+  const controls = document.createElement('div');
+  controls.className = 'academy-study-controls';
+  const hintButton = document.createElement('button');
+  hintButton.type = 'button';
+  hintButton.textContent = 'Hint';
+  const revealButton = document.createElement('button');
+  revealButton.type = 'button';
+  revealButton.textContent = 'Reveal move';
+  const status = document.createElement('p');
+  status.className = 'academy-move-note';
+  status.id = 'academy-puzzle-status';
+  hintButton.addEventListener('click', () => {
+    academyPuzzleHintStep = Math.min(2, academyPuzzleHintStep + 1);
+    status.textContent = academyPuzzleHintStep === 1
+      ? `Hint: ${academyPuzzleData.hint}`
+      : `Hint 2: the mate is delivered by moving from ${academyPuzzleData.from}.`;
+  });
+  revealButton.addEventListener('click', () => {
+    status.textContent = `The solution is ${academyPuzzleData.from} to ${academyPuzzleData.to}. Check that the move is legal, then play it on the board.`;
+    academyPuzzleSelected = academyPuzzleData.from;
+    renderAcademyPuzzleBoard(board);
+  });
+  controls.append(hintButton, revealButton);
+  content.append(board, controls, status);
+  startButton.addEventListener('click', () => {
+    const choices = puzzlePositions.filter((puzzle) => puzzle.fen.includes(' w '));
+    academyPuzzleData = choices[Math.floor(Math.random() * choices.length)];
+    academyPuzzleGame = new Chess(academyPuzzleData.fen);
+    academyPuzzleSelected = '';
+    academyPuzzleHintStep = 0;
+    content.hidden = false;
+    status.textContent = 'Find the checkmate in one. Select one of White’s pieces to see its legal destinations.';
+    renderAcademyPuzzleBoard(board);
+  });
+  section.append(heading, intro, startButton, content);
+  detail.append(section);
+}
+
+function renderAcademyLessonDetail(item, index) {
+  const detail = document.querySelector('#academy-lesson-detail');
+  detail.replaceChildren();
+  const id = academyItemId(item, index);
+  const title = document.createElement('h3');
+  title.textContent = item.title ?? item.name;
+  const eyebrow = document.createElement('p');
+  eyebrow.className = 'eyebrow';
+  eyebrow.textContent = academyPath === 'fundamentals' ? `FUNDAMENTALS · LESSON ${index + 1}` : `${academyPath.toUpperCase()} · STUDY NOTE`;
+  const explanation = document.createElement('p');
+  explanation.textContent = item.text ?? item.idea;
+  detail.append(eyebrow, title, explanation);
+  if (academyPath === 'fundamentals') {
+    const demo = document.createElement('p');
+    demo.textContent = `${item.demoNote} Use the existing interactive beginner lesson for its board demonstration and knowledge check.`;
+    detail.append(demo);
+    const lessonButton = document.createElement('button');
+    lessonButton.type = 'button';
+    lessonButton.className = 'academy-action primary';
+    lessonButton.textContent = 'Open interactive board lesson';
+    lessonButton.addEventListener('click', () => {
+      tutorialLessonIndex = index;
+      renderBeginnerLesson();
+      academyDialog.close();
+      document.querySelector('#tutorial-dialog').showModal();
+    });
+    detail.append(lessonButton);
+  } else {
+    const note = document.createElement('p');
+    note.textContent = academyPath === 'tactics'
+      ? 'Look for forcing moves, targets, and defensive resources. The board exercise checks the stated motif or asks you to identify a real feature; it does not pretend to provide engine analysis.'
+      : academyPath === 'endgames'
+        ? 'Explore legal king, rook, and pawn moves. Count the moves accurately, check the promotion race, and compare the position after each decision.'
+        : 'Inspect legal moves, piece activity, king safety, and pawn structure. Use the board to compare plans rather than guessing at an engine evaluation.';
+    detail.append(note);
+    if (academyPath === 'tactics') {
+      const exercise = academyContent.tacticalExercises[item.name];
+      if (exercise) addAcademyTacticalExercise(detail, exercise);
+      else addAcademyPuzzleExercise(detail);
+    } else {
+      const positions = academyContent.studyPositions[academyPath];
+      if (!positions?.[index]) throw new Error(`Missing verified study position for ${academyPath} lesson ${index + 1}.`);
+      addAcademyPositionLab(detail, positions[index], item.name);
+    }
+  }
+  const markButton = document.createElement('button');
+  markButton.type = 'button';
+  markButton.className = 'academy-action';
+  markButton.textContent = academyProgress.has(id) ? 'Studied ✓' : 'Mark lesson studied';
+  markButton.addEventListener('click', () => {
+    academyProgress.add(id);
+    saveAcademyProgress();
+    renderAcademy();
+  });
+  detail.append(markButton);
+}
+
+function renderAcademy() {
+  renderAcademyNavigation();
+  const index = academyItemsForPath().findIndex((item, itemIndex) => academyItemId(item, itemIndex) === academySelection);
+  if (index < 0) {
+    document.querySelector('#academy-lesson-detail').innerHTML =
+      '<p class="eyebrow">CHOOSE A LESSON</p><h3>Build your chess understanding</h3><p>Start with the fundamentals, play through a legal opening line on the board, or study tactics, strategy, and endgames.</p>';
+    return;
+  }
+  const item = academyItemsForPath()[index];
+  if (academyPath === 'openings') renderAcademyOpeningStudy(item);
+  else renderAcademyLessonDetail(item, index);
+}
+
+function openChessAcademy() {
+  try {
+    const storedProgress = JSON.parse(localStorage.getItem('openboard-academy-progress-v1') || '[]');
+    academyProgress = new Set(Array.isArray(storedProgress) ? storedProgress.filter((id) => typeof id === 'string') : []);
+    const storedPerformance = JSON.parse(localStorage.getItem('openboard-academy-performance-v1') || '{}');
+    academyPerformance = storedPerformance && typeof storedPerformance === 'object' && !Array.isArray(storedPerformance)
+      ? storedPerformance
+      : {};
+  } catch (error) {
+    console.error('Could not load chess academy progress:', error);
+    academyProgress = new Set();
+    academyPerformance = {};
+    showMessage('Progress unavailable', 'Saved academy progress could not be read; the current session can still be used.');
+  }
+  academyPath = 'fundamentals';
+  academySelection = academyItemId(learningContent.lessons[0], 0);
+  renderAcademy();
+  academyDialog.showModal();
+}
+
 function openBeginnerTutorial() {
   tutorialLessonIndex = tutorialProgress >= learningContent.lessons.length ? 0 : tutorialProgress;
   renderBeginnerLesson();
@@ -5406,6 +6629,233 @@ function openBeginnerTutorial() {
   boardElement.scrollIntoView({
     block: window.matchMedia('(max-width: 850px)').matches ? 'start' : 'center',
   });
+}
+
+function practiceRulesAreStandard() {
+  return activeBoardSize === 8
+    && !customRules.noDraws
+    && customRules.customPieces.length === 0
+    && Object.entries(defaultCustomRules.pieceMovements).every(([piece, sides]) =>
+      JSON.stringify(customRules.pieceMovements[piece]) === JSON.stringify(sides));
+}
+
+function openPracticeSetup() {
+  if (onlineMode || onlineSpectating) {
+    showMessage('Guided practice unavailable', 'Leave your online game before starting a guided bot practice.');
+    return;
+  }
+  if (!practiceRulesAreStandard()) {
+    showMessage('Guided practice uses standard chess', 'Choose standard 8×8 chess in Custom Rules before starting a guided practice game.');
+    return;
+  }
+  document.querySelector('#practice-objective').value = pendingPracticeOpening ? 'opening' : 'beginner';
+  document.querySelector('#practice-objective').dispatchEvent(new Event('change'));
+  practiceSetupDialog.showModal();
+}
+
+function startGuidedPractice() {
+  if (onlineMode || onlineSpectating || !practiceRulesAreStandard()) {
+    practiceSetupDialog.close();
+    openPracticeSetup();
+    return;
+  }
+  const botId = practiceBotSelect.value;
+  const bot = bots[botId];
+  if (!bot) throw new Error(`Unknown guided-practice opponent: ${botId}`);
+  practiceObjective = document.querySelector('#practice-objective').value;
+  practiceMode = practiceObjective !== 'free';
+  practiceGame = true;
+  practiceLastHumanMove = null;
+  practiceLastBotMove = null;
+  practiceLastMessage = '';
+  practiceCoachAuto = document.querySelector('#practice-auto-coach').checked;
+  practiceCoachFrequency = document.querySelector('#practice-coach-frequency').value;
+  practiceHintsEnabled = document.querySelector('#practice-hints-enabled').checked;
+  practiceHintStep = 0;
+  practiceHintMove = null;
+  activePracticeOpening = pendingPracticeOpening;
+  practiceOpeningOnBook = Boolean(activePracticeOpening);
+  pendingPracticeOpening = null;
+  difficultySelect.value = botId;
+  playerColor = document.querySelector('#practice-color').value;
+  flipped = playerColor === 'b';
+  playColorSelect.value = playerColor;
+  timeControlSelect.value = '0';
+  practiceSetupDialog.close();
+  difficultySelect.dispatchEvent(new Event('change'));
+  playColorSelect.disabled = true;
+  timeControlSelect.disabled = true;
+  difficultySelect.disabled = true;
+  document.querySelector('#custom-rules-open').disabled = true;
+  practiceCoachHome.append(practiceCoachElement);
+  practiceCoachElement.hidden = !practiceMode;
+  if (practiceMode) document.querySelector('.moves-section').before(practiceCoachElement);
+  document.querySelector('#practice-hint').disabled = !practiceHintsEnabled;
+  document.querySelector('#practice-reveal').disabled = !practiceHintsEnabled;
+  startNewGame();
+  if (practiceMode) updatePracticeCoach('start');
+  document.querySelector('#game').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function practiceMoveDescription(move, side) {
+  if (!move) return 'No move has been played yet.';
+  const pieceNames = { p: 'pawn', n: 'knight', b: 'bishop', r: 'rook', q: 'queen', k: 'king' };
+  const pieceName = pieceNames[move.piece] ?? 'piece';
+  let explanation = ({
+    p: 'Pawns move forward and capture diagonally.',
+    n: 'Knights move in an L shape and can jump over other pieces.',
+    b: 'Bishops move diagonally along clear squares.',
+    r: 'Rooks move straight along clear rows or columns.',
+    q: 'Queens move straight or diagonally along clear squares.',
+    k: 'Kings move one square at a time and must stay safe.',
+  })[move.piece];
+  if (move.flags?.includes('k') || move.flags?.includes('q')) {
+    explanation = 'Castling moves the king two squares and brings a rook closer to safety.';
+  } else if (move.promotion) {
+    explanation = `The pawn reached the far side and promoted to a ${pieceNames[move.promotion]}.`;
+  } else if (move.captured) {
+    explanation = `The ${pieceName} captured a ${pieceNames[move.captured]} on ${move.to}.`;
+  }
+  const checkText = move.san?.includes('#')
+    ? ' That is checkmate.'
+    : move.san?.includes('+') ? ' That gives check.' : '';
+  return `${side} moved the ${pieceName} from ${move.from} to ${move.to}. ${explanation}${checkText}`;
+}
+
+function practiceAttackedPieces() {
+  const pieces = [];
+  for (const rank of '12345678') {
+    for (const file of 'abcdefgh') {
+      const square = `${file}${rank}`;
+      const piece = game.get(square);
+      if (!piece || piece.color !== game.turn()) continue;
+      const targetFile = file.charCodeAt(0) - 97;
+      const targetRank = Number(rank);
+      let isAttacked = false;
+      for (const enemyRank of '12345678') {
+        for (const enemyFile of 'abcdefgh') {
+          const attacker = game.get(`${enemyFile}${enemyRank}`);
+          if (!attacker || attacker.color === piece.color) continue;
+          const fromFile = enemyFile.charCodeAt(0) - 97;
+          const fromRank = Number(enemyRank);
+          const fileDelta = targetFile - fromFile;
+          const rankDelta = targetRank - fromRank;
+          const absFile = Math.abs(fileDelta);
+          const absRank = Math.abs(rankDelta);
+          const attacks = attacker.type === 'p'
+            ? absFile === 1 && rankDelta === (attacker.color === 'w' ? 1 : -1)
+            : attacker.type === 'n'
+              ? (absFile === 1 && absRank === 2) || (absFile === 2 && absRank === 1)
+              : attacker.type === 'k'
+                ? Math.max(absFile, absRank) === 1
+                : attacker.type === 'r'
+                  ? fileDelta === 0 || rankDelta === 0
+                  : attacker.type === 'b'
+                    ? absFile === absRank
+                    : attacker.type === 'q'
+                      ? fileDelta === 0 || rankDelta === 0 || absFile === absRank
+                      : false;
+          if (!attacks) continue;
+          if (['r', 'b', 'q'].includes(attacker.type)) {
+            const stepFile = Math.sign(fileDelta);
+            const stepRank = Math.sign(rankDelta);
+            let pathFile = fromFile + stepFile;
+            let pathRank = fromRank + stepRank;
+            let blocked = false;
+            while (pathFile !== targetFile || pathRank !== targetRank) {
+              if (game.get(`${String.fromCharCode(97 + pathFile)}${pathRank}`)) {
+                blocked = true;
+                break;
+              }
+              pathFile += stepFile;
+              pathRank += stepRank;
+            }
+            if (blocked) continue;
+          }
+          isAttacked = true;
+          break;
+        }
+        if (isAttacked) break;
+      }
+      if (isAttacked) pieces.push(square);
+    }
+  }
+  return pieces;
+}
+
+function practiceMoveNeedsExplanation(move) {
+  return practiceCoachFrequency === 'every'
+    || move.captured
+    || move.san?.includes('+')
+    || move.san?.includes('#')
+    || move.promotion
+    || move.flags?.includes('k')
+    || move.flags?.includes('q');
+}
+
+function updatePracticeCoach(stage = 'turn') {
+  if (!practiceMode) return;
+  const message = document.querySelector('#practice-coach-message');
+  const latest = game.history({ verbose: true }).at(-1);
+  const threatened = practiceAttackedPieces();
+  const attackedText = threatened.length
+    ? `Opponent pieces geometrically attack your ${threatened.map((square) => `${game.get(square).type} on ${square}`).join(', ')}. Check whether each target is defended; a pinned attacker may not be able to move legally.`
+    : 'No piece of yours is geometrically attacked by the opponent in this position.';
+  let guidance;
+  if (gameResult || isGameOver()) {
+    guidance = isCheckmate()
+      ? game.turn() === playerColor
+        ? 'The game is over: your king was checkmated. That happens when your king is attacked and has no safe escape. Review the moves, then try another difficulty.'
+        : 'You won by checkmate! The opposing king had no safe way out. Great work—try a tougher opponent when you’re ready.'
+      : 'The game ended in a draw. A draw is a normal result in chess; review the final position and try again.';
+  } else if (stage === 'hint' || stage === 'explain') {
+    guidance = practiceLastMessage;
+  } else if (stage === 'start' || !practiceLastHumanMove) {
+    const side = playerColor === 'w' ? 'White' : 'Black';
+    const startText = playerColor === 'w'
+      ? 'White moves first. Click a piece and choose one of its highlighted legal squares. A pawn move such as e2–e4 or d2–d4 is one way to contest the center.'
+      : 'You are Black, so the bot makes White’s first move. Then click one of your pieces and choose a highlighted legal square.';
+    const objectiveText = {
+      beginner: 'Focus first on legal moves, king safety, and noticing when a piece is attacked.',
+      opening: 'Focus on central control, developing minor pieces, king safety, and making each move useful.',
+      tactics: 'Before each turn, scan checks, captures, and threats; verify the opponent’s reply before committing.',
+      strategy: 'Look for the least active piece and a useful square, while keeping your king safe.',
+      endgame: 'Keep your king active and calculate pawn advances and promotion races carefully.',
+      general: 'Take a moment to inspect forcing moves, attacked pieces, and your least active piece.',
+    }[practiceObjective];
+    guidance = `${startText} ${objectiveText} Hints are available when enabled.`;
+    if (activePracticeOpening) guidance += ` This practice follows the ${activePracticeOpening.name} main line while both sides play its moves.`;
+  } else if (stage === 'human') {
+    guidance = `${practiceMoveDescription(practiceLastHumanMove, 'You')} The bot is thinking. After its reply, inspect the actual position for attacks and safe responses.`;
+  } else {
+    const botExplanation = practiceMoveDescription(practiceLastBotMove ?? latest, bots[difficultySelect.value]?.name ?? 'Your opponent');
+    const turnText = game.in_check()
+      ? 'Your king is in check; your next move must remove the check.'
+      : `It is your turn, with ${game.moves().length} legal moves available.`;
+    const openingNote = activePracticeOpening && !practiceOpeningOnBook
+      ? ` The game has left the ${activePracticeOpening.name} study line; your move is still legal, and the bot now responds from the live position.`
+      : '';
+    guidance = `${botExplanation} ${turnText} ${attackedText} Look for checks, captures, and threats before choosing a plan.${openingNote}`;
+  }
+  practiceLastMessage = guidance;
+  message.textContent = guidance;
+}
+
+function endGuidedPractice() {
+  if (!practiceGame) return;
+  practiceMode = false;
+  practiceGame = false;
+  practiceLastHumanMove = null;
+  practiceLastBotMove = null;
+  activePracticeOpening = null;
+  practiceOpeningOnBook = false;
+  practiceCoachHome.append(practiceCoachElement);
+  practiceCoachElement.hidden = true;
+  playColorSelect.disabled = onlineMode;
+  timeControlSelect.disabled = onlineMode;
+  difficultySelect.disabled = onlineMode;
+  document.querySelector('#custom-rules-open').disabled = onlineMode;
+  gameMessage.textContent = 'Guided practice ended. Your current game stays available; start a new game to use the normal settings.';
 }
 
 function openChessRules() {
@@ -5496,6 +6946,87 @@ document.querySelector('#tutorial-next').addEventListener('click', () => {
   }
 });
 document.querySelector('#rules-close').addEventListener('click', () => document.querySelector('#rules-dialog').close());
+document.querySelector('#practice-setup-close').addEventListener('click', () => {
+  pendingPracticeOpening = null;
+  practiceSetupDialog.close();
+});
+practiceSetupDialog.addEventListener('click', (event) => {
+  if (event.target === practiceSetupDialog) {
+    pendingPracticeOpening = null;
+    practiceSetupDialog.close();
+  }
+});
+practiceSetupDialog.addEventListener('close', () => {
+  if (pendingPracticeOpening) pendingPracticeOpening = null;
+});
+document.querySelector('#practice-start').addEventListener('click', startGuidedPractice);
+document.querySelector('#practice-end').addEventListener('click', endGuidedPractice);
+document.querySelector('#practice-objective').addEventListener('change', (event) => {
+  const guided = event.target.value !== 'free';
+  document.querySelector('#practice-auto-coach').disabled = !guided;
+  document.querySelector('#practice-hints-enabled').disabled = !guided;
+});
+document.querySelector('#practice-hint').addEventListener('click', () => {
+  if (!practiceMode || !practiceHintsEnabled || aiThinking || gameResult || isGameOver()) return;
+  if (game.turn() !== playerColor) {
+    document.querySelector('#practice-coach-message').textContent = 'Wait for the bot to finish its turn, then ask for a hint.';
+    return;
+  }
+  if (!practiceHintMove) {
+    practiceHintMove = findBestMove({ depth: 2, variety: 1 });
+    practiceHintStep = 0;
+  }
+  if (!practiceHintMove) {
+    document.querySelector('#practice-coach-message').textContent = 'There are no legal moves in this position. The game may be over.';
+    return;
+  }
+  practiceHintStep = Math.min(3, practiceHintStep + 1);
+  const suggestion = practiceHintMove;
+  const pieceNames = { p: 'pawn', n: 'knight', b: 'bishop', r: 'rook', q: 'queen', k: 'king' };
+  practiceLastMessage = practiceHintStep === 1
+    ? 'Hint 1 · Scan forcing moves first: checks, captures, and direct threats. Then check whether your king or an attacked piece needs attention. This position has ' + game.moves().length + ' legal moves.'
+    : practiceHintStep === 2
+      ? `Hint 2 · A quick local search found ${suggestion.san} as one candidate. Look at your ${pieceNames[suggestion.piece] ?? 'piece'} on ${suggestion.from} and consider what it could accomplish.`
+      : `Hint 3 · The candidate is ${suggestion.san}: move from ${suggestion.from} to ${suggestion.to}.${suggestion.captured ? ' It captures an opponent’s piece.' : ''}${suggestion.san.includes('+') ? ' It gives check.' : ''} This is a local-search suggestion, not a verified engine-best claim.`;
+  if (practiceHintStep === 3) suggestedMove = { from: suggestion.from, to: suggestion.to };
+  updatePracticeCoach('hint');
+  renderBoard();
+});
+document.querySelector('#practice-reveal').addEventListener('click', () => {
+  if (!practiceMode || !practiceHintsEnabled || aiThinking || gameResult || isGameOver() || game.turn() !== playerColor) return;
+  practiceHintMove = findBestMove({ depth: 2, variety: 1 });
+  if (!practiceHintMove) {
+    document.querySelector('#practice-coach-message').textContent = 'There are no legal moves in this position. The game may be over.';
+    return;
+  }
+  practiceHintStep = 3;
+  suggestedMove = { from: practiceHintMove.from, to: practiceHintMove.to };
+  practiceLastMessage = `Candidate revealed · ${practiceHintMove.san}, from ${practiceHintMove.from} to ${practiceHintMove.to}.${practiceHintMove.captured ? ' It captures an opponent’s piece.' : ''}${practiceHintMove.san.includes('+') ? ' It gives check.' : ''} This is a quick local-search candidate, not an engine-certified best move.`;
+  updatePracticeCoach('hint');
+  renderBoard();
+});
+document.querySelector('#practice-explain').addEventListener('click', () => {
+  if (!practiceMode) return;
+  const latest = game.history({ verbose: true }).at(-1);
+  if (!latest) {
+    document.querySelector('#practice-coach-message').textContent = 'No moves yet. You are White and move first; click one of your pieces, then one of its highlighted legal squares.';
+    return;
+  }
+  const side = latest.color === playerColor ? 'You' : bots[difficultySelect.value]?.name ?? 'Your opponent';
+  practiceLastMessage = `Last move: ${practiceMoveDescription(latest, side)}`;
+  updatePracticeCoach('explain');
+});
+
+document.querySelector('#academy-close').addEventListener('click', () => academyDialog.close());
+academyDialog.addEventListener('click', (event) => {
+  if (event.target === academyDialog) academyDialog.close();
+});
+academyDialog.addEventListener('close', () => {
+  if (academyPlaybackTimer) {
+    window.clearInterval(academyPlaybackTimer);
+    academyPlaybackTimer = null;
+  }
+});
 
 document.querySelector('#analysis-open').addEventListener('click', () => {
   gameToken += 1;
