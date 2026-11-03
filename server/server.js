@@ -311,7 +311,7 @@ async function createAccountWithCountry({ username, email, password, countryCode
   return { status: response.status, result };
 }
 
-const publicProfileFields = 'username,country_code,online_elo,online_games,online_wins,online_draws,online_losses';
+const publicProfileFields = 'id,username,country_code,bio,avatar_data,online_elo,online_games,online_wins,online_draws,online_losses';
 
 function isMissingProfileColumnError(error) {
   return error?.code === '42703'
@@ -353,8 +353,11 @@ async function loadProfile(queryName, queryValue) {
   const [profile] = rows;
   if (!profile) return null;
   return {
+    ...(profile.id ? { id: profile.id } : {}),
     username: profile.username,
     countryCode: profile.country_code || null,
+    ...(profile.bio ? { bio: profile.bio } : {}),
+    ...(profile.avatar_data ? { avatarData: profile.avatar_data } : {}),
     onlineElo: profile.online_elo ?? 1200,
     onlineGames: profile.online_games ?? 0,
     onlineWins: profile.online_wins ?? 0,
@@ -988,6 +991,18 @@ const server = http.createServer(async (request, response) => {
           p_request_id: body.requestId,
           p_accept: body.accept,
         });
+      } else if (request.method === 'POST' && requestUrl.pathname === '/social/blocks') {
+        const body = await readJsonBody(request);
+        const username = typeof body?.username === 'string' ? body.username.trim() : '';
+        if (!/^[A-Za-z0-9_]{3,20}$/.test(username) || typeof body?.block !== 'boolean') {
+          sendSocialResponse(response, 400, { message: 'Choose a player and whether to block or unblock them.' });
+          return;
+        }
+        result = await callSocialRpc('openboard_block_user', {
+          p_user_id: identity.id,
+          p_target_username_key: username.toLowerCase(),
+          p_block: body.block,
+        });
       } else if (request.method === 'POST' && requestUrl.pathname === '/social/messages') {
         const body = await readJsonBody(request);
         const username = typeof body?.username === 'string' ? body.username.trim() : '';
@@ -1060,19 +1075,50 @@ const server = http.createServer(async (request, response) => {
         }
         const identity = await authenticateAccessToken(accessToken);
         if (request.method === 'PATCH') {
-          const body = await readJsonBody(request);
-          const countryCode = typeof body?.countryCode === 'string' ? body.countryCode.trim() : '';
-          if (!/^[A-Za-z]{2}$/.test(countryCode)) {
+          const body = await readJsonBody(request, 200000);
+          const countryCode = body?.countryCode == null
+            ? null
+            : typeof body.countryCode === 'string' ? body.countryCode.trim() : body.countryCode;
+          const bio = body?.bio == null ? null : body.bio;
+          const avatarData = body?.avatarData == null ? null : body.avatarData;
+          if (countryCode !== null && (typeof countryCode !== 'string' || !/^[A-Za-z]{2}$/.test(countryCode))) {
             response.writeHead(400, {
               'Cache-Control': 'no-store',
               'Content-Type': 'application/json; charset=utf-8',
-            }).end(JSON.stringify({ message: 'Choose a country or region.' }));
+            }).end(JSON.stringify({ message: 'Choose a valid country or region.' }));
             return;
           }
-          const result = await callSocialRpc('openboard_set_profile_country', {
+          if (bio !== null && (typeof bio !== 'string' || bio.length > 160)) {
+            response.writeHead(400, {
+              'Cache-Control': 'no-store',
+              'Content-Type': 'application/json; charset=utf-8',
+            }).end(JSON.stringify({ message: 'Your bio must be 160 characters or fewer.' }));
+            return;
+          }
+          if (avatarData !== null && (typeof avatarData !== 'string'
+            || (avatarData !== '' && (!/^data:image\/webp;base64,[A-Za-z0-9+/]+=*$/.test(avatarData)
+              || avatarData.length > 180000)))) {
+            response.writeHead(400, {
+              'Cache-Control': 'no-store',
+              'Content-Type': 'application/json; charset=utf-8',
+            }).end(JSON.stringify({ message: 'Choose a valid profile image.' }));
+            return;
+          }
+          if (countryCode === null && bio === null && avatarData === null) {
+            response.writeHead(400, {
+              'Cache-Control': 'no-store',
+              'Content-Type': 'application/json; charset=utf-8',
+            }).end(JSON.stringify({ message: 'There are no profile changes to save.' }));
+            return;
+          }
+          await callSocialRpc('openboard_update_profile', {
             p_user_id: identity.id,
-            p_country_code: countryCode.toUpperCase(),
+            p_country_code: countryCode?.toUpperCase() || null,
+            p_bio: bio,
+            p_avatar_data: avatarData,
           });
+          const result = await loadProfile('id', identity.id);
+          if (!result) throw new Error('Your player profile could not be found.');
           response.writeHead(200, {
             'Cache-Control': 'no-store',
             'Content-Type': 'application/json; charset=utf-8',

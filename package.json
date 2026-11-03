@@ -13,6 +13,7 @@
     "test:custom-chess": "node scripts/test-custom-chess.mjs",
     "test:large-board": "node scripts/test-large-board-chess.mjs",
     "test:game-insights": "node --test scripts/test-game-insights.mjs",
+    "test:learning-content": "node --test scripts/test-learning-content.test.mjs",
     "test:online": "node --test server/test/*.test.js",
     "online-server": "node server/server.js",
     "desktop": "npm run build && electron .",

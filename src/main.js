@@ -127,7 +127,11 @@ let gameResult = false;
 let analysisMode = false;
 let puzzleMode = false;
 let puzzleSolved = 0;
-const puzzleSolution = { from: 'g6', to: 'g7' };
+let puzzleCurrentIndex = -1;
+let tutorialLessonIndex = 0;
+let tutorialProgress = 0;
+const learningContent = window.openboardLearningContent;
+const puzzlePositions = learningContent.puzzles;
 let clock = { w: 0, b: 0 };
 let clockInterval = null;
 let lastClockTick = Date.now();
@@ -148,10 +152,19 @@ let onlineRoomCode = null;
 let onlineLeaveTimeout = null;
 let onlinePlayerName = '';
 let onlinePlayerCountryCode = null;
-let socialOverview = { friends: [], incomingRequests: [], outgoingRequests: [] };
+let socialOverview = {
+  friends: [],
+  incomingRequests: [],
+  outgoingRequests: [],
+  blockedUsers: [],
+  blockedBy: [],
+};
 let activeSocialPanel = '';
 let activeSocialTab = 'friends';
 let activeSocialConversation = null;
+let profileChallengeUsername = '';
+let currentViewedProfile = null;
+let pendingAvatarData = null;
 let onlinePreviousClock = null;
 let onlinePreviousColor = null;
 let publicRooms = [];
@@ -1188,7 +1201,8 @@ function playMove(from, to, promotion = 'q') {
     return;
   }
   suggestedMove = null;
-  if (puzzleMode && (from !== puzzleSolution.from || to !== puzzleSolution.to)) {
+  const puzzle = puzzlePositions[puzzleCurrentIndex];
+  if (puzzleMode && (!puzzle || from !== puzzle.from || to !== puzzle.to)) {
     undoGameMove();
     gameMessage.textContent = 'Not quite. Look for a checking move near the black king.';
     playSound('puzzle-failure');
@@ -1204,7 +1218,8 @@ function playMove(from, to, promotion = 'q') {
     } catch (error) {
       console.error('Could not save puzzle progress:', error);
     }
-    gameMessage.textContent = 'Puzzle solved — checkmate in one!';
+    gameMessage.textContent = `Puzzle solved! ${puzzleSolved} ${puzzleSolved === 1 ? 'puzzle' : 'puzzles'} solved.`;
+    updatePuzzleProgress();
     playSound('puzzle-success');
     renderBoard();
     return;
@@ -1659,6 +1674,7 @@ async function requestPlayerProfile(username = '') {
 
 function populateCountryOptions() {
   const countrySelect = document.querySelector('#profile-country-select');
+  const settingsCountrySelect = document.querySelector('#dock-country-select');
   const regionNames = new Intl.DisplayNames([navigator.language || 'en'], { type: 'region' });
   const countryCodes = 'AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS XK YE YT ZA ZM ZW'.split(' ');
   const options = countryCodes
@@ -1667,21 +1683,34 @@ function populateCountryOptions() {
   for (const { code, name } of options) {
     const option = document.createElement('option');
     option.value = code;
-    option.textContent = name;
+    option.textContent = `${countryFlagEmoji(code)} ${name}`;
     countrySelect.append(option);
+    settingsCountrySelect.append(option.cloneNode(true));
   }
 }
 
 function renderPlayerProfile(profile, isOwnProfile = false) {
   const card = document.querySelector('#profile-card');
-  document.querySelector('#profile-avatar').textContent = [...profile.username][0].toUpperCase();
+  currentViewedProfile = profile;
+  document.querySelector('#profile-avatar-letter').textContent = [...profile.username][0].toUpperCase();
+  const avatarImage = document.querySelector('#profile-avatar-image');
+  avatarImage.hidden = !profile.avatarData;
+  avatarImage.removeAttribute('src');
+  if (profile.avatarData) avatarImage.src = profile.avatarData;
   document.querySelector('#profile-username').textContent = `${countryFlagEmoji(profile.countryCode)} @${profile.username}`.trim();
   document.querySelector('#profile-country').textContent = countryLabel(profile.countryCode) || 'Country not available';
+  const bio = document.querySelector('#profile-bio');
+  bio.textContent = profile.bio || '';
+  bio.hidden = !profile.bio;
   const countryForm = document.querySelector('#profile-country-form');
   countryForm.hidden = !isOwnProfile;
+  document.querySelector('#dock-country-select').value = profile.countryCode || '';
   if (isOwnProfile) {
     document.querySelector('#profile-country-select').value = profile.countryCode || '';
+    document.querySelector('#profile-bio-input').value = profile.bio || '';
+    pendingAvatarData = null;
   }
+  renderProfileActions(profile, isOwnProfile);
   document.querySelector('#profile-online-elo').textContent = Number(profile.onlineElo).toLocaleString();
   const games = Number(profile.onlineGames) || 0;
   const ratingLabel = games < 10 ? `Provisional · ${games} rated ${games === 1 ? 'game' : 'games'}` : `${games} rated games`;
@@ -1703,6 +1732,117 @@ function renderPlayerProfile(profile, isOwnProfile = false) {
   card.hidden = false;
 }
 
+function renderProfileActions(profile, isOwnProfile) {
+  const actions = document.querySelector('#profile-actions');
+  actions.hidden = isOwnProfile || !profile.username;
+  if (actions.hidden) return;
+  const friend = socialOverview.friends.some((entry) => entry.id === profile.id);
+  const outgoingRequest = socialOverview.outgoingRequests.some((entry) => (
+    entry.username.toLowerCase() === profile.username.toLowerCase()
+  ));
+  const incomingRequest = socialOverview.incomingRequests.find((entry) => (
+    entry.username.toLowerCase() === profile.username.toLowerCase()
+  ));
+  const blocked = socialOverview.blockedUsers.some((entry) => entry.id === profile.id);
+  const blockedBy = socialOverview.blockedBy.includes(profile.id);
+  const addButton = document.querySelector('#profile-add-friend');
+  addButton.disabled = friend || outgoingRequest || blocked || blockedBy;
+  addButton.textContent = friend ? 'Friends' : outgoingRequest ? 'Request sent' : blockedBy ? 'Unavailable' : 'Add friend';
+  if (incomingRequest) {
+    addButton.disabled = blocked || blockedBy;
+    addButton.textContent = 'Accept request';
+  }
+  document.querySelector('#profile-challenge').disabled = blocked || blockedBy;
+  const blockButton = document.querySelector('#profile-block');
+  blockButton.disabled = blockedBy;
+  blockButton.textContent = blocked ? 'Unblock' : blockedBy ? 'Unavailable' : 'Block';
+}
+
+async function updateOwnProfile(fields) {
+  const session = await getValidAuthSession();
+  if (!session?.access_token) throw new Error('Sign in to update your player profile.');
+  const response = await fetch(profileEndpoint('/profile/me'), {
+    method: 'PATCH',
+    headers: {
+      Authorization: makeAuthorizationHeader(session.access_token),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(fields),
+  });
+  let result;
+  try {
+    result = await response.json();
+  } catch {
+    throw new Error('The online server returned an unreadable profile response.');
+  }
+  if (!response.ok) throw new Error(result.message || 'Could not save your profile.');
+  if (result.countryCode && authSession?.user) {
+    authSession.user.user_metadata = {
+      ...(authSession.user.user_metadata || {}),
+      country_code: result.countryCode,
+    };
+    updateAccountUI();
+  }
+  return result;
+}
+
+async function compressProfileImage(file) {
+  if (!file || !file.type.startsWith('image/')) throw new Error('Choose an image file.');
+  if (file.size > 8 * 1024 * 1024) throw new Error('Choose an image smaller than 8 MB.');
+  const image = await createImageBitmap(file);
+  const scale = Math.min(1, 256 / Math.max(image.width, image.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(image.width * scale));
+  canvas.height = Math.max(1, Math.round(image.height * scale));
+  canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+  image.close();
+  const imageData = canvas.toDataURL('image/webp', 0.78);
+  if (!imageData.startsWith('data:image/webp;base64,') || imageData.length > 170000) {
+    throw new Error('This browser could not create a small WebP profile picture. Try another image.');
+  }
+  return imageData;
+}
+
+async function challengeProfilePlayer() {
+  if (!authSession?.access_token) {
+    openAccountDialog('signin');
+    return;
+  }
+  if (!currentViewedProfile?.username) return;
+  profileChallengeUsername = currentViewedProfile.username;
+  document.querySelector('#online-status').textContent =
+    `Create a private lobby to challenge @${profileChallengeUsername}. The invite code will be copied for you.`;
+  openOnlineDialog('friends');
+}
+
+async function sendProfileChallengeInvite(roomCode) {
+  const username = profileChallengeUsername;
+  profileChallengeUsername = '';
+  if (!username) return;
+  const invitation = `I challenge you to an Openboard game! Open Play Online and join with invite code ${roomCode}.`;
+  let copied = false;
+  try {
+    await navigator.clipboard.writeText(roomCode);
+    copied = true;
+  } catch (error) {
+    console.warn('Could not copy the challenge invite code:', error);
+  }
+  const copyMessage = copied ? `Invite code ${roomCode} was copied.` : `Invite code: ${roomCode}.`;
+  const isFriend = socialOverview.friends.some((friend) => (
+    friend.username.toLowerCase() === username.toLowerCase()
+  ));
+  if (isFriend) {
+    try {
+      await requestSocialApi('/social/messages', 'POST', { username, text: invitation });
+      showMessage('Challenge sent', `A private-game invitation was sent to @${username}. ${copyMessage}`);
+      return;
+    } catch (error) {
+      console.error('Could not send the challenge message:', error);
+    }
+  }
+  showMessage('Challenge ready', `Your private lobby is ready for @${username}. ${copyMessage} Share it with them so they can join.`);
+}
+
 async function loadPlayerProfile(username = '') {
   const status = document.querySelector('#profile-status');
   const card = document.querySelector('#profile-card');
@@ -1710,6 +1850,21 @@ async function loadPlayerProfile(username = '') {
   status.textContent = 'Loading player profile…';
   try {
     const profile = await requestPlayerProfile(username);
+    if (authSession?.access_token) {
+      try {
+        await refreshSocialOverview();
+      } catch (error) {
+        console.error('Could not load profile social actions:', error);
+      }
+    } else {
+      socialOverview = {
+        friends: [],
+        incomingRequests: [],
+        outgoingRequests: [],
+        blockedUsers: [],
+        blockedBy: [],
+      };
+    }
     if (!username) authUsername = profile.username;
     renderPlayerProfile(profile, !username);
     status.textContent = username
@@ -2329,7 +2484,7 @@ const sidebarSections = {
     title: 'Puzzles',
     items: [
       { icon: '🧩', label: 'Puzzle', action: 'puzzle' },
-      { icon: '🟩', label: 'Daily Puzzle', action: 'puzzle' },
+      { icon: '🟩', label: 'Daily Puzzle', action: 'daily-puzzle' },
       { icon: '⚡', label: 'Puzzle Rush', action: 'coming-soon' },
       { icon: '⚔', label: 'Puzzle Battle', action: 'coming-soon' },
       { icon: '▧', label: 'Custom Puzzles', action: 'coming-soon' },
@@ -2338,8 +2493,9 @@ const sidebarSections = {
   learn: {
     title: 'Learn',
     items: [
+      { icon: '🎓', label: 'Beginner Tutorial', action: 'tutorial' },
       { icon: '📘', label: 'Opening & Move Notes', action: 'opening-notes' },
-      { icon: '♟', label: 'Chess Rules', action: 'coming-soon' },
+      { icon: '♟', label: 'Chess Rules', action: 'rules' },
     ],
   },
   train: {
@@ -2545,19 +2701,32 @@ function appendSocialEmpty(list, message) {
   list.append(empty);
 }
 
-function createSocialAvatar(username) {
+function createSocialAvatar(username, avatarData = '') {
   const avatar = document.createElement('span');
   avatar.className = 'social-avatar';
   avatar.setAttribute('aria-hidden', 'true');
-  avatar.textContent = [...username][0]?.toUpperCase() || '?';
+  if (avatarData?.startsWith('data:image/webp;base64,')) {
+    const image = document.createElement('img');
+    image.src = avatarData;
+    image.alt = '';
+    avatar.append(image);
+  } else {
+    avatar.textContent = [...username][0]?.toUpperCase() || '?';
+  }
   return avatar;
 }
 
 function createSocialUserCopy(username, countryCode, detail = '') {
   const copy = document.createElement('span');
   copy.className = 'social-item-copy';
-  const name = document.createElement('strong');
+  const name = document.createElement('button');
+  name.type = 'button';
+  name.className = 'social-player-link';
   name.textContent = playerNameWithCountry(username, countryCode);
+  name.addEventListener('click', () => {
+    closeSocialPanel();
+    navigateToAppPage('profiles', username);
+  });
   copy.append(name);
   if (detail) {
     const secondary = document.createElement('small');
@@ -2588,7 +2757,7 @@ function renderSocialFriends() {
     const preview = friend.lastMessage
       ? `${friend.lastMessageFromMe ? 'You: ' : ''}${friend.lastMessage}`
       : 'You are friends';
-    row.append(createSocialAvatar(friend.username), createSocialUserCopy(friend.username, friend.countryCode, preview));
+    row.append(createSocialAvatar(friend.username, friend.avatarData), createSocialUserCopy(friend.username, friend.countryCode, preview));
     const actions = document.createElement('span');
     actions.className = 'social-item-actions';
     actions.append(createSocialAction('Message', () => openSocialConversation(friend.id)));
@@ -2606,7 +2775,7 @@ function renderSocialRequests() {
   for (const request of socialOverview.incomingRequests) {
     const row = document.createElement('li');
     row.className = 'social-list-item';
-    row.append(createSocialAvatar(request.username), createSocialUserCopy(request.username, request.countryCode, 'Wants to be your friend'));
+    row.append(createSocialAvatar(request.username, request.avatarData), createSocialUserCopy(request.username, request.countryCode, 'Wants to be your friend'));
     const actions = document.createElement('span');
     actions.className = 'social-item-actions';
     actions.append(
@@ -2619,7 +2788,7 @@ function renderSocialRequests() {
   for (const request of socialOverview.outgoingRequests) {
     const row = document.createElement('li');
     row.className = 'social-list-item';
-    row.append(createSocialAvatar(request.username), createSocialUserCopy(request.username, request.countryCode, 'Request sent'));
+    row.append(createSocialAvatar(request.username, request.avatarData), createSocialUserCopy(request.username, request.countryCode, 'Request sent'));
     list.append(row);
   }
 }
@@ -2642,7 +2811,7 @@ function renderSocialConversations() {
     const detail = friend.lastMessage
       ? `${friend.lastMessageFromMe ? 'You: ' : ''}${friend.lastMessage}`
       : 'Start a conversation';
-    row.append(createSocialAvatar(friend.username), createSocialUserCopy(friend.username, friend.countryCode, detail));
+    row.append(createSocialAvatar(friend.username, friend.avatarData), createSocialUserCopy(friend.username, friend.countryCode, detail));
     if (Number(friend.unreadCount) > 0) {
       const unread = document.createElement('span');
       unread.className = 'social-unread';
@@ -2685,7 +2854,7 @@ function renderSocialNotifications() {
     const description = request
       ? 'Sent you a friend request'
       : `${item.unreadCount} unread ${Number(item.unreadCount) === 1 ? 'message' : 'messages'}`;
-    row.append(createSocialAvatar(item.username), createSocialUserCopy(item.username, item.countryCode, description));
+    row.append(createSocialAvatar(item.username, item.avatarData), createSocialUserCopy(item.username, item.countryCode, description));
     const actions = document.createElement('span');
     actions.className = 'social-item-actions';
     if (request) {
@@ -2705,6 +2874,8 @@ async function refreshSocialOverview() {
     friends: Array.isArray(overview.friends) ? overview.friends : [],
     incomingRequests: Array.isArray(overview.incomingRequests) ? overview.incomingRequests : [],
     outgoingRequests: Array.isArray(overview.outgoingRequests) ? overview.outgoingRequests : [],
+    blockedUsers: Array.isArray(overview.blockedUsers) ? overview.blockedUsers : [],
+    blockedBy: Array.isArray(overview.blockedBy) ? overview.blockedBy : [],
   };
   updateSocialBadges();
   renderSocialFriends();
@@ -2747,9 +2918,23 @@ function openSocialPanel(panelName) {
     document.querySelector('#dock-board-theme').value = boardThemeSelect.value;
     document.querySelector('#dock-interface-theme').value = interfaceThemeSelect.value;
     document.querySelector('#dock-sound-toggle').checked = soundToggle.checked;
+    document.querySelector('#dock-country-save').disabled = !authSession?.access_token;
     document.querySelector('#social-account-settings').textContent = authSession?.access_token
       ? `Account · ${authUsername || authSession.user?.email || 'signed in'}`
       : 'Sign in or create an account';
+    document.querySelector('#dock-country-status').textContent = authSession?.access_token
+      ? 'Choose the country flag shown beside your username.'
+      : 'Sign in to set your profile country.';
+    if (authSession?.access_token) {
+      requestPlayerProfile().then((profile) => {
+        document.querySelector('#dock-country-select').value = profile.countryCode || '';
+      }).catch((error) => {
+        console.error('Could not load profile country for settings:', error);
+        document.querySelector('#dock-country-status').textContent = error.message || 'Could not load your profile country.';
+      });
+    } else {
+      document.querySelector('#dock-country-select').value = '';
+    }
   } else {
     refreshSocialPanel();
   }
@@ -2862,7 +3047,10 @@ function runSidebarAction(action) {
   else if (action === 'login') openAccountDialog('signin');
   else if (action === 'profile') openProfilesPage();
   else if (action === 'profiles') openProfilesPage();
-  else if (action === 'puzzle') document.querySelector('#puzzle-start').click();
+  else if (action === 'puzzle') startPuzzle();
+  else if (action === 'daily-puzzle') startDailyPuzzle();
+  else if (action === 'tutorial') openBeginnerTutorial();
+  else if (action === 'rules') openChessRules();
   else if (action === 'analysis') document.querySelector('#analysis-open').click();
   else if (action === 'suggest') document.querySelector('#suggest-move').click();
   else if (action === 'variants') customRulesDialog.showModal();
@@ -3195,6 +3383,7 @@ function handleOnlineMessage(socket, message) {
       : 'Private lobby created. Share the invite code with your friend.');
     renderPublicRooms();
     renderBoard();
+    void sendProfileChallengeInvite(onlineRoomCode);
     onlineDialog.close();
     return;
   }
@@ -3966,23 +4155,119 @@ document.querySelector('#profile-country-form').addEventListener('submit', async
   }
   const button = event.currentTarget.querySelector('button[type="submit"]');
   button.disabled = true;
-  status.textContent = 'Saving your country…';
+  status.textContent = 'Saving your profile…';
   try {
-    const session = await getValidAuthSession();
-    if (!session?.access_token) throw new Error('Sign in to update your player profile.');
-    const response = await fetch(profileEndpoint('/profile/me'), {
-      method: 'PATCH',
-      headers: {
-        Authorization: makeAuthorizationHeader(session.access_token),
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ countryCode }),
+    await updateOwnProfile({
+      countryCode,
+      bio: document.querySelector('#profile-bio-input').value.trim(),
+      ...(pendingAvatarData !== null ? { avatarData: pendingAvatarData } : {}),
     });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.message || 'Could not save your country.');
+    pendingAvatarData = null;
     await loadPlayerProfile();
   } catch (error) {
-    console.error('Could not update profile country:', error);
+    console.error('Could not update profile:', error);
+    status.textContent = error.message || 'Could not save your profile.';
+  } finally {
+    button.disabled = false;
+  }
+});
+document.querySelector('#profile-avatar-file').addEventListener('change', async (event) => {
+  const [file] = event.currentTarget.files || [];
+  if (!file) return;
+  const note = document.querySelector('#profile-avatar-note');
+  note.textContent = 'Preparing image…';
+  try {
+    pendingAvatarData = await compressProfileImage(file);
+    const image = document.querySelector('#profile-avatar-image');
+    image.src = pendingAvatarData;
+    image.hidden = false;
+    note.textContent = 'Image ready. Save profile to publish it.';
+  } catch (error) {
+    console.error('Could not prepare profile image:', error);
+    note.textContent = error.message || 'Could not prepare this image.';
+    event.currentTarget.value = '';
+  }
+});
+document.querySelector('#profile-avatar-remove').addEventListener('click', () => {
+  pendingAvatarData = '';
+  const image = document.querySelector('#profile-avatar-image');
+  image.removeAttribute('src');
+  image.hidden = true;
+  document.querySelector('#profile-avatar-note').textContent = 'Profile picture will be removed when you save.';
+});
+document.querySelector('#profile-add-friend').addEventListener('click', async () => {
+  if (!currentViewedProfile?.username) return;
+  if (!authSession?.access_token) {
+    openAccountDialog('signin');
+    return;
+  }
+  const status = document.querySelector('#profile-status');
+  const incoming = socialOverview.incomingRequests.find((request) => (
+    request.username.toLowerCase() === currentViewedProfile.username.toLowerCase()
+  ));
+  status.textContent = incoming ? 'Accepting friend request…' : 'Sending friend request…';
+  try {
+    if (incoming) {
+      await requestSocialApi('/social/friends/respond', 'POST', { requestId: incoming.id, accept: true });
+    } else {
+      await requestSocialApi('/social/friends/request', 'POST', { username: currentViewedProfile.username });
+    }
+    await refreshSocialOverview();
+    renderProfileActions(currentViewedProfile, false);
+    status.textContent = incoming
+      ? `You are now friends with @${currentViewedProfile.username}.`
+      : `Friend request sent to @${currentViewedProfile.username}.`;
+  } catch (error) {
+    console.error('Could not update profile friendship:', error);
+    status.textContent = error.message || 'Could not update friend request.';
+  }
+});
+document.querySelector('#profile-block').addEventListener('click', async () => {
+  if (!currentViewedProfile?.username) return;
+  if (!authSession?.access_token) {
+    openAccountDialog('signin');
+    return;
+  }
+  const blocked = socialOverview.blockedUsers.some((entry) => entry.id === currentViewedProfile.id);
+  const action = blocked ? 'unblock' : 'block';
+  if (!window.confirm(`${blocked ? 'Unblock' : 'Block'} @${currentViewedProfile.username}?`)) return;
+  const status = document.querySelector('#profile-status');
+  status.textContent = `${blocked ? 'Unblocking' : 'Blocking'} player…`;
+  try {
+    await requestSocialApi('/social/blocks', 'POST', {
+      username: currentViewedProfile.username,
+      block: !blocked,
+    });
+    await refreshSocialOverview();
+    renderProfileActions(currentViewedProfile, false);
+    status.textContent = blocked
+      ? `@${currentViewedProfile.username} was unblocked.`
+      : `@${currentViewedProfile.username} was blocked and removed from your friends.`;
+  } catch (error) {
+    console.error('Could not update blocked players:', error);
+    status.textContent = error.message || 'Could not update the block.';
+  }
+});
+document.querySelector('#profile-challenge').addEventListener('click', challengeProfilePlayer);
+document.querySelector('#dock-country-save').addEventListener('click', async () => {
+  const countryCode = document.querySelector('#dock-country-select').value;
+  const status = document.querySelector('#dock-country-status');
+  if (!countryCode) {
+    status.textContent = 'Choose a country or region first.';
+    return;
+  }
+  const button = document.querySelector('#dock-country-save');
+  button.disabled = true;
+  status.textContent = 'Saving country and flag…';
+  try {
+    await updateOwnProfile({ countryCode });
+    status.textContent = 'Country flag saved to your public profile.';
+    if (new URLSearchParams(location.search).get('page') === 'profiles'
+      && !new URLSearchParams(location.search).has('username')) {
+      await loadPlayerProfile();
+    }
+  } catch (error) {
+    console.error('Could not save profile country:', error);
     status.textContent = error.message || 'Could not save your country.';
   } finally {
     button.disabled = false;
@@ -4266,10 +4551,20 @@ function loadPreferences() {
     };
   }
   try {
-    puzzleSolved = Number(localStorage.getItem('openboard-puzzles-solved') || 0);
+    const savedPuzzleSolved = Number(localStorage.getItem('openboard-puzzles-solved') || 0);
+    puzzleSolved = Number.isInteger(savedPuzzleSolved) ? Math.max(0, savedPuzzleSolved) : 0;
   } catch (error) {
     console.error('Could not load puzzle progress:', error);
   }
+  try {
+    const savedTutorialProgress = Number(localStorage.getItem('openboard-tutorial-progress') || 0);
+    tutorialProgress = Number.isInteger(savedTutorialProgress)
+      ? Math.min(learningContent.lessons.length, Math.max(0, savedTutorialProgress))
+      : 0;
+  } catch (error) {
+    console.error('Could not load tutorial progress:', error);
+  }
+  updatePuzzleProgress();
   playColorSelect.value = playerColor;
   flipped = playerColor === 'b';
   document.body.dataset.boardTheme = boardThemeSelect.value;
@@ -4309,17 +4604,36 @@ document.querySelector('#apply-custom-rules').addEventListener('click', () => {
 loadPreferences();
 document.querySelector('#difficulty').dispatchEvent(new Event('change'));
 
-document.querySelector('#puzzle-start').addEventListener('click', () => {
+function updatePuzzleProgress() {
+  document.querySelector('#puzzle-progress').textContent =
+    `${puzzleSolved} ${puzzleSolved === 1 ? 'puzzle' : 'puzzles'} solved · ${puzzlePositions.length} mate-in-one puzzles`;
+}
+
+function startPuzzle(requestedIndex) {
+  if (onlineMode || onlineSpectating) {
+    showMessage('Puzzle unavailable during online play', 'Finish or leave the online game before starting a puzzle.');
+    return;
+  }
   if (activeBoardSize !== 8) {
     showMessage('Puzzle board size', 'The built-in mate-in-one puzzle uses the standard 8×8 board. Select 8×8 in Custom rules to play it.');
     return;
   }
+  let index = requestedIndex;
+  if (!Number.isInteger(index) || index < 0 || index >= puzzlePositions.length) {
+    const candidates = puzzlePositions.map((_, candidateIndex) => candidateIndex)
+      .filter((candidateIndex) => candidateIndex !== puzzleCurrentIndex);
+    index = candidates[Math.floor(Math.random() * candidates.length)];
+  }
+  const puzzle = puzzlePositions[index];
   gameToken += 1;
   if (activeWorker) {
     activeWorker.terminate();
     activeWorker = null;
   }
-  game.load('7k/8/5KQ1/8/8/8/8/8 w - - 0 1');
+  if (!game.load(puzzle.fen)) {
+    throw new Error(`The puzzle position could not be loaded: ${puzzle.fen}`);
+  }
+  puzzleCurrentIndex = index;
   game.clearCustomMovements();
   moveInsights = [];
   customMovementBySquare = new Map();
@@ -4334,17 +4648,116 @@ document.querySelector('#puzzle-start').addEventListener('click', () => {
   suggestedMove = null;
   gameResult = false;
   aiThinking = false;
-  gameMessage.textContent = 'White to move. Find checkmate in one.';
+  gameMessage.textContent = `Puzzle ${index + 1} of ${puzzlePositions.length}. White to move — find checkmate in one.`;
+  updatePuzzleProgress();
   renderBoard();
-});
+}
 
+function startDailyPuzzle() {
+  const now = new Date();
+  const dayNumber = Math.floor(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) / 86400000);
+  startPuzzle(dayNumber % puzzlePositions.length);
+}
+
+function renderBeginnerLesson() {
+  const lesson = learningContent.lessons[tutorialLessonIndex];
+  document.querySelector('#tutorial-progress').max = learningContent.lessons.length;
+  document.querySelector('#tutorial-progress').value = tutorialProgress;
+  document.querySelector('#tutorial-step-label').textContent =
+    `LESSON ${tutorialLessonIndex + 1} OF ${learningContent.lessons.length}`;
+  document.querySelector('#tutorial-lesson-title').textContent = lesson.title;
+  document.querySelector('#tutorial-lesson-text').textContent = lesson.text;
+  document.querySelector('#tutorial-question').textContent = lesson.question;
+  document.querySelector('#tutorial-feedback').textContent = tutorialLessonIndex < tutorialProgress
+    ? 'You completed this lesson before. Review it or move on.'
+    : '';
+  const choices = document.querySelector('#tutorial-choices');
+  choices.replaceChildren();
+  lesson.choices.forEach((choice, index) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = choice;
+    button.addEventListener('click', () => {
+      if (index === lesson.answer) {
+        tutorialProgress = Math.max(tutorialProgress, tutorialLessonIndex + 1);
+        try {
+          localStorage.setItem('openboard-tutorial-progress', String(tutorialProgress));
+        } catch (error) {
+          console.error('Could not save tutorial progress:', error);
+        }
+        document.querySelector('#tutorial-progress').value = tutorialProgress;
+        document.querySelector('#tutorial-feedback').textContent =
+          `Correct! ${tutorialProgress} of ${learningContent.lessons.length} lessons complete.`;
+        document.querySelector('#tutorial-next').disabled = false;
+        document.querySelector('#tutorial-next').textContent =
+          tutorialLessonIndex === learningContent.lessons.length - 1 ? 'Finish tutorial' : 'Next lesson';
+      } else {
+        document.querySelector('#tutorial-feedback').textContent = 'Not quite. Review the lesson and try again.';
+      }
+    });
+    choices.append(button);
+  });
+  document.querySelector('#tutorial-previous').disabled = tutorialLessonIndex === 0;
+  const alreadyCompleted = tutorialLessonIndex < tutorialProgress;
+  const next = document.querySelector('#tutorial-next');
+  next.disabled = !alreadyCompleted;
+  next.textContent = tutorialLessonIndex === learningContent.lessons.length - 1
+    ? 'Finish tutorial'
+    : 'Next lesson';
+}
+
+function openBeginnerTutorial() {
+  tutorialLessonIndex = tutorialProgress >= learningContent.lessons.length ? 0 : tutorialProgress;
+  renderBeginnerLesson();
+  document.querySelector('#tutorial-dialog').showModal();
+}
+
+function openChessRules() {
+  const content = document.querySelector('#rules-guide-content');
+  if (!content.childElementCount) {
+    for (const [heading, text] of learningContent.rules) {
+      const section = document.createElement('section');
+      const title = document.createElement('h3');
+      const description = document.createElement('p');
+      title.textContent = heading;
+      description.textContent = text;
+      section.append(title, description);
+      content.append(section);
+    }
+  }
+  document.querySelector('#rules-dialog').showModal();
+}
+
+document.querySelector('#puzzle-start').addEventListener('click', () => startPuzzle());
+document.querySelector('#puzzle-next').addEventListener('click', () => startPuzzle());
 document.querySelector('#puzzle-hint').addEventListener('click', () => {
   if (!puzzleMode) {
     showMessage('Puzzle hint', 'Start the mate-in-one puzzle first.');
     return;
   }
-  showMessage('Puzzle hint', 'Look for a queen move that checks the king while covering its escape squares.');
+  showMessage('Puzzle hint', puzzlePositions[puzzleCurrentIndex].hint);
 });
+document.querySelector('#tutorial-close').addEventListener('click', () => document.querySelector('#tutorial-dialog').close());
+document.querySelector('#tutorial-previous').addEventListener('click', () => {
+  if (tutorialLessonIndex === 0) return;
+  tutorialLessonIndex -= 1;
+  renderBeginnerLesson();
+});
+document.querySelector('#tutorial-next').addEventListener('click', () => {
+  if (tutorialLessonIndex < tutorialProgress) {
+    if (tutorialLessonIndex < learningContent.lessons.length - 1) {
+      tutorialLessonIndex += 1;
+      renderBeginnerLesson();
+      return;
+    }
+  }
+  if (tutorialLessonIndex === learningContent.lessons.length - 1
+    && tutorialProgress === learningContent.lessons.length) {
+    document.querySelector('#tutorial-dialog').close();
+    showMessage('Tutorial complete', 'You finished the beginner chess course. Revisit the tutorial or open Chess Rules any time.');
+  }
+});
+document.querySelector('#rules-close').addEventListener('click', () => document.querySelector('#rules-dialog').close());
 
 document.querySelector('#analysis-open').addEventListener('click', () => {
   gameToken += 1;

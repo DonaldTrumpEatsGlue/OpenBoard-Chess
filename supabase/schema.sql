@@ -3,6 +3,11 @@ create table if not exists public.profiles (
   username text not null,
   username_key text not null unique,
   country_code text check (country_code is null or country_code ~ '^[A-Z]{2}$'),
+  bio text not null default '' check (char_length(bio) <= 160),
+  avatar_data text check (
+    avatar_data is null
+    or (avatar_data like 'data:image/webp;base64,%' and char_length(avatar_data) <= 180000)
+  ),
   online_elo integer not null default 1200 check (online_elo >= 100),
   online_games integer not null default 0 check (online_games >= 0),
   online_wins integer not null default 0 check (online_wins >= 0),
@@ -14,6 +19,11 @@ create table if not exists public.profiles (
 
 alter table public.profiles
   add column if not exists country_code text check (country_code is null or country_code ~ '^[A-Z]{2}$'),
+  add column if not exists bio text not null default '' check (char_length(bio) <= 160),
+  add column if not exists avatar_data text check (
+    avatar_data is null
+    or (avatar_data like 'data:image/webp;base64,%' and char_length(avatar_data) <= 180000)
+  ),
   add column if not exists online_elo integer not null default 1200 check (online_elo >= 100),
   add column if not exists online_games integer not null default 0 check (online_games >= 0),
   add column if not exists online_wins integer not null default 0 check (online_wins >= 0),
@@ -58,6 +68,14 @@ create table if not exists public.friendships (
   constraint friendships_ordered_users check (user_low < user_high)
 );
 
+create table if not exists public.user_blocks (
+  blocker_id uuid not null references public.profiles (id) on delete cascade,
+  blocked_id uuid not null references public.profiles (id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (blocker_id, blocked_id),
+  constraint user_blocks_distinct_users check (blocker_id <> blocked_id)
+);
+
 create table if not exists public.direct_messages (
   id uuid primary key default gen_random_uuid(),
   sender_id uuid not null references public.profiles (id) on delete cascade,
@@ -77,8 +95,9 @@ create index if not exists direct_messages_unread
 alter table public.friend_requests enable row level security;
 alter table public.friendships enable row level security;
 alter table public.direct_messages enable row level security;
-revoke all on public.friend_requests, public.friendships, public.direct_messages from public, anon, authenticated;
-grant select, insert, update, delete on public.friend_requests, public.friendships, public.direct_messages to service_role;
+alter table public.user_blocks enable row level security;
+revoke all on public.friend_requests, public.friendships, public.direct_messages, public.user_blocks from public, anon, authenticated;
+grant select, insert, update, delete on public.friend_requests, public.friendships, public.direct_messages, public.user_blocks to service_role;
 
 create or replace function public.openboard_social_overview(p_user_id uuid)
 returns jsonb
@@ -93,6 +112,8 @@ as $$
           'id', peer.id,
           'username', peer.username,
           'countryCode', peer.country_code,
+          'bio', peer.bio,
+          'avatarData', peer.avatar_data,
           'lastMessage', latest.body,
           'lastMessageAt', latest.created_at,
           'lastMessageFromMe', latest.sender_id = p_user_id,
@@ -120,28 +141,56 @@ as $$
           and message.read_at is null
       ) as unread on true
       where p_user_id in (friendship.user_low, friendship.user_high)
+        and not exists (
+          select 1 from public.user_blocks as block
+          where (block.blocker_id = p_user_id and block.blocked_id = peer.id)
+            or (block.blocker_id = peer.id and block.blocked_id = p_user_id)
+        )
     ), '[]'::jsonb),
     'incomingRequests', coalesce((
       select jsonb_agg(jsonb_build_object(
         'id', request.id,
         'username', sender.username,
         'countryCode', sender.country_code,
+        'avatarData', sender.avatar_data,
         'createdAt', request.created_at
       ) order by request.created_at desc)
       from public.friend_requests as request
       join public.profiles as sender on sender.id = request.sender_id
       where request.recipient_id = p_user_id and request.status = 'pending'
+        and not exists (
+          select 1 from public.user_blocks as block
+          where (block.blocker_id = p_user_id and block.blocked_id = sender.id)
+            or (block.blocker_id = sender.id and block.blocked_id = p_user_id)
+        )
     ), '[]'::jsonb),
     'outgoingRequests', coalesce((
       select jsonb_agg(jsonb_build_object(
         'id', request.id,
         'username', recipient.username,
         'countryCode', recipient.country_code,
+        'avatarData', recipient.avatar_data,
         'createdAt', request.created_at
       ) order by request.created_at desc)
       from public.friend_requests as request
       join public.profiles as recipient on recipient.id = request.recipient_id
       where request.sender_id = p_user_id and request.status = 'pending'
+        and not exists (
+          select 1 from public.user_blocks as block
+          where (block.blocker_id = p_user_id and block.blocked_id = recipient.id)
+            or (block.blocker_id = recipient.id and block.blocked_id = p_user_id)
+        )
+    ), '[]'::jsonb),
+    'blockedUsers', coalesce((
+      select jsonb_agg(jsonb_build_object('id', blocked.id, 'username', blocked.username))
+      from public.user_blocks as block
+      join public.profiles as blocked on blocked.id = block.blocked_id
+      where block.blocker_id = p_user_id
+    ), '[]'::jsonb),
+    'blockedBy', coalesce((
+      select jsonb_agg(block.blocker_id)
+      from public.user_blocks as block
+      where block.blocked_id = p_user_id
     ), '[]'::jsonb)
   )
 $$;
@@ -164,6 +213,13 @@ begin
   end if;
   if recipient.id = p_sender_id then
     raise exception 'You cannot send a friend request to yourself.';
+  end if;
+  if exists (
+    select 1 from public.user_blocks as block
+    where (block.blocker_id = p_sender_id and block.blocked_id = recipient.id)
+      or (block.blocker_id = recipient.id and block.blocked_id = p_sender_id)
+  ) then
+    raise exception 'This player cannot receive a friend request.';
   end if;
   v_user_low := least(p_sender_id, recipient.id);
   v_user_high := greatest(p_sender_id, recipient.id);
@@ -218,6 +274,13 @@ begin
   if request.id is null then
     raise exception 'That friend request is no longer available.';
   end if;
+  if exists (
+    select 1 from public.user_blocks as block
+    where (block.blocker_id = p_user_id and block.blocked_id = request.sender_id)
+      or (block.blocker_id = request.sender_id and block.blocked_id = p_user_id)
+  ) then
+    raise exception 'That friend request is no longer available.';
+  end if;
 
   if p_accept then
     insert into public.friendships (user_low, user_high)
@@ -258,6 +321,13 @@ begin
   if recipient.id = p_sender_id then
     raise exception 'You cannot message yourself.';
   end if;
+  if exists (
+    select 1 from public.user_blocks as block
+    where (block.blocker_id = p_sender_id and block.blocked_id = recipient.id)
+      or (block.blocker_id = recipient.id and block.blocked_id = p_sender_id)
+  ) then
+    raise exception 'You cannot message this player.';
+  end if;
   if not exists (
     select 1 from public.friendships as friendship
     where friendship.user_low = least(p_sender_id, recipient.id)
@@ -292,8 +362,19 @@ begin
     select 1 from public.friendships as friendship
     where friendship.user_low = least(p_user_id, p_peer_id)
       and friendship.user_high = greatest(p_user_id, p_peer_id)
+  ) or exists (
+    select 1 from public.user_blocks as block
+    where (block.blocker_id = p_user_id and block.blocked_id = p_peer_id)
+      or (block.blocker_id = p_peer_id and block.blocked_id = p_user_id)
   ) then
     raise exception 'You can message players after you are friends.';
+  end if;
+  if exists (
+    select 1 from public.user_blocks as block
+    where (block.blocker_id = p_user_id and block.blocked_id = p_peer_id)
+      or (block.blocker_id = p_peer_id and block.blocked_id = p_user_id)
+  ) then
+    raise exception 'You cannot message this player.';
   end if;
 
   update public.direct_messages
@@ -360,6 +441,95 @@ $$;
 
 revoke all on function public.openboard_set_profile_country(uuid, text) from public, anon, authenticated;
 grant execute on function public.openboard_set_profile_country(uuid, text) to service_role;
+
+create or replace function public.openboard_update_profile(
+  p_user_id uuid,
+  p_country_code text,
+  p_bio text,
+  p_avatar_data text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  updated_profile public.profiles%rowtype;
+begin
+  if p_country_code is not null and p_country_code !~ '^[A-Za-z]{2}$' then
+    raise exception 'Choose a valid two-letter country code.';
+  end if;
+  if p_bio is not null and char_length(p_bio) > 160 then
+    raise exception 'Your bio must be 160 characters or fewer.';
+  end if;
+  if p_avatar_data is not null and p_avatar_data <> ''
+    and (p_avatar_data not like 'data:image/webp;base64,%' or char_length(p_avatar_data) > 180000) then
+    raise exception 'Choose a valid profile image.';
+  end if;
+
+  update public.profiles
+  set country_code = coalesce(upper(p_country_code), country_code),
+      bio = coalesce(p_bio, bio),
+      avatar_data = case
+        when p_avatar_data = '' then null
+        else coalesce(p_avatar_data, avatar_data)
+      end
+  where id = p_user_id
+  returning * into updated_profile;
+
+  if updated_profile.id is null then
+    raise exception 'Your player profile could not be found.';
+  end if;
+
+  return jsonb_build_object(
+    'id', updated_profile.id,
+    'username', updated_profile.username,
+    'countryCode', updated_profile.country_code,
+    'bio', updated_profile.bio,
+    'avatarData', updated_profile.avatar_data
+  );
+end;
+$$;
+
+create or replace function public.openboard_block_user(
+  p_user_id uuid,
+  p_target_username_key text,
+  p_block boolean
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  target public.profiles%rowtype;
+begin
+  select * into target from public.profiles where username_key = lower(p_target_username_key);
+  if target.id is null or target.id = p_user_id then
+    raise exception 'No other player was found with that username.';
+  end if;
+
+  if p_block then
+    insert into public.user_blocks (blocker_id, blocked_id)
+    values (p_user_id, target.id)
+    on conflict do nothing;
+    delete from public.friendships
+    where user_low = least(p_user_id, target.id) and user_high = greatest(p_user_id, target.id);
+    delete from public.friend_requests
+    where (sender_id = p_user_id and recipient_id = target.id)
+      or (sender_id = target.id and recipient_id = p_user_id);
+  else
+    delete from public.user_blocks where blocker_id = p_user_id and blocked_id = target.id;
+  end if;
+
+  return jsonb_build_object('blocked', p_block);
+end;
+$$;
+
+revoke all on function public.openboard_update_profile(uuid, text, text, text) from public, anon, authenticated;
+revoke all on function public.openboard_block_user(uuid, text, boolean) from public, anon, authenticated;
+grant execute on function public.openboard_update_profile(uuid, text, text, text) to service_role;
+grant execute on function public.openboard_block_user(uuid, text, boolean) to service_role;
 
 create or replace function public.settle_openboard_rated_game(
   p_white_id uuid,

@@ -19,6 +19,7 @@ const signupRequests = [];
 const socialFriendRequests = [];
 const socialFriendships = [];
 const socialDirectMessages = [];
+const socialBlocks = [];
 let userIdCounter = 1;
 let socialIdCounter = 1;
 let profileSchemaMissingOptionalColumns = false;
@@ -62,6 +63,8 @@ function createAccount(username, verified = false, countryCode = null) {
     id,
     username,
     country_code: countryCode,
+    bio: '',
+    avatar_data: null,
     email: `${username.toLowerCase()}@example.test`,
     online_elo: 1200,
     online_games: 0,
@@ -304,6 +307,8 @@ before(async () => {
         '/rest/v1/rpc/openboard_send_direct_message',
         '/rest/v1/rpc/openboard_load_direct_messages',
         '/rest/v1/rpc/openboard_set_profile_country',
+        '/rest/v1/rpc/openboard_update_profile',
+        '/rest/v1/rpc/openboard_block_user',
       ].includes(request.url)) {
       if (socialSchemaMissing) {
         response.writeHead(404).end(JSON.stringify({
@@ -333,6 +338,8 @@ before(async () => {
             id: friendId,
             username: peer.username,
             countryCode: peer.country_code,
+            bio: peer.bio,
+            avatarData: peer.avatar_data,
             lastMessage: latest?.body || null,
             lastMessageAt: latest?.createdAt || null,
             lastMessageFromMe: latest?.senderId === body.p_user_id,
@@ -349,14 +356,23 @@ before(async () => {
             .filter((entry) => entry.recipientId === body.p_user_id && entry.status === 'pending')
             .map((entry) => {
               const sender = [...authUsers.values()].find((candidate) => candidate.id === entry.senderId);
-              return { id: entry.id, username: sender.username, countryCode: sender.country_code, createdAt: entry.createdAt };
+              return { id: entry.id, username: sender.username, countryCode: sender.country_code, avatarData: sender.avatar_data, createdAt: entry.createdAt };
             }),
           outgoingRequests: socialFriendRequests
             .filter((entry) => entry.senderId === body.p_user_id && entry.status === 'pending')
             .map((entry) => {
               const recipient = [...authUsers.values()].find((candidate) => candidate.id === entry.recipientId);
-              return { id: entry.id, username: recipient.username, countryCode: recipient.country_code, createdAt: entry.createdAt };
+              return { id: entry.id, username: recipient.username, countryCode: recipient.country_code, avatarData: recipient.avatar_data, createdAt: entry.createdAt };
             }),
+          blockedUsers: socialBlocks
+            .filter((entry) => entry.blockerId === body.p_user_id)
+            .map((entry) => {
+              const blocked = [...authUsers.values()].find((candidate) => candidate.id === entry.blockedId);
+              return { id: blocked.id, username: blocked.username };
+            }),
+          blockedBy: socialBlocks
+            .filter((entry) => entry.blockedId === body.p_user_id)
+            .map((entry) => entry.blockerId),
         };
       } else if (request.url === '/rest/v1/rpc/openboard_send_friend_request') {
         const recipient = [...authUsers.values()].find((candidate) => (
@@ -364,6 +380,12 @@ before(async () => {
         ));
         if (!recipient) {
           result = { status: 'not_found' };
+        } else if (socialBlocks.some((entry) => (
+          (entry.blockerId === body.p_sender_id && entry.blockedId === recipient.id)
+          || (entry.blockerId === recipient.id && entry.blockedId === body.p_sender_id)
+        ))) {
+          response.writeHead(400).end(JSON.stringify({ message: 'This player cannot receive a friend request.' }));
+          return;
         } else if (socialFriendships.some(([low, high]) => (
           low === body.p_sender_id && high === recipient.id
           || low === recipient.id && high === body.p_sender_id
@@ -416,6 +438,13 @@ before(async () => {
           response.writeHead(400).end(JSON.stringify({ message: 'No player was found with that username.' }));
           return;
         }
+        if (socialBlocks.some((entry) => (
+          (entry.blockerId === body.p_sender_id && entry.blockedId === recipient.id)
+          || (entry.blockerId === recipient.id && entry.blockedId === body.p_sender_id)
+        ))) {
+          response.writeHead(400).end(JSON.stringify({ message: 'You cannot message this player.' }));
+          return;
+        }
         const [low, high] = [body.p_sender_id, recipient.id].sort();
         if (!socialFriendships.some(([friendLow, friendHigh]) => friendLow === low && friendHigh === high)) {
           response.writeHead(400).end(JSON.stringify({ message: 'You can message players after you are friends.' }));
@@ -433,6 +462,13 @@ before(async () => {
         result = message;
       } else if (request.url === '/rest/v1/rpc/openboard_load_direct_messages') {
         const [low, high] = [body.p_user_id, body.p_peer_id].sort();
+        if (socialBlocks.some((entry) => (
+          (entry.blockerId === body.p_user_id && entry.blockedId === body.p_peer_id)
+          || (entry.blockerId === body.p_peer_id && entry.blockedId === body.p_user_id)
+        ))) {
+          response.writeHead(400).end(JSON.stringify({ message: 'You cannot message this player.' }));
+          return;
+        }
         if (!socialFriendships.some(([friendLow, friendHigh]) => friendLow === low && friendHigh === high)) {
           response.writeHead(400).end(JSON.stringify({ message: 'You can message players after you are friends.' }));
           return;
@@ -454,6 +490,45 @@ before(async () => {
         }
         account.country_code = body.p_country_code;
         result = { countryCode: account.country_code };
+      } else if (request.url === '/rest/v1/rpc/openboard_update_profile') {
+        const account = [...authUsers.values()].find((candidate) => candidate.id === body.p_user_id);
+        if (!account) {
+          response.writeHead(400).end(JSON.stringify({ message: 'Your player profile could not be found.' }));
+          return;
+        }
+        account.country_code = body.p_country_code || account.country_code;
+        if (body.p_bio !== null) account.bio = body.p_bio;
+        if (body.p_avatar_data !== null) account.avatar_data = body.p_avatar_data || null;
+        result = { id: account.id, username: account.username };
+      } else if (request.url === '/rest/v1/rpc/openboard_block_user') {
+        const target = [...authUsers.values()].find((candidate) => (
+          candidate.username.toLowerCase() === body.p_target_username_key
+        ));
+        if (!target || target.id === body.p_user_id) {
+          response.writeHead(400).end(JSON.stringify({ message: 'No other player was found with that username.' }));
+          return;
+        }
+        const existing = socialBlocks.find((entry) => (
+          entry.blockerId === body.p_user_id && entry.blockedId === target.id
+        ));
+        if (body.p_block && !existing) {
+          socialBlocks.push({ blockerId: body.p_user_id, blockedId: target.id });
+          const [low, high] = [body.p_user_id, target.id].sort();
+          const friendshipIndex = socialFriendships.findIndex(([friendLow, friendHigh]) => (
+            friendLow === low && friendHigh === high
+          ));
+          if (friendshipIndex >= 0) socialFriendships.splice(friendshipIndex, 1);
+          for (let index = socialFriendRequests.length - 1; index >= 0; index -= 1) {
+            const request = socialFriendRequests[index];
+            if ((request.senderId === body.p_user_id && request.recipientId === target.id)
+              || (request.senderId === target.id && request.recipientId === body.p_user_id)) {
+              socialFriendRequests.splice(index, 1);
+            }
+          }
+        } else if (!body.p_block && existing) {
+          socialBlocks.splice(socialBlocks.indexOf(existing), 1);
+        }
+        result = { blocked: body.p_block };
       }
       response.writeHead(200).end(JSON.stringify(result));
       return;
@@ -543,8 +618,11 @@ before(async () => {
             : selectedFields === 'username'
               ? { username: account.username }
             : {
+              id: account.id,
               username: account.username,
               country_code: account.country_code,
+              bio: account.bio,
+              avatar_data: account.avatar_data,
               online_elo: account.online_elo,
               online_games: account.online_games,
               online_wins: account.online_wins,
@@ -562,8 +640,11 @@ before(async () => {
           : selectedFields === 'username,country_code'
             ? [{ username: profile.username, country_code: profile.country_code }]
           : [{
+            id: profile.id,
             username: profile.username,
             country_code: profile.country_code,
+            bio: profile.bio,
+            avatar_data: profile.avatar_data,
             online_elo: profile.online_elo,
             online_games: profile.online_games,
             online_wins: profile.online_wins,
@@ -634,11 +715,13 @@ test('database schema reserves usernames and keeps social data behind server-onl
   assert.match(schema, /create table if not exists public\.friendships/i);
   assert.match(schema, /create table if not exists public\.direct_messages/i);
   assert.match(schema, /alter table public\.direct_messages enable row level security/i);
-  assert.match(schema, /revoke all on public\.friend_requests, public\.friendships, public\.direct_messages from public, anon, authenticated/i);
+  assert.match(schema, /revoke all on public\.friend_requests, public\.friendships, public\.direct_messages, public\.user_blocks from public, anon, authenticated/i);
   assert.match(schema, /grant execute on function public\.openboard_social_overview\(uuid\) to service_role/i);
   assert.match(schema, /grant execute on function public\.openboard_send_direct_message\(uuid, text, text\) to service_role/i);
   assert.match(schema, /online_elo integer not null default 1200/i);
   assert.match(schema, /openboard_set_profile_country\(p_user_id uuid, p_country_code text\)/i);
+  assert.match(schema, /openboard_update_profile\(/i);
+  assert.match(schema, /openboard_block_user\(/i);
 });
 
 test('online actions require an account and use its reserved username without email verification', async () => {
@@ -798,6 +881,7 @@ test('public player profiles show online ratings but never expose account emails
   const publicProfile = await getJson(profileUrl);
   assert.equal(publicProfile.status, 200);
   assert.deepEqual(publicProfile.body, {
+    id: authUsers.get(token).id,
     username: 'PublicProfileOwner',
     countryCode: 'CA',
     onlineElo: 1200,
@@ -818,12 +902,25 @@ test('public player profiles show online ratings but never expose account emails
   assert.equal(ownProfile.status, 200);
   assert.equal(ownProfile.body.username, 'PublicProfileOwner');
   assert.equal(ownProfile.body.countryCode, 'CA');
+  assert.equal(ownProfile.body.bio || '', '');
   assert.equal(JSON.stringify(ownProfile.body).includes('@example.test'), false);
 
-  const updatedCountry = await patchJson(privateProfileUrl, { countryCode: 'GB' }, token);
+  const updatedCountry = await patchJson(privateProfileUrl, {
+    countryCode: 'GB',
+    bio: 'A new player learning chess.',
+    avatarData: 'data:image/webp;base64,SGVsbG8=',
+  }, token);
   assert.equal(updatedCountry.status, 200);
-  assert.deepEqual(updatedCountry.body, { countryCode: 'GB' });
-  assert.equal((await getJson(profileUrl)).body.countryCode, 'GB');
+  assert.equal(updatedCountry.body.countryCode, 'GB');
+  assert.equal(updatedCountry.body.bio, 'A new player learning chess.');
+  assert.equal(updatedCountry.body.avatarData, 'data:image/webp;base64,SGVsbG8=');
+  const updatedPublicProfile = await getJson(profileUrl);
+  assert.equal(updatedPublicProfile.body.countryCode, 'GB');
+  assert.equal(updatedPublicProfile.body.bio, 'A new player learning chess.');
+  assert.equal(updatedPublicProfile.body.avatarData, 'data:image/webp;base64,SGVsbG8=');
+
+  const invalidAvatar = await patchJson(privateProfileUrl, { avatarData: 'javascript:alert(1)' }, token);
+  assert.equal(invalidAvatar.status, 400);
 });
 
 test('completed online games update both player ratings and records exactly once', async () => {
@@ -1531,7 +1628,13 @@ test('social API protects friend requests and direct messages behind account aut
 
   const emptyOverview = await getJson(socialUrl('/social/overview'), senderToken);
   assert.equal(emptyOverview.status, 200);
-  assert.deepEqual(emptyOverview.body, { friends: [], incomingRequests: [], outgoingRequests: [] });
+  assert.deepEqual(emptyOverview.body, {
+    friends: [],
+    incomingRequests: [],
+    outgoingRequests: [],
+    blockedUsers: [],
+    blockedBy: [],
+  });
 
   const invalidRequest = await postJson(
     socialUrl('/social/friends/request'),
@@ -1614,6 +1717,32 @@ test('social API protects friend requests and direct messages behind account aut
 
   const readOverview = await getJson(socialUrl('/social/overview'), recipientToken);
   assert.equal(readOverview.body.friends[0].unreadCount, 0);
+
+  const blocked = await postJson(
+    socialUrl('/social/blocks'),
+    { username: 'SocialRecipient', block: true },
+    undefined,
+    senderHeaders,
+  );
+  assert.equal(blocked.status, 200);
+  assert.deepEqual(blocked.body, { blocked: true });
+  const afterBlock = await getJson(socialUrl('/social/overview'), senderToken);
+  assert.equal(afterBlock.body.friends.length, 0);
+  assert.equal(afterBlock.body.blockedUsers[0].username, 'SocialRecipient');
+  const blockedMessage = await postJson(
+    socialUrl('/social/messages'),
+    { username: 'SocialRecipient', text: 'This should not send' },
+    undefined,
+    senderHeaders,
+  );
+  assert.equal(blockedMessage.status, 400);
+  const unblocked = await postJson(
+    socialUrl('/social/blocks'),
+    { username: 'SocialRecipient', block: false },
+    undefined,
+    senderHeaders,
+  );
+  assert.equal(unblocked.status, 200);
 
   const declineRequest = await postJson(
     socialUrl('/social/friends/request'),

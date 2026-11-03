@@ -9,7 +9,7 @@
     <meta name="theme-color" content="#17231f" />
     <meta name="description" content="A free, original chess game with a built-in local AI opponent." />
     <title>Openboard — Play Chess</title>
-    <link rel="stylesheet" href="./src/style.css?v=40" />
+    <link rel="stylesheet" href="./src/style.css?v=42" />
   </head>
   <body>
     <div id="app">
@@ -140,7 +140,8 @@
             <button class="icon-button" id="flip" aria-label="Flip board" title="Flip board">⇅</button>
           </div>
           <div class="secondary-actions"><button id="offer-draw">Offer draw</button><button id="resign">Resign</button><button id="export-pgn">Copy PGN</button></div>
-          <div class="secondary-actions study-actions"><button id="puzzle-start">Solve a puzzle</button><button id="puzzle-hint">Puzzle hint</button><button id="analysis-open">Analyze position</button></div>
+          <div class="secondary-actions study-actions"><button id="puzzle-start">Random puzzle</button><button id="puzzle-next">Next puzzle</button><button id="puzzle-hint">Puzzle hint</button><button id="analysis-open">Analyze position</button></div>
+          <p class="puzzle-progress" id="puzzle-progress" aria-live="polite">0 puzzles solved · 13 mate-in-one puzzles</p>
           <button type="button" class="suggest-move-button" id="suggest-move"><span>Suggest a move</span><span aria-hidden="true">✦</span></button>
           <div class="online-game-actions" id="online-game-actions" hidden>
             <span id="online-spectator-count" aria-live="polite">Spectators: 0</span>
@@ -222,15 +223,27 @@
         </form>
         <p class="studio-status" id="profile-status" role="status">Sign in to view your own profile, or search for a username.</p>
         <article class="profile-card" id="profile-card" hidden>
-          <div class="profile-card-heading"><span class="profile-avatar" id="profile-avatar">?</span><div><span class="eyebrow">OPENBOARD PLAYER</span><h2 id="profile-username"></h2><p class="profile-country" id="profile-country"></p></div></div>
+          <div class="profile-card-heading"><span class="profile-avatar" id="profile-avatar"><span id="profile-avatar-letter">?</span><img id="profile-avatar-image" alt="" hidden /></span><div><span class="eyebrow">OPENBOARD PLAYER</span><h2 id="profile-username"></h2><p class="profile-country" id="profile-country"></p></div></div>
+          <p class="profile-bio" id="profile-bio" hidden></p>
+          <div class="profile-actions" id="profile-actions" hidden>
+            <button class="primary-button" id="profile-add-friend" type="button">Add friend</button>
+            <button class="secondary-button" id="profile-challenge" type="button">Challenge</button>
+            <button class="secondary-button" id="profile-block" type="button">Block</button>
+          </div>
           <div class="profile-rating-grid">
             <div class="profile-rating"><span>ONLINE ELO · ESTIMATE</span><strong id="profile-online-elo">1200</strong><small id="profile-online-record">Provisional · 0 games</small></div>
             <div class="profile-rating" id="profile-offline-rating-card"><span>OFFLINE ELO · THIS DEVICE</span><strong id="profile-offline-elo">1200</strong><small id="profile-offline-record">Estimated from local bot games</small></div>
           </div>
           <form class="profile-country-form" id="profile-country-form" hidden>
-            <label for="profile-country-select">Your country or region</label>
-            <div><select id="profile-country-select" required><option value="">Choose your country or region</option></select><button class="secondary-button" type="submit">Save country</button></div>
-            <small>Your choice is shown on your public player profile.</small>
+            <label for="profile-country-select">Profile settings</label>
+            <select id="profile-country-select"><option value="">Choose your country or region</option></select>
+            <label for="profile-bio-input">Bio</label>
+            <textarea id="profile-bio-input" maxlength="160" rows="3" placeholder="Tell people a little about yourself"></textarea>
+            <label for="profile-avatar-file">Profile picture</label>
+            <input id="profile-avatar-file" type="file" accept="image/*" />
+            <small id="profile-avatar-note">Images are resized before saving and shown on your public profile.</small>
+            <button class="secondary-button" id="profile-avatar-remove" type="button">Remove profile picture</button>
+            <button class="primary-button" type="submit">Save profile</button>
           </form>
           <p class="profile-disclaimer">These are Openboard estimates, not official or externally verified chess ratings. Offline progress is stored only in this browser.</p>
         </article>
@@ -289,6 +302,9 @@
         <section class="social-panel-view social-settings-view" data-social-view="settings" hidden>
           <label><span>Board colors</span><select id="dock-board-theme"><option value="classic">Meadow</option><option value="blue">Glacier</option><option value="walnut">Walnut</option></select></label>
           <label><span>Interface theme</span><select id="dock-interface-theme"><option value="dark">Night</option><option value="light">Day</option></select></label>
+          <label><span>Profile country and flag</span><select id="dock-country-select"><option value="">Choose a country or region</option></select></label>
+          <button class="secondary-button" id="dock-country-save" type="button">Save country</button>
+          <p class="social-panel-status" id="dock-country-status" role="status"></p>
           <label class="social-sound-toggle"><input type="checkbox" id="dock-sound-toggle" /> <span>Move sounds</span></label>
           <button class="secondary-button" id="social-sound-settings" type="button">Sound &amp; audio settings</button>
           <button class="secondary-button" id="social-account-settings" type="button">Account &amp; sign in</button>
@@ -315,6 +331,36 @@
         <textarea id="game-export" readonly hidden aria-label="Exported PGN"></textarea>
         <button class="primary-button" value="close">Got it</button>
       </form>
+    </dialog>
+    <dialog id="tutorial-dialog" aria-labelledby="tutorial-title">
+      <div class="learning-dialog-content">
+        <header class="learning-dialog-header">
+          <div><p class="eyebrow">LEARN CHESS</p><h2 id="tutorial-title">Beginner tutorial</h2></div>
+          <button class="directory-close" id="tutorial-close" type="button" aria-label="Close tutorial">×</button>
+        </header>
+        <progress id="tutorial-progress" max="12" value="0"></progress>
+        <p class="tutorial-step-label" id="tutorial-step-label"></p>
+        <h3 id="tutorial-lesson-title"></h3>
+        <p id="tutorial-lesson-text"></p>
+        <fieldset class="tutorial-question">
+          <legend id="tutorial-question"></legend>
+          <div id="tutorial-choices"></div>
+        </fieldset>
+        <p class="tutorial-feedback" id="tutorial-feedback" role="status" aria-live="polite"></p>
+        <div class="tutorial-navigation">
+          <button class="secondary-button" id="tutorial-previous" type="button">Previous</button>
+          <button class="primary-button" id="tutorial-next" type="button">Next lesson</button>
+        </div>
+      </div>
+    </dialog>
+    <dialog id="rules-dialog" aria-labelledby="rules-title">
+      <div class="learning-dialog-content rules-dialog-content">
+        <header class="learning-dialog-header">
+          <div><p class="eyebrow">REFERENCE</p><h2 id="rules-title">Chess rules</h2></div>
+          <button class="directory-close" id="rules-close" type="button" aria-label="Close chess rules">×</button>
+        </header>
+        <div class="rules-guide-content" id="rules-guide-content"></div>
+      </div>
     </dialog>
     <dialog id="analysis-dialog" aria-labelledby="analysis-title">
       <form method="dialog" class="message-dialog-content">
@@ -520,6 +566,7 @@
     <script defer src="./vendor/chess.js"></script>
     <script defer src="./src/large-board-chess.js"></script>
     <script defer src="./src/piece-studio.js"></script>
-    <script defer src="./src/main.js?v=40"></script>
+    <script defer src="./src/learning-content.js"></script>
+    <script defer src="./src/main.js?v=42"></script>
   </body>
 </html>
