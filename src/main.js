@@ -5046,6 +5046,19 @@ function renderBeginnerLesson() {
     : 'Next lesson';
 }
 
+function restoreTutorialBoard() {
+  if (!tutorialDemoGame) return;
+  tutorialDemoGame = null;
+  tutorialDemoHighlights = [];
+  renderBoard();
+}
+
+function closeBeginnerTutorial() {
+  const dialog = document.querySelector('#tutorial-dialog');
+  if (dialog.open) dialog.close();
+  restoreTutorialBoard();
+}
+
 function openBeginnerTutorial() {
   tutorialLessonIndex = tutorialProgress >= learningContent.lessons.length ? 0 : tutorialProgress;
   renderBeginnerLesson();
@@ -5080,11 +5093,11 @@ document.querySelector('#puzzle-hint').addEventListener('click', () => {
   }
   showMessage('Puzzle hint', puzzlePositions[puzzleCurrentIndex].hint);
 });
-document.querySelector('#tutorial-close').addEventListener('click', () => document.querySelector('#tutorial-dialog').close());
-document.querySelector('#tutorial-dialog').addEventListener('close', () => {
-  tutorialDemoGame = null;
-  tutorialDemoHighlights = [];
-  renderBoard();
+document.querySelector('#tutorial-close').addEventListener('click', closeBeginnerTutorial);
+document.querySelector('#tutorial-dialog').addEventListener('close', restoreTutorialBoard);
+document.querySelector('#tutorial-dialog').addEventListener('cancel', (event) => {
+  event.preventDefault();
+  closeBeginnerTutorial();
 });
 document.querySelector('#tutorial-ask-question').addEventListener('click', () => {
   const choices = document.querySelector('#tutorial-choices');
@@ -5114,7 +5127,7 @@ document.querySelector('#tutorial-next').addEventListener('click', () => {
   }
   if (tutorialLessonIndex === learningContent.lessons.length - 1
     && tutorialProgress === learningContent.lessons.length) {
-    document.querySelector('#tutorial-dialog').close();
+    closeBeginnerTutorial();
     showMessage('Tutorial complete', 'You finished the beginner chess course. Revisit the tutorial or open Chess Rules any time.');
   }
 });
