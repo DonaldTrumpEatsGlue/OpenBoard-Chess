@@ -288,6 +288,24 @@ function roomTermination(room) {
   return 'draw';
 }
 
+function pgnWithVariantMetadata(room) {
+  const pgn = room.chess.pgn();
+  const variant = room.variant;
+  const isCustomVariant = variant.noDraws
+    || variant.customPieces.length > 0
+    || Object.entries(standardPieceMovements).some(([piece, standardSides]) => (
+      ['w', 'b'].some((color) => (
+        JSON.stringify(variant.pieceMovements[piece][color]) !== JSON.stringify(standardSides[color])
+      ))
+    ));
+  if (!isCustomVariant) return pgn;
+  const header = `[OpenboardVariant "${encodeURIComponent(JSON.stringify(variant))}"]`;
+  const separator = pgn.search(/\r?\n\r?\n/);
+  if (separator < 0) return `${header}\n\n${pgn}`;
+  const headerEnd = pgn.indexOf('\n', separator) < 0 ? pgn.length : separator;
+  return `${pgn.slice(0, headerEnd)}\n${header}${pgn.slice(headerEnd)}`;
+}
+
 function roomPosition(room) {
   return {
     gameId: room.gameId,
@@ -834,7 +852,7 @@ async function recordOnlineResult(room, whiteScore, termination) {
         p_white_score: whiteScore,
         p_game_id: room.gameId,
         p_room_code: room.code,
-        p_pgn: room.chess.pgn(),
+        p_pgn: pgnWithVariantMetadata(room),
         p_termination: historyTermination,
       }),
       signal: AbortSignal.timeout(5000),

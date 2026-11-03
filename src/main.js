@@ -390,6 +390,7 @@ function recordOfflineMatch(score, termination) {
       result,
       termination,
       pgn: game.pgn(),
+      variant: structuredClone(customRules),
     });
     localStorage.setItem(storageKey, JSON.stringify(matches.slice(0, 100)));
   } catch (error) {
@@ -3564,6 +3565,22 @@ function renderGameHistory(matches, type) {
           : 'Draw';
     meta.textContent = `${type === 'offline' ? 'Offline' : 'Online'} · ${termination} · ${resultText}`;
     item.append(header, meta);
+    const variant = match.variant || variantFromHistoryPgn(match.pgn);
+    if (variant && !isStandardHistoryVariant(variant)) {
+      const variantLabel = document.createElement('span');
+      variantLabel.className = 'history-variant-label';
+      variantLabel.textContent = describeHistoryVariant(variant);
+      item.append(variantLabel);
+      const customPieces = Array.isArray(variant.customPieces) ? variant.customPieces : [];
+      if (customPieces.length) {
+        const pieceDetails = document.createElement('p');
+        pieceDetails.className = 'history-match-meta';
+        pieceDetails.textContent = `Custom pieces used: ${customPieces.map((piece) => (
+          `${piece.name} (${piece.symbol})`
+        )).join(', ')}`;
+        item.append(pieceDetails);
+      }
+    }
     if (typeof match.pgn === 'string' && match.pgn.trim()) {
       const review = document.createElement('button');
       review.className = 'primary-button history-review-button';
@@ -3581,6 +3598,49 @@ function renderGameHistory(matches, type) {
     }
     list.append(item);
   }
+}
+
+function variantFromHistoryPgn(pgn) {
+  if (typeof pgn !== 'string') return null;
+  const encoded = pgn.match(/^\[OpenboardVariant "([^"]+)"\]$/m)?.[1];
+  if (!encoded) return null;
+  try {
+    const variant = JSON.parse(decodeURIComponent(encoded));
+    if (variant?.boardSize !== 8 || typeof variant.noDraws !== 'boolean'
+      || !variant.pieceMovements || !Array.isArray(variant.customPieces)) return null;
+    return variant;
+  } catch (error) {
+    console.error('Could not read the saved custom variant from game history:', error);
+    return null;
+  }
+}
+
+function isStandardHistoryVariant(variant) {
+  return variant.boardSize === 8
+    && variant.noDraws === false
+    && variant.customPieces.length === 0
+    && Object.entries(defaultCustomRules.pieceMovements).every(([piece, standardSides]) => (
+      ['w', 'b'].every((color) => (
+        JSON.stringify(variant.pieceMovements?.[piece]?.[color]) === JSON.stringify(standardSides[color])
+      ))
+    ));
+}
+
+function describeHistoryVariant(variant) {
+  const names = [...new Set((variant.customPieces || [])
+    .map((piece) => typeof piece.name === 'string' ? piece.name.trim() : '')
+    .filter(Boolean))];
+  const changedMovements = Object.entries(defaultCustomRules.pieceMovements).filter(([piece, standardSides]) => (
+    ['w', 'b'].some((color) => (
+      JSON.stringify(variant.pieceMovements?.[piece]?.[color]) !== JSON.stringify(standardSides[color])
+    ))
+  )).length;
+  const parts = [];
+  if (names.length) parts.push(`${names.join(', ')} variant`);
+  else parts.push('Custom rules');
+  if (variant.noDraws) parts.push('no draws');
+  if (changedMovements) parts.push(`${changedMovements} movement rule${changedMovements === 1 ? '' : 's'} changed`);
+  return parts.join(' · ');
 }
 
 function stopHistoryReplay() {

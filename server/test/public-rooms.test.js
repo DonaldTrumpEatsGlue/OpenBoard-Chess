@@ -1186,8 +1186,27 @@ test('completed online games update both player ratings and records exactly once
   const blackToken = createAccount('RatingBlack');
   const white = await connectWithAccessToken(whiteToken, 'RatingWhite');
   const black = await connectWithAccessToken(blackToken, 'RatingBlack');
+  const variant = {
+    boardSize: 8,
+    noDraws: true,
+    pieceMovements: {
+      p: { w: ['p'], b: ['p'] },
+      n: { w: ['n'], b: ['n'] },
+      b: { w: ['b'], b: ['b'] },
+      r: { w: ['r'], b: ['r'] },
+      q: { w: ['q'], b: ['q'] },
+    },
+    customPieces: [{
+      id: 'star-piece',
+      name: 'Star',
+      symbol: 'S',
+      replaces: 'n',
+      color: 'both',
+      movements: ['q'],
+    }],
+  };
   try {
-    const room = await request(white, { type: 'create-room', lobbyName: 'Rated game' });
+    const room = await request(white, { type: 'create-room', lobbyName: 'Rated game', variant });
     const whiteStart = waitForMessage(white, (message) => message.type === 'game-start');
     const blackStart = request(black, { type: 'join-room', code: room.code });
     await Promise.all([whiteStart, blackStart]);
@@ -1222,6 +1241,9 @@ test('completed online games update both player ratings and records exactly once
     assert.equal(ratedGameRequests[0].p_room_code, room.code);
     assert.match(ratedGameRequests[0].p_game_id, /^[0-9a-f-]{36}$/i);
     assert.match(ratedGameRequests[0].p_pgn, /e4/);
+    const variantTag = ratedGameRequests[0].p_pgn.match(/^\[OpenboardVariant "([^"]+)"\]$/m);
+    assert.ok(variantTag, 'rated game history should retain its custom variant definition');
+    assert.deepEqual(JSON.parse(decodeURIComponent(variantTag[1])), variant);
     assert.equal(ratedGameRequests[0].p_termination, 'resignation');
     const whiteHistory = await getJson(socialUrl('/social/history/online'), whiteToken);
     assert.equal(whiteHistory.status, 200);
@@ -1229,6 +1251,7 @@ test('completed online games update both player ratings and records exactly once
     assert.equal(whiteHistory.body[0].result, '1-0');
     assert.equal(whiteHistory.body[0].playerColor, 'w');
     assert.match(whiteHistory.body[0].pgn, /e4/);
+    assert.match(whiteHistory.body[0].pgn, /^\[OpenboardVariant "/m);
   } finally {
     white.close();
     black.close();
