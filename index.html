@@ -9,7 +9,7 @@
     <meta name="theme-color" content="#17231f" />
     <meta name="description" content="A free, original chess game with a built-in local AI opponent." />
     <title>Openboard — Play Chess</title>
-    <link rel="stylesheet" href="./src/style.css?v=44" />
+    <link rel="stylesheet" href="./src/style.css?v=45" />
   </head>
   <body>
     <div id="app">
@@ -372,17 +372,28 @@
         </header>
         <progress id="tutorial-progress" max="12" value="0"></progress>
         <p class="tutorial-step-label" id="tutorial-step-label"></p>
-        <h3 id="tutorial-lesson-title"></h3>
-        <p id="tutorial-lesson-text"></p>
-        <fieldset class="tutorial-question">
-          <legend id="tutorial-question"></legend>
-          <div id="tutorial-choices"></div>
-        </fieldset>
-        <p class="tutorial-feedback" id="tutorial-feedback" role="status" aria-live="polite"></p>
+        <div class="tutorial-lesson-copy">
+          <h3 id="tutorial-lesson-title"></h3>
+          <p id="tutorial-lesson-text"></p>
+          <p class="tutorial-demo-note" id="tutorial-demo-note"></p>
+          <button class="primary-button" id="tutorial-ask-question" type="button">Answer lesson question</button>
+          <p class="tutorial-feedback" id="tutorial-feedback" role="status" aria-live="polite"></p>
+        </div>
         <div class="tutorial-navigation">
           <button class="secondary-button" id="tutorial-previous" type="button">Previous</button>
           <button class="primary-button" id="tutorial-next" type="button">Next lesson</button>
         </div>
+      </div>
+    </dialog>
+    <dialog id="tutorial-question-dialog" class="tutorial-question-dialog" aria-labelledby="tutorial-question">
+      <div class="learning-dialog-content">
+        <header class="learning-dialog-header">
+          <div><p class="eyebrow">YOUR TURN</p><h2 id="tutorial-question"></h2></div>
+          <button class="directory-close" id="tutorial-question-close" type="button" aria-label="Close question">×</button>
+        </header>
+        <div class="tutorial-choices" id="tutorial-choices"></div>
+        <p class="tutorial-question-feedback" id="tutorial-question-feedback" role="status" aria-live="polite"></p>
+        <button class="secondary-button" id="tutorial-question-back" type="button">Back to demonstration</button>
       </div>
     </dialog>
     <dialog id="rules-dialog" aria-labelledby="rules-title">
@@ -598,7 +609,7 @@
     <script defer src="./vendor/chess.js"></script>
     <script defer src="./src/large-board-chess.js"></script>
     <script defer src="./src/piece-studio.js"></script>
-    <script defer src="./src/learning-content.js"></script>
-    <script defer src="./src/main.js?v=44"></script>
+    <script defer src="./src/learning-content.js?v=45"></script>
+    <script defer src="./src/main.js?v=45"></script>
   </body>
 </html>

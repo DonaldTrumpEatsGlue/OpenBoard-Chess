@@ -130,6 +130,8 @@ let puzzleSolved = 0;
 let puzzleCurrentIndex = -1;
 let tutorialLessonIndex = 0;
 let tutorialProgress = 0;
+let tutorialDemoGame = null;
+let tutorialDemoHighlights = [];
 const learningContent = window.openboardLearningContent;
 const puzzlePositions = learningContent.puzzles;
 let clock = { w: 0, b: 0 };
@@ -864,13 +866,14 @@ function readCustomRulesForm() {
   };
 }
 
-function squareAt(row, col) {
-  return `${String.fromCharCode(97 + col)}${game.board().length - row}`;
+function squareAt(row, col, size = game.board().length) {
+  return `${String.fromCharCode(97 + col)}${size - row}`;
 }
 
 function renderBoard() {
-  const size = game.board().length;
-  const premoveWindow = canQueuePremove();
+  const displayGame = tutorialDemoGame || game;
+  const size = displayGame.board().length;
+  const premoveWindow = !tutorialDemoGame && canQueuePremove();
   const rows = [...Array(size).keys()];
   const cols = [...Array(size).keys()];
   if (flipped) {
@@ -879,21 +882,22 @@ function renderBoard() {
   }
   boardElement.style.setProperty('--board-size', size);
   boardElement.replaceChildren();
-  const gameOver = isGameOver();
-  const currentCheck = isCheck();
-  const lastMoveTo = game.history({ verbose: true }).at(-1)?.to;
+  const gameOver = tutorialDemoGame ? displayGame.game_over() : isGameOver();
+  const currentCheck = tutorialDemoGame ? displayGame.in_check() : isCheck();
+  const lastMoveTo = displayGame.history({ verbose: true }).at(-1)?.to;
 
   rows.forEach((rank, rowIndex) => {
     cols.forEach((file, colIndex) => {
-      const square = squareAt(rank, file);
-      const piece = game.get(square);
-      const customIdentity = piece ? customPieceAt(square) : null;
+      const square = squareAt(rank, file, size);
+      const piece = displayGame.get(square);
+      const customIdentity = piece && !tutorialDemoGame ? customPieceAt(square) : null;
       const button = document.createElement('button');
       button.type = 'button';
       button.className = `square ${(rank + file) % 2 === 0 ? 'light' : 'dark'}`;
       button.dataset.square = square;
       button.setAttribute('role', 'gridcell');
       button.setAttribute('aria-label', `${square}${piece ? `, ${piece.color === 'w' ? 'white' : 'black'} ${customIdentity?.name ?? piece.type}` : ''}`);
+      if (tutorialDemoHighlights.includes(square)) button.classList.add('tutorial-highlight');
       if (suggestedMove?.from === square) button.classList.add('suggested-from');
       if (suggestedMove?.to === square) button.classList.add('suggested-to');
 
@@ -913,8 +917,8 @@ function renderBoard() {
       if (selectedSquare === square) button.classList.add('selected');
       if (pendingPremove?.from === square) button.classList.add('premove-from');
       if (pendingPremove?.to === square) button.classList.add('premove-to');
-      if (currentCheck && piece?.type === 'k' && piece.color === game.turn()) button.classList.add('in-check');
-      if (legalTargets.includes(square)) {
+      if (currentCheck && piece?.type === 'k' && piece.color === displayGame.turn()) button.classList.add('in-check');
+      if (!tutorialDemoGame && legalTargets.includes(square)) {
         const target = document.createElement('span');
         target.className = piece ? 'move-target capture-target' : 'move-target';
         button.append(target);
@@ -934,7 +938,7 @@ function renderBoard() {
         pieceElement.setAttribute('aria-hidden', 'true');
         button.append(pieceElement);
       }
-      button.draggable = Boolean(piece && piece.color === playerColor && !gameResult
+      button.draggable = Boolean(!tutorialDemoGame && piece && piece.color === playerColor && !gameResult
         && (!aiThinking || premoveWindow));
       button.addEventListener('dragstart', (event) => {
         if (!button.draggable) return;
@@ -956,13 +960,16 @@ function renderBoard() {
         else if (premoving) queuePremove(from, square);
         else playMove(from, square);
       });
-      button.disabled = (aiThinking && !premoveWindow) || gameOver || gameResult || (onlineMode && !onlineReady);
-      button.addEventListener('click', () => onSquareClick(square));
+      button.disabled = Boolean(tutorialDemoGame || (aiThinking && !premoveWindow)
+        || gameOver || gameResult || (onlineMode && !onlineReady));
+      if (!tutorialDemoGame) button.addEventListener('click', () => onSquareClick(square));
       boardElement.append(button);
     });
   });
-  renderMoves();
-  renderCapturedPieces();
+  if (!tutorialDemoGame) {
+    renderMoves();
+    renderCapturedPieces();
+  }
 }
 
 function renderCapturedPieces() {
@@ -4979,6 +4986,13 @@ function startDailyPuzzle() {
 
 function renderBeginnerLesson() {
   const lesson = learningContent.lessons[tutorialLessonIndex];
+  tutorialDemoGame = new Chess();
+  if (!lesson.fen || !tutorialDemoGame.load(lesson.fen)) {
+    tutorialDemoGame = null;
+    throw new Error(`The chess demonstration for "${lesson.title}" has an invalid position.`);
+  }
+  tutorialDemoHighlights = lesson.highlightSquares || [];
+  renderBoard();
   document.querySelector('#tutorial-progress').max = learningContent.lessons.length;
   document.querySelector('#tutorial-progress').value = tutorialProgress;
   document.querySelector('#tutorial-step-label').textContent =
@@ -4986,9 +5000,13 @@ function renderBeginnerLesson() {
   document.querySelector('#tutorial-lesson-title').textContent = lesson.title;
   document.querySelector('#tutorial-lesson-text').textContent = lesson.text;
   document.querySelector('#tutorial-question').textContent = lesson.question;
+  document.querySelector('#tutorial-demo-note').textContent =
+    `Look at the highlighted squares on the chessboard. ${lesson.demoNote}`;
   document.querySelector('#tutorial-feedback').textContent = tutorialLessonIndex < tutorialProgress
     ? 'You completed this lesson before. Review it or move on.'
     : '';
+  document.querySelector('#tutorial-question-feedback').textContent = '';
+  document.querySelector('#tutorial-question-back').textContent = 'Back to demonstration';
   const choices = document.querySelector('#tutorial-choices');
   choices.replaceChildren();
   lesson.choices.forEach((choice, index) => {
@@ -4996,6 +5014,7 @@ function renderBeginnerLesson() {
     button.type = 'button';
     button.textContent = choice;
     button.addEventListener('click', () => {
+      const questionFeedback = document.querySelector('#tutorial-question-feedback');
       if (index === lesson.answer) {
         tutorialProgress = Math.max(tutorialProgress, tutorialLessonIndex + 1);
         try {
@@ -5006,11 +5025,14 @@ function renderBeginnerLesson() {
         document.querySelector('#tutorial-progress').value = tutorialProgress;
         document.querySelector('#tutorial-feedback').textContent =
           `Correct! ${tutorialProgress} of ${learningContent.lessons.length} lessons complete.`;
+        questionFeedback.textContent = 'Correct! Return to the board demonstration when you are ready.';
+        choices.querySelectorAll('button').forEach((choiceButton) => { choiceButton.disabled = true; });
+        document.querySelector('#tutorial-question-back').textContent = 'Continue lesson';
         document.querySelector('#tutorial-next').disabled = false;
         document.querySelector('#tutorial-next').textContent =
           tutorialLessonIndex === learningContent.lessons.length - 1 ? 'Finish tutorial' : 'Next lesson';
       } else {
-        document.querySelector('#tutorial-feedback').textContent = 'Not quite. Review the lesson and try again.';
+        questionFeedback.textContent = 'Not quite. Look at the highlighted squares on the board and try again.';
       }
     });
     choices.append(button);
@@ -5028,6 +5050,9 @@ function openBeginnerTutorial() {
   tutorialLessonIndex = tutorialProgress >= learningContent.lessons.length ? 0 : tutorialProgress;
   renderBeginnerLesson();
   document.querySelector('#tutorial-dialog').showModal();
+  boardElement.scrollIntoView({
+    block: window.matchMedia('(max-width: 850px)').matches ? 'start' : 'center',
+  });
 }
 
 function openChessRules() {
@@ -5056,6 +5081,24 @@ document.querySelector('#puzzle-hint').addEventListener('click', () => {
   showMessage('Puzzle hint', puzzlePositions[puzzleCurrentIndex].hint);
 });
 document.querySelector('#tutorial-close').addEventListener('click', () => document.querySelector('#tutorial-dialog').close());
+document.querySelector('#tutorial-dialog').addEventListener('close', () => {
+  tutorialDemoGame = null;
+  tutorialDemoHighlights = [];
+  renderBoard();
+});
+document.querySelector('#tutorial-ask-question').addEventListener('click', () => {
+  const choices = document.querySelector('#tutorial-choices');
+  choices.querySelectorAll('button').forEach((button) => { button.disabled = false; });
+  document.querySelector('#tutorial-question-feedback').textContent = '';
+  document.querySelector('#tutorial-question-back').textContent = 'Back to demonstration';
+  document.querySelector('#tutorial-question-dialog').showModal();
+});
+document.querySelector('#tutorial-question-close').addEventListener('click', () => {
+  document.querySelector('#tutorial-question-dialog').close();
+});
+document.querySelector('#tutorial-question-back').addEventListener('click', () => {
+  document.querySelector('#tutorial-question-dialog').close();
+});
 document.querySelector('#tutorial-previous').addEventListener('click', () => {
   if (tutorialLessonIndex === 0) return;
   tutorialLessonIndex -= 1;

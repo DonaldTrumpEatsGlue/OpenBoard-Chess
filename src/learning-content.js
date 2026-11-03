@@ -83,6 +83,9 @@ window.openboardLearningContent = {
     {
       title: 'The goal of chess',
       text: 'Chess is played by two sides, White and Black. You win by checkmating the other king: attacking it so it has no legal way to escape. White always makes the first move.',
+      fen: '7k/6Q1/6K1/8/8/8/8/8 b - - 0 1',
+      highlightSquares: ['g7', 'h8'],
+      demoNote: 'The white queen checks the black king on h8, and the king has no legal escape.',
       question: 'What ends a chess game with a win?',
       choices: ['Capturing the king', 'Checkmate', 'Taking the queen'],
       answer: 1,
@@ -90,6 +93,9 @@ window.openboardLearningContent = {
     {
       title: 'The board and setup',
       text: 'Place the board so the square in each player’s near-right corner is light. The back row goes rook, knight, bishop, queen, king, bishop, knight, rook. The queen starts on her own color.',
+      fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+      highlightSquares: ['d1', 'e1'],
+      demoNote: 'White’s queen starts on d1, a light square; the king starts beside it on e1.',
       question: 'Where does White’s queen begin?',
       choices: ['On a light square, d1', 'On a dark square, e1', 'Beside the rook, a1'],
       answer: 0,
@@ -97,6 +103,9 @@ window.openboardLearningContent = {
     {
       title: 'Rooks, bishops, and queens',
       text: 'Rooks slide any number of clear squares horizontally or vertically. Bishops slide diagonally. Queens combine both kinds of sliding. None can jump over another piece.',
+      fen: '7k/8/8/8/3Q4/8/8/K7 w - - 0 1',
+      highlightSquares: ['d4', 'd8', 'h4', 'h8'],
+      demoNote: 'From d4, the queen can travel along ranks, files, and diagonals when the path is clear.',
       question: 'Which piece moves in straight lines and diagonals?',
       choices: ['Knight', 'Queen', 'Pawn'],
       answer: 1,
@@ -104,6 +113,9 @@ window.openboardLearningContent = {
     {
       title: 'The knight',
       text: 'A knight moves two squares in one direction and then one square sideways, making an L shape. It is the only piece that can jump over other pieces.',
+      fen: '7k/8/8/8/3N4/8/8/K7 w - - 0 1',
+      highlightSquares: ['d4', 'e6', 'f5'],
+      demoNote: 'The knight on d4 can jump to e6 or f5; the same L-shaped jump works even when pieces block its path.',
       question: 'Which piece can jump over other pieces?',
       choices: ['Bishop', 'Rook', 'Knight'],
       answer: 2,
@@ -111,6 +123,9 @@ window.openboardLearningContent = {
     {
       title: 'Pawns',
       text: 'Pawns move forward one square, or two squares from their starting rank if both squares are clear. They capture one square diagonally forward and never move backward.',
+      fen: '7k/8/8/4p3/3P4/8/8/K7 w - - 0 1',
+      highlightSquares: ['d4', 'd5', 'e5'],
+      demoNote: 'The white pawn on d4 moves forward to d5, but captures the black pawn diagonally on e5.',
       question: 'How does a pawn capture?',
       choices: ['One square straight ahead', 'One square diagonally forward', 'Like a knight'],
       answer: 1,
@@ -118,6 +133,9 @@ window.openboardLearningContent = {
     {
       title: 'Check and king safety',
       text: 'A king is in check when an opposing piece attacks its square. You must get out of check immediately. You may not make any move that leaves your own king in check.',
+      fen: '4r2k/8/8/8/8/8/8/4K3 w - - 0 1',
+      highlightSquares: ['e8', 'e1'],
+      demoNote: 'The rook on e8 attacks the white king on e1. White must escape the check before doing anything else.',
       question: 'Can you make a move that leaves your own king in check?',
       choices: ['Yes, if you also give check', 'Only with a pawn', 'No'],
       answer: 2,
@@ -125,6 +143,9 @@ window.openboardLearningContent = {
     {
       title: 'Checkmate',
       text: 'When a king is in check and no legal move can capture the attacker, block the attack, or move the king to safety, it is checkmate and the game is over.',
+      fen: '7k/6Q1/6K1/8/8/8/8/8 b - - 0 1',
+      highlightSquares: ['g7', 'h8'],
+      demoNote: 'The queen checks the king, while the white king protects the queen and covers the escape squares.',
       question: 'What must be true for checkmate?',
       choices: ['The king is in check with no legal escape', 'A queen has been captured', 'A player has no pawns'],
       answer: 0,
@@ -132,6 +153,9 @@ window.openboardLearningContent = {
     {
       title: 'Castling',
       text: 'Castling moves your king two squares toward a rook, then places that rook beside it. Neither piece may have moved before; the path must be clear; your king cannot be in check, pass through check, or finish in check.',
+      fen: 'r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1',
+      highlightSquares: ['e1', 'a1', 'h1'],
+      demoNote: 'With an empty path and no attacked king squares, White may castle toward either rook.',
       question: 'May you castle through a square attacked by an enemy piece?',
       choices: ['Yes, if the rook is safe', 'No', 'Only queenside'],
       answer: 1,
@@ -139,6 +163,9 @@ window.openboardLearningContent = {
     {
       title: 'En passant',
       text: 'If an enemy pawn moves two squares from its starting rank and lands beside your pawn, you may capture it as if it moved only one square. This special capture is available only on your very next move.',
+      fen: '7k/8/8/3pP3/8/8/8/K7 w - d6 0 1',
+      highlightSquares: ['e5', 'd5', 'd6'],
+      demoNote: 'Black just advanced the pawn from d7 to d5. White’s pawn on e5 may capture it en passant on d6 now.',
       question: 'When can en passant be played?',
       choices: ['Any time two pawns meet', 'Only immediately after the enemy’s two-square pawn move', 'Only to avoid checkmate'],
       answer: 1,
@@ -146,6 +173,9 @@ window.openboardLearningContent = {
     {
       title: 'Pawn promotion',
       text: 'When a pawn reaches the farthest rank, it must be promoted to a queen, rook, bishop, or knight. You may choose a piece even if you still have one of that kind on the board.',
+      fen: '7k/P7/8/8/8/8/8/7K w - - 0 1',
+      highlightSquares: ['a7', 'a8'],
+      demoNote: 'The white pawn on a7 is one step from promotion. Reaching a8 lets its player choose a queen, rook, bishop, or knight.',
       question: 'Which piece may a pawn promote into?',
       choices: ['Only a queen', 'Any piece, including a king', 'A queen, rook, bishop, or knight'],
       answer: 2,
@@ -153,6 +183,9 @@ window.openboardLearningContent = {
     {
       title: 'Stalemate and draws',
       text: 'If a player has no legal move but is not in check, the result is a stalemate draw. Other common draw rules include threefold repetition, the fifty-move rule, and insufficient mating material.',
+      fen: '7k/5Q2/6K1/8/8/8/8/8 b - - 0 1',
+      highlightSquares: ['f7', 'g6', 'h8'],
+      demoNote: 'Black is not in check, but every move is illegal. This position is stalemate, so the game is drawn.',
       question: 'A player has no legal move and their king is not in check. What is the result?',
       choices: ['Stalemate, a draw', 'Checkmate', 'The player loses a rook'],
       answer: 0,
@@ -160,6 +193,9 @@ window.openboardLearningContent = {
     {
       title: 'A good first plan',
       text: 'For a solid start, fight for the center, develop knights and bishops, and keep your king safe. Before every move, ask: is my king safe, and what is my opponent threatening?',
+      fen: 'r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3',
+      highlightSquares: ['d4', 'e4', 'd5', 'e5', 'f3', 'c4'],
+      demoNote: 'White has occupied the center and developed a knight and bishop instead of moving the same piece repeatedly.',
       question: 'Which is a helpful opening habit?',
       choices: ['Move the same piece many times without a reason', 'Develop pieces and watch king safety', 'Move the king toward the center'],
       answer: 1,

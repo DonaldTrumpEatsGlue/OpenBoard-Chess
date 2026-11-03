@@ -29,6 +29,13 @@ test('beginner lessons have usable multiple-choice checks', () => {
     assert.ok(lesson.title && lesson.text && lesson.question);
     assert.ok(lesson.choices.length >= 2);
     assert.ok(lesson.answer >= 0 && lesson.answer < lesson.choices.length);
+    assert.ok(lesson.demoNote, `Missing board explanation for ${lesson.title}`);
+    assert.ok(lesson.highlightSquares?.length, `Missing board highlights for ${lesson.title}`);
+    const game = new Chess();
+    assert.equal(game.load(lesson.fen), true, `Invalid demonstration position for ${lesson.title}`);
+    for (const square of lesson.highlightSquares) {
+      assert.match(square, /^[a-h][1-8]$/, `Invalid highlighted square for ${lesson.title}: ${square}`);
+    }
   }
 });
 
