@@ -1755,6 +1755,7 @@ function updateGameState() {
 
 function updateOnlineSuggestionAvailability() {
   const suggestButton = document.querySelector('#suggest-move');
+  suggestButton.hidden = onlineSpectating;
   if (!onlineMode) {
     suggestButton.disabled = false;
     return;
@@ -3895,6 +3896,7 @@ function configureOnlineControls(active, spectating = false) {
   document.querySelector('#undo').disabled = active;
   document.querySelector('#redo').disabled = active;
   document.querySelector('#custom-rules-open').disabled = active;
+  document.querySelector('#suggest-move').hidden = active && spectating;
   updateOnlineSuggestionAvailability();
   document.querySelector('#opponent-card').hidden = active;
   document.querySelector('#opponent-name').textContent = active
@@ -3977,6 +3979,7 @@ function setOnlineGameState(active, spectating = false) {
   }
   onlineMode = active;
   onlineSpectating = active && spectating;
+  gamePage.classList.toggle('is-online-game', onlineMode);
   gamePage.classList.toggle('is-spectating', onlineSpectating);
   document.querySelector('.game-panel').setAttribute(
     'aria-label',
