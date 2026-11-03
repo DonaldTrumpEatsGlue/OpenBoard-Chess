@@ -4231,6 +4231,9 @@ function handleOnlineMessage(socket, message) {
       document.querySelector('#game-over-rematch').disabled = false;
       document.querySelector('#game-over-rematch').textContent = 'Rematch';
     }
+    if (pendingRematchRequestId && gameOverDialog.open) {
+      document.querySelector('#game-over-rematch').disabled = false;
+    }
     if (pendingRematchRequestId && rematchOfferDialog.open) {
       document.querySelector('#rematch-accept').disabled = false;
       document.querySelector('#rematch-decline').disabled = false;
@@ -4447,7 +4450,9 @@ function handleOnlineMessage(socket, message) {
   if (message.type === 'rematch-request-cancelled') {
     pendingRematchRequestId = null;
     rematchRequestPending = false;
-    document.querySelector('#game-over-rematch').textContent = 'Rematch';
+    const rematchButton = document.querySelector('#game-over-rematch');
+    rematchButton.disabled = false;
+    rematchButton.textContent = 'Rematch';
     setGameOverStatus('Rematch request cancelled.');
     return;
   }
