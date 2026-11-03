@@ -245,6 +245,58 @@ async function authenticateAccessToken(accessToken) {
   return { id: user.id, username: profile.username };
 }
 
+const publicProfileFields = 'username,online_elo,online_games,online_wins,online_draws,online_losses';
+
+async function loadProfile(queryName, queryValue) {
+  const profileUrl = new URL(`${supabaseUrl}/rest/v1/profiles`);
+  profileUrl.searchParams.set(queryName, `eq.${queryValue}`);
+  profileUrl.searchParams.set('select', publicProfileFields);
+  const profileResponse = await fetch(profileUrl, {
+    headers: { apikey: supabaseAnonKey },
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!profileResponse.ok) throw new Error('Could not load this player profile.');
+  const [profile] = await profileResponse.json();
+  if (!profile) return null;
+  return {
+    username: profile.username,
+    onlineElo: profile.online_elo,
+    onlineGames: profile.online_games,
+    onlineWins: profile.online_wins,
+    onlineDraws: profile.online_draws,
+    onlineLosses: profile.online_losses,
+  };
+}
+
+async function recordOnlineResult(room, whiteScore) {
+  if (room.ratingSettlementStarted) return;
+  room.ratingSettlementStarted = true;
+  try {
+    if (!supabaseUrl || !supabaseServiceRoleKey) {
+      throw new Error('Online rating storage is not configured. Apply the rating SQL schema and configure the service-role key.');
+    }
+    const response = await fetch(`${supabaseUrl}/rest/v1/rpc/settle_openboard_rated_game`, {
+      method: 'POST',
+      headers: {
+        apikey: supabaseServiceRoleKey,
+        Authorization: `Bearer ${supabaseServiceRoleKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        p_white_id: room.players.w.accountId,
+        p_black_id: room.players.b.accountId,
+        p_white_score: whiteScore,
+      }),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok) throw new Error('The account service could not save the online rating result.');
+    broadcast(room, { type: 'rating-updated' });
+  } catch (error) {
+    console.error('Could not record online game ratings:', error.message);
+    broadcast(room, { type: 'rating-update-failed' });
+  }
+}
+
 function hashRoomPassword(password, salt) {
   return crypto.scryptSync(password, salt, 32);
 }
@@ -453,6 +505,8 @@ async function handleMessage(socket, player, rawMessage) {
       spectators: new Set(),
       playerChat: [],
       spectatorChat: [],
+      gameEnded: false,
+      ratingSettlementStarted: false,
       expiresAt: Date.now() + roomLifetimeMs,
     };
     rooms.set(code, room);
@@ -516,6 +570,8 @@ async function handleMessage(socket, player, rawMessage) {
     if (player.room) leaveRoom(player);
     if (!reconnectColor && room.players[color].accountId) {
       room.chess = new Chess();
+      room.gameEnded = false;
+      room.ratingSettlementStarted = false;
     }
     room.players[color].socket = socket;
     room.players[color].name = player.identity.username;
@@ -635,6 +691,10 @@ async function handleMessage(socket, player, rawMessage) {
   }
 
   if (message.type === 'move') {
+    if (room.gameEnded) {
+      send(socket, { type: 'error', message: 'This game has already ended.' });
+      return;
+    }
     if (player.color !== room.chess.turn()) {
       send(socket, { type: 'error', message: 'It is not your turn.' });
       return;
@@ -670,11 +730,28 @@ async function handleMessage(socket, player, rawMessage) {
       turn: room.chess.turn(),
       gameOver: room.chess.game_over(),
     });
+    if (room.chess.game_over()) {
+      room.gameEnded = true;
+      const whiteScore = room.chess.in_checkmate()
+        ? room.chess.turn() === 'w' ? 0 : 1
+        : 0.5;
+      await recordOnlineResult(room, whiteScore);
+    }
     return;
   }
 
   if (message.type === 'resign') {
+    if (room.gameEnded) {
+      send(socket, { type: 'error', message: 'This game has already ended.' });
+      return;
+    }
+    room.gameEnded = true;
     broadcast(room, { type: 'resigned', color: player.color });
+    if (room.chess.history().length) {
+      await recordOnlineResult(room, player.color === 'w' ? 0 : 1);
+    } else {
+      broadcast(room, { type: 'rating-not-counted' });
+    }
     return;
   }
 
@@ -683,6 +760,79 @@ async function handleMessage(socket, player, rawMessage) {
 
 const server = http.createServer(async (request, response) => {
   const requestUrl = new URL(request.url, 'http://localhost');
+  const publicProfileMatch = /^\/profiles\/([^/]+)$/.exec(requestUrl.pathname);
+  const isOwnProfileRequest = requestUrl.pathname === '/profile/me';
+  if (publicProfileMatch || isOwnProfileRequest) {
+    addAuthCorsHeaders(request, response);
+    if (request.headers.origin && !isAllowedOrigin(request.headers.origin)) {
+      response.writeHead(403).end();
+      return;
+    }
+    if (request.method === 'OPTIONS') {
+      response.writeHead(204, {
+        'Access-Control-Allow-Methods': 'GET, OPTIONS',
+        'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+        'Access-Control-Max-Age': '600',
+      }).end();
+      return;
+    }
+    if (request.method !== 'GET') {
+      response.writeHead(405, { Allow: 'GET, OPTIONS' }).end();
+      return;
+    }
+    try {
+      let profile;
+      if (isOwnProfileRequest) {
+        const [, accessToken] = /^Bearer\s+(.+)$/i.exec(request.headers.authorization || '') || [];
+        if (!accessToken) {
+          response.writeHead(401, {
+            'Cache-Control': 'no-store',
+            'Content-Type': 'application/json; charset=utf-8',
+          }).end(JSON.stringify({ message: 'Sign in to view your player profile.' }));
+          return;
+        }
+        const identity = await authenticateAccessToken(accessToken);
+        profile = await loadProfile('id', identity.id);
+      } else {
+        let username;
+        try {
+          username = decodeURIComponent(publicProfileMatch[1]);
+        } catch {
+          response.writeHead(400, {
+            'Cache-Control': 'no-store',
+            'Content-Type': 'application/json; charset=utf-8',
+          }).end(JSON.stringify({ message: 'Enter a valid player username.' }));
+          return;
+        }
+        if (!/^[A-Za-z0-9_]{3,20}$/.test(username)) {
+          response.writeHead(400, {
+            'Cache-Control': 'no-store',
+            'Content-Type': 'application/json; charset=utf-8',
+          }).end(JSON.stringify({ message: 'Enter a valid player username.' }));
+          return;
+        }
+        profile = await loadProfile('username_key', username.toLowerCase());
+      }
+      if (!profile) {
+        response.writeHead(404, {
+          'Cache-Control': 'no-store',
+          'Content-Type': 'application/json; charset=utf-8',
+        }).end(JSON.stringify({ message: 'No player profile was found for that username.' }));
+        return;
+      }
+      response.writeHead(200, {
+        'Cache-Control': 'no-store',
+        'Content-Type': 'application/json; charset=utf-8',
+      }).end(JSON.stringify(profile));
+    } catch (error) {
+      console.error('Player profile request failed:', error.message);
+      response.writeHead(503, {
+        'Cache-Control': 'no-store',
+        'Content-Type': 'application/json; charset=utf-8',
+      }).end(JSON.stringify({ message: error.message || 'Player profiles are temporarily unavailable.' }));
+    }
+    return;
+  }
   if (['/auth/username', '/auth/recover', '/auth/verify-recovery'].includes(requestUrl.pathname)) {
     const isRecovery = requestUrl.pathname === '/auth/recover';
     const isRecoveryVerification = requestUrl.pathname === '/auth/verify-recovery';

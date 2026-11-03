@@ -14,6 +14,7 @@ let authServer;
 let authUrl;
 const authUsers = new Map();
 const passwordRecoveryRequests = [];
+const ratedGameRequests = [];
 let userIdCounter = 1;
 
 async function findOpenPort() {
@@ -50,6 +51,11 @@ function createAccount(username, verified = false) {
     id,
     username,
     email: `${username.toLowerCase()}@example.test`,
+    online_elo: 1000,
+    online_games: 0,
+    online_wins: 0,
+    online_draws: 0,
+    online_losses: 0,
     password: 'test-password-123',
     email_confirmed_at: verified ? new Date().toISOString() : null,
     confirmed_at: verified ? new Date().toISOString() : null,
@@ -96,6 +102,29 @@ function postJson(url, payload, origin = 'https://sample-user.github.io') {
     });
     request.on('error', reject);
     request.end(JSON.stringify(payload));
+  });
+}
+
+function getJson(url, accessToken = '', origin = 'https://sample-user.github.io') {
+  return new Promise((resolve, reject) => {
+    const request = http.request(url, {
+      method: 'GET',
+      headers: {
+        Origin: origin,
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      },
+    }, (response) => {
+      let rawBody = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk) => { rawBody += chunk; });
+      response.on('end', () => resolve({
+        status: response.statusCode,
+        headers: response.headers,
+        body: JSON.parse(rawBody),
+      }));
+    });
+    request.on('error', reject);
+    request.end();
   });
 }
 
@@ -199,6 +228,35 @@ before(async () => {
         : { message: 'Invalid token' }));
       return;
     }
+    if (request.url === '/rest/v1/rpc/settle_openboard_rated_game') {
+      let rawBody = '';
+      for await (const chunk of request) rawBody += chunk;
+      const { p_white_id: whiteId, p_black_id: blackId, p_white_score: whiteScore } = JSON.parse(rawBody);
+      const whiteEntry = [...authUsers.entries()].find(([, candidate]) => candidate.id === whiteId);
+      const blackEntry = [...authUsers.entries()].find(([, candidate]) => candidate.id === blackId);
+      if (!whiteEntry || !blackEntry) {
+        response.writeHead(400).end(JSON.stringify({ message: 'Player profile missing' }));
+        return;
+      }
+      const white = whiteEntry[1];
+      const black = blackEntry[1];
+      const whiteExpected = 1 / (1 + (10 ** ((black.online_elo - white.online_elo) / 400)));
+      const blackExpected = 1 - whiteExpected;
+      white.online_elo = Math.max(100, Math.round(white.online_elo + (32 * (whiteScore - whiteExpected))));
+      black.online_elo = Math.max(100, Math.round(black.online_elo + (32 * ((1 - whiteScore) - blackExpected))));
+      white.online_games += 1;
+      black.online_games += 1;
+      const whiteResult = whiteScore === 1 ? 'win' : whiteScore === 0 ? 'loss' : 'draw';
+      const blackResult = whiteScore === 0 ? 'win' : whiteScore === 1 ? 'loss' : 'draw';
+      white[`online_${whiteResult === 'win' ? 'wins' : whiteResult === 'loss' ? 'losses' : 'draws'}`] += 1;
+      black[`online_${blackResult === 'win' ? 'wins' : blackResult === 'loss' ? 'losses' : 'draws'}`] += 1;
+      ratedGameRequests.push(JSON.parse(rawBody));
+      response.writeHead(200).end(JSON.stringify({
+        white: { username: white.username, online_elo: white.online_elo, online_games: white.online_games },
+        black: { username: black.username, online_elo: black.online_elo, online_games: black.online_games },
+      }));
+      return;
+    }
     if (request.url?.startsWith('/auth/v1/admin/users/')) {
       if (request.headers.apikey !== 'test-service-role-key') {
         response.writeHead(401).end('{}');
@@ -230,21 +288,43 @@ before(async () => {
     if (request.url?.startsWith('/rest/v1/profiles')) {
       const url = new URL(request.url, 'http://localhost');
       const usernameKey = url.searchParams.get('username_key')?.slice(3);
+      const selectedFields = url.searchParams.get('select');
       if (usernameKey !== undefined) {
-        if (request.headers.apikey !== 'test-service-role-key') {
+        if (selectedFields === 'id' && request.headers.apikey !== 'test-service-role-key') {
           response.writeHead(401).end('{}');
           return;
         }
         const account = [...authUsers.values()].find((candidate) => (
           candidate.username.toLowerCase() === usernameKey
         ));
-        response.writeHead(200).end(JSON.stringify(account ? [{ id: account.id }] : []));
+        response.writeHead(200).end(JSON.stringify(account
+          ? [selectedFields === 'id'
+            ? { id: account.id }
+            : {
+              username: account.username,
+              online_elo: account.online_elo,
+              online_games: account.online_games,
+              online_wins: account.online_wins,
+              online_draws: account.online_draws,
+              online_losses: account.online_losses,
+            }]
+          : []));
         return;
       }
       const requestedId = url.searchParams.get('id')?.slice(3);
       const requestedUser = user?.id === requestedId ? user : null;
-      response.writeHead(200).end(JSON.stringify(requestedUser
-        ? [{ username: requestedUser.username }]
+      const profile = [...authUsers.values()].find((candidate) => candidate.id === requestedId);
+      response.writeHead(200).end(JSON.stringify(profile
+        ? selectedFields === 'username'
+          ? requestedUser ? [{ username: requestedUser.username }] : []
+          : [{
+            username: profile.username,
+            online_elo: profile.online_elo,
+            online_games: profile.online_games,
+            online_wins: profile.online_wins,
+            online_draws: profile.online_draws,
+            online_losses: profile.online_losses,
+          }]
         : []));
       return;
     }
@@ -384,6 +464,105 @@ test('username sign-in returns an auth session without disclosing the account em
   });
   assert.equal(unknownAccount.status, 401);
   assert.deepEqual(unknownAccount.body, { message: 'Invalid username or password.' });
+});
+
+test('public player profiles show online ratings but never expose account emails', async () => {
+  const token = createAccount('PublicProfileOwner');
+  const profileUrl = new URL(endpoint);
+  profileUrl.protocol = 'http:';
+  profileUrl.pathname = '/profiles/publicprofileowner';
+  profileUrl.search = '';
+  profileUrl.hash = '';
+
+  const publicProfile = await getJson(profileUrl);
+  assert.equal(publicProfile.status, 200);
+  assert.deepEqual(publicProfile.body, {
+    username: 'PublicProfileOwner',
+    onlineElo: 1000,
+    onlineGames: 0,
+    onlineWins: 0,
+    onlineDraws: 0,
+    onlineLosses: 0,
+  });
+  assert.equal(JSON.stringify(publicProfile.body).includes('@example.test'), false);
+
+  const privateProfileUrl = new URL(endpoint);
+  privateProfileUrl.protocol = 'http:';
+  privateProfileUrl.pathname = '/profile/me';
+  privateProfileUrl.search = '';
+  privateProfileUrl.hash = '';
+  assert.equal((await getJson(privateProfileUrl)).status, 401);
+  const ownProfile = await getJson(privateProfileUrl, token);
+  assert.equal(ownProfile.status, 200);
+  assert.equal(ownProfile.body.username, 'PublicProfileOwner');
+  assert.equal(JSON.stringify(ownProfile.body).includes('@example.test'), false);
+});
+
+test('completed online games update both player ratings and records exactly once', async () => {
+  const whiteToken = createAccount('RatingWhite');
+  const blackToken = createAccount('RatingBlack');
+  const white = await connectWithAccessToken(whiteToken, 'RatingWhite');
+  const black = await connectWithAccessToken(blackToken, 'RatingBlack');
+  try {
+    const room = await request(white, { type: 'create-room', lobbyName: 'Rated game' });
+    const whiteStart = waitForMessage(white, (message) => message.type === 'game-start');
+    const blackStart = request(black, { type: 'join-room', code: room.code });
+    await Promise.all([whiteStart, blackStart]);
+
+    const whiteMove = waitForMessage(white, (message) => message.type === 'move');
+    const blackMove = waitForMessage(black, (message) => message.type === 'move');
+    white.send(JSON.stringify({ type: 'move', from: 'e2', to: 'e4' }));
+    await Promise.all([whiteMove, blackMove]);
+
+    const whiteResigned = waitForMessage(white, (message) => message.type === 'resigned');
+    const whiteUpdated = waitForMessage(white, (message) => message.type === 'rating-updated');
+    const blackUpdated = waitForMessage(black, (message) => message.type === 'rating-updated');
+    black.send(JSON.stringify({ type: 'resign' }));
+    await Promise.all([whiteResigned, whiteUpdated, blackUpdated]);
+
+    const whiteProfileUrl = new URL(endpoint);
+    whiteProfileUrl.protocol = 'http:';
+    whiteProfileUrl.pathname = '/profiles/ratingwhite';
+    const blackProfileUrl = new URL(whiteProfileUrl);
+    blackProfileUrl.pathname = '/profiles/ratingblack';
+    const [whiteProfile, blackProfile] = await Promise.all([
+      getJson(whiteProfileUrl),
+      getJson(blackProfileUrl),
+    ]);
+    assert.equal(whiteProfile.body.onlineElo, 1016);
+    assert.equal(whiteProfile.body.onlineGames, 1);
+    assert.equal(whiteProfile.body.onlineWins, 1);
+    assert.equal(blackProfile.body.onlineElo, 984);
+    assert.equal(blackProfile.body.onlineGames, 1);
+    assert.equal(blackProfile.body.onlineLosses, 1);
+    assert.equal(ratedGameRequests.length, 1);
+  } finally {
+    white.close();
+    black.close();
+  }
+});
+
+test('unplayed online games do not change player ratings', async () => {
+  const whiteToken = createAccount('UnplayedWhite');
+  const blackToken = createAccount('UnplayedBlack');
+  const white = await connectWithAccessToken(whiteToken, 'UnplayedWhite');
+  const black = await connectWithAccessToken(blackToken, 'UnplayedBlack');
+  const ratingRequestCount = ratedGameRequests.length;
+  try {
+    const room = await request(white, { type: 'create-room', lobbyName: 'Unplayed game' });
+    const whiteStart = waitForMessage(white, (message) => message.type === 'game-start');
+    const blackStart = request(black, { type: 'join-room', code: room.code });
+    await Promise.all([whiteStart, blackStart]);
+
+    const notRated = waitForMessage(white, (message) => message.type === 'rating-not-counted');
+    const blackResigned = waitForMessage(black, (message) => message.type === 'resigned');
+    black.send(JSON.stringify({ type: 'resign' }));
+    await Promise.all([notRated, blackResigned]);
+    assert.equal(ratedGameRequests.length, ratingRequestCount);
+  } finally {
+    white.close();
+    black.close();
+  }
 });
 
 test('password recovery accepts email or username without revealing the linked email', async () => {

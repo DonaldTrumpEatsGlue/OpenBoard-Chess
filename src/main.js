@@ -16,6 +16,8 @@ const botDirectoryGrid = document.querySelector('#bot-directory-grid');
 const customRulesDialog = document.querySelector('#custom-rules-dialog');
 const soundSettingsDialog = document.querySelector('#sound-settings-dialog');
 const onlineDialog = document.querySelector('#online-dialog');
+const accountDialog = document.querySelector('#account-dialog');
+const profilesDialog = document.querySelector('#profiles-dialog');
 const onlineLeaveDialog = document.querySelector('#online-leave-dialog');
 const onlineOpponentLeftDialog = document.querySelector('#online-opponent-left-dialog');
 const pieceTheme = window.OpenboardPieceThemes.classic;
@@ -156,12 +158,23 @@ const supabaseUrl = document.querySelector('meta[name="openboard-supabase-url"]'
 const supabaseAnonKey = document.querySelector('meta[name="openboard-supabase-anon-key"]')?.content.trim() || '';
 const authSessionStorageKey = 'openboard-auth-session';
 const onlineRoomStorageKey = 'openboard-last-online-room';
+const offlineRatingStorageKey = 'openboard-offline-ratings';
 const playableBoardSizes = [8, 10, 12, 14, 16, 18, 20];
 let authSession = null;
 let authUsername = '';
 let authMode = 'signup';
 let passwordRecoveryMode = false;
 let passwordRecoveryCodeMode = false;
+let offlineRatingRecorded = false;
+let offlineRatings = {};
+try {
+  const savedOfflineRatings = JSON.parse(localStorage.getItem(offlineRatingStorageKey) || '{}');
+  if (savedOfflineRatings && typeof savedOfflineRatings === 'object' && !Array.isArray(savedOfflineRatings)) {
+    offlineRatings = savedOfflineRatings;
+  }
+} catch (error) {
+  console.error('Could not load offline rating estimates:', error);
+}
 const defaultCustomRules = {
   boardSize: 8,
   noDraws: false,
@@ -193,6 +206,40 @@ function isDraw() {
   return !customRules.noDraws && (Number(game.fen().split(' ')[4]) >= 100
     || isInsufficientMaterial()
     || (game.history().length >= 8 && isThreefoldRepetition()));
+}
+
+function offlineRatingKey() {
+  return authUsername ? authUsername.toLowerCase() : 'guest';
+}
+
+function getOfflineRating() {
+  const saved = offlineRatings[offlineRatingKey()];
+  if (!saved || !Number.isInteger(saved.rating) || saved.rating < 100
+    || !['games', 'wins', 'draws', 'losses'].every((field) => Number.isInteger(saved[field]) && saved[field] >= 0)) {
+    return { rating: 1000, games: 0, wins: 0, draws: 0, losses: 0 };
+  }
+  return saved;
+}
+
+function recordOfflineRating(score) {
+  if (offlineRatingRecorded || onlineMode || onlineSpectating || analysisMode || puzzleMode) return;
+  const current = getOfflineRating();
+  const opponentRating = bots[difficultySelect.value]?.elo ?? 1000;
+  const expected = 1 / (1 + (10 ** ((opponentRating - current.rating) / 400)));
+  const rating = Math.max(100, Math.round(current.rating + (32 * (score - expected))));
+  const result = score === 1 ? 'wins' : score === 0.5 ? 'draws' : 'losses';
+  offlineRatings[offlineRatingKey()] = {
+    ...current,
+    rating,
+    games: current.games + 1,
+    [result]: current[result] + 1,
+  };
+  offlineRatingRecorded = true;
+  try {
+    localStorage.setItem(offlineRatingStorageKey, JSON.stringify(offlineRatings));
+  } catch (error) {
+    console.error('Could not save your offline rating estimate:', error);
+  }
 }
 
 function snapshotCustomIdentity() {
@@ -1447,21 +1494,25 @@ function updateGameState() {
       : analysisMode
         ? `Checkmate. ${game.turn() === 'w' ? 'White' : 'Black'} is checkmated.`
         : game.turn() === 'w' ? 'Checkmate. The engine wins this game.' : 'Checkmate! You win!';
-    markGameResult(onlineSpectating ? 'draw' : game.turn() === playerColor ? 'defeat' : 'victory');
+    const humanScore = onlineSpectating ? 0.5 : game.turn() === playerColor ? 0 : 1;
+    markGameResult(onlineSpectating ? 'draw' : humanScore === 0 ? 'defeat' : 'victory', humanScore);
   } else if (isStalemate()) {
     gameMessage.textContent = customRules.noDraws
       ? `${game.turn() === 'w' ? 'White' : 'Black'} has no legal moves. Stalemate counts as a loss in this ruleset.`
       : 'Draw by stalemate.';
-    markGameResult(customRules.noDraws ? (game.turn() === playerColor ? 'defeat' : 'victory') : 'draw');
+    const humanScore = customRules.noDraws
+      ? game.turn() === playerColor ? 0 : 1
+      : 0.5;
+    markGameResult(humanScore === 0 ? 'defeat' : humanScore === 1 ? 'victory' : 'draw', humanScore);
   } else if (isThreefoldRepetition()) {
     gameMessage.textContent = 'Draw by threefold repetition.';
-    markGameResult('draw');
+    markGameResult('draw', 0.5);
   } else if (isInsufficientMaterial()) {
     gameMessage.textContent = 'Draw by insufficient material.';
-    markGameResult('draw');
+    markGameResult('draw', 0.5);
   } else if (isDraw()) {
     gameMessage.textContent = 'The game is a draw.';
-    markGameResult('draw');
+    markGameResult('draw', 0.5);
   } else if (aiThinking) {
     gameMessage.textContent = 'The engine is thinking…';
   } else if (isCheck()) {
@@ -1528,6 +1579,9 @@ function saveAuthSession(session) {
     ...session,
     expires_at: session.expires_at || Math.floor(Date.now() / 1000) + Number(session.expires_in || 3600),
   };
+  if (typeof session.user?.user_metadata?.username === 'string') {
+    authUsername = session.user.user_metadata.username;
+  }
   try {
     localStorage.setItem(authSessionStorageKey, JSON.stringify(authSession));
   } catch (error) {
@@ -1543,6 +1597,79 @@ function clearAuthSession() {
   onlineIdentityVerified = false;
   localStorage.removeItem(authSessionStorageKey);
   updateAccountUI();
+}
+
+function profileEndpoint(path) {
+  if (!onlineServerUrl) throw new Error('Player profiles are unavailable because the online server is not configured.');
+  const endpoint = new URL(onlineServerUrl);
+  endpoint.protocol = endpoint.protocol === 'wss:' ? 'https:' : 'http:';
+  endpoint.pathname = path;
+  endpoint.search = '';
+  endpoint.hash = '';
+  return endpoint;
+}
+
+async function requestPlayerProfile(username = '') {
+  const ownProfile = !username;
+  const endpoint = profileEndpoint(ownProfile ? '/profile/me' : `/profiles/${encodeURIComponent(username)}`);
+  const headers = {};
+  if (ownProfile) {
+    const session = await getValidAuthSession();
+    if (!session?.access_token) throw new Error('Sign in to view your player profile.');
+    headers.Authorization = `Bearer ${session.access_token}`;
+  }
+  const response = await fetch(endpoint, { headers });
+  let profile;
+  try {
+    profile = await response.json();
+  } catch {
+    throw new Error('The online server returned an unreadable player profile.');
+  }
+  if (!response.ok) throw new Error(profile.message || 'Could not load this player profile.');
+  return profile;
+}
+
+function renderPlayerProfile(profile, isOwnProfile = false) {
+  const card = document.querySelector('#profile-card');
+  document.querySelector('#profile-avatar').textContent = [...profile.username][0].toUpperCase();
+  document.querySelector('#profile-username').textContent = `@${profile.username}`;
+  document.querySelector('#profile-online-elo').textContent = Number(profile.onlineElo).toLocaleString();
+  const games = Number(profile.onlineGames) || 0;
+  const ratingLabel = games < 10 ? `Provisional · ${games} rated ${games === 1 ? 'game' : 'games'}` : `${games} rated games`;
+  document.querySelector('#profile-online-record').textContent =
+    `${profile.onlineWins}-${profile.onlineDraws}-${profile.onlineLosses} · ${ratingLabel}`;
+  const offlineCard = document.querySelector('#profile-offline-rating-card');
+  const showOffline = isOwnProfile && Boolean(authUsername)
+    && profile.username.toLowerCase() === authUsername.toLowerCase();
+  offlineCard.hidden = !showOffline;
+  if (showOffline) {
+    const offline = getOfflineRating();
+    document.querySelector('#profile-offline-elo').textContent = offline.rating.toLocaleString();
+    const offlineRatingLabel = offline.games < 10
+      ? `Provisional · ${offline.games} rated ${offline.games === 1 ? 'game' : 'games'}`
+      : `${offline.games} rated games`;
+    document.querySelector('#profile-offline-record').textContent =
+      `${offline.wins}-${offline.draws}-${offline.losses} · ${offlineRatingLabel}`;
+  }
+  card.hidden = false;
+}
+
+async function loadPlayerProfile(username = '') {
+  const status = document.querySelector('#profile-status');
+  const card = document.querySelector('#profile-card');
+  card.hidden = true;
+  status.textContent = 'Loading player profile…';
+  try {
+    const profile = await requestPlayerProfile(username);
+    if (!username) authUsername = profile.username;
+    renderPlayerProfile(profile, !username);
+    status.textContent = username
+      ? `Public profile for @${profile.username}.`
+      : 'Your player profile.';
+  } catch (error) {
+    console.error('Could not load player profile:', error);
+    status.textContent = error.message || 'Could not load this player profile.';
+  }
 }
 
 function initializeAuthSession() {
@@ -1904,7 +2031,8 @@ async function submitOnlineAuth() {
       saveAuthSession(session);
       document.querySelector('#online-account-password').value = '';
       status.textContent = `Account created and signed in as @${username}.`;
-      selectOnlineSection('play');
+      accountDialog.close();
+      openOnlineDialog('friends');
     } else {
       const session = usernameSignIn
         ? await requestUsernameSignIn(identity, password)
@@ -1915,7 +2043,8 @@ async function submitOnlineAuth() {
       saveAuthSession(session);
       document.querySelector('#online-account-password').value = '';
       status.textContent = 'Signed in. You can now join or create a lobby.';
-      selectOnlineSection('play');
+      accountDialog.close();
+      openOnlineDialog('friends');
     }
   } catch (error) {
     console.error('Online account request failed:', error);
@@ -2037,20 +2166,190 @@ function selectOnlineTab(tab) {
   if (!friendsSelected) requestPublicRooms();
 }
 
-function selectOnlineSection(section) {
-  const accountSelected = section === 'account';
-  document.querySelector('#online-account-tab').setAttribute('aria-selected', String(accountSelected));
-  document.querySelector('#online-play-tab').setAttribute('aria-selected', String(!accountSelected));
-  document.querySelector('#online-account-tab').classList.toggle('active', accountSelected);
-  document.querySelector('#online-play-tab').classList.toggle('active', !accountSelected);
-  document.querySelector('#online-account-panel').hidden = !accountSelected;
-  document.querySelector('#online-play-panel').hidden = accountSelected;
-  if (!accountSelected && authSession?.access_token) requestPublicRoomsIfSelected();
+function openOnlineDialog(tab = 'friends') {
+  selectOnlineTab(tab);
+  onlineDialog.showModal();
 }
 
-function requestPublicRoomsIfSelected() {
-  if (!document.querySelector('#online-public-panel').hidden) requestPublicRooms();
+function openAccountDialog(mode = authMode) {
+  if (!authSession?.access_token) authMode = mode;
+  updateAccountUI();
+  accountDialog.showModal();
 }
+
+const sidebarSections = {
+  play: {
+    title: 'Play',
+    items: [
+      { icon: '♟', label: 'Play Online', action: 'online' },
+      { icon: '♟', label: 'Play Bots', action: 'bots' },
+      { icon: '✦', label: 'Play Coach', action: 'coach' },
+      { icon: '▥', label: 'Stats & Ratings', action: 'profile' },
+      { icon: '🏅', label: 'Tournaments', action: 'coming-soon' },
+      { icon: '♞', label: 'Variants', action: 'variants' },
+      { icon: '▤', label: 'Game History', action: 'history' },
+    ],
+  },
+  puzzles: {
+    title: 'Puzzles',
+    items: [
+      { icon: '🧩', label: 'Puzzle', action: 'puzzle' },
+      { icon: '🟩', label: 'Daily Puzzle', action: 'puzzle' },
+      { icon: '⚡', label: 'Puzzle Rush', action: 'coming-soon' },
+      { icon: '⚔', label: 'Puzzle Battle', action: 'coming-soon' },
+      { icon: '▧', label: 'Custom Puzzles', action: 'coming-soon' },
+    ],
+  },
+  learn: {
+    title: 'Learn',
+    items: [
+      { icon: '📘', label: 'Opening & Move Notes', action: 'opening-notes' },
+      { icon: '♟', label: 'Chess Rules', action: 'coming-soon' },
+    ],
+  },
+  train: {
+    title: 'Train',
+    items: [
+      { icon: '⌕', label: 'Analyze Position', action: 'analysis' },
+      { icon: '✦', label: 'Suggest a Move', action: 'suggest' },
+      { icon: '♟', label: 'Practice Against a Bot', action: 'bots' },
+    ],
+  },
+  watch: {
+    title: 'Watch',
+    items: [
+      { icon: '◉', label: 'Public Games', action: 'watch' },
+      { icon: '⌕', label: 'Watch by Invite Code', action: 'watch-invite' },
+    ],
+  },
+  community: {
+    title: 'Community',
+    items: [
+      { icon: '♙', label: 'Player Profiles', action: 'profiles' },
+      { icon: '⌕', label: 'Search Players', action: 'profile-search' },
+    ],
+  },
+  other: {
+    title: 'Other',
+    items: [
+      { icon: '♞', label: 'Custom Variants', action: 'variants' },
+      { icon: '▤', label: 'Game History', action: 'history' },
+      { icon: '♪', label: 'Sound Settings', action: 'settings' },
+      { icon: '?', label: 'Help & Support', action: 'help' },
+    ],
+  },
+};
+
+function renderSidebarSubmenu(section) {
+  const submenu = document.querySelector('#sidebar-submenu');
+  const menu = sidebarSections[section];
+  if (!menu) return;
+  submenu.replaceChildren();
+  const heading = document.createElement('h2');
+  heading.textContent = menu.title;
+  submenu.append(heading);
+  for (const item of menu.items) {
+    const button = document.createElement('button');
+    button.className = 'sidebar-submenu-item';
+    button.type = 'button';
+    button.dataset.menuAction = item.action;
+    const icon = document.createElement('span');
+    icon.setAttribute('aria-hidden', 'true');
+    icon.textContent = item.icon;
+    const label = document.createElement('span');
+    label.textContent = item.label;
+    button.append(icon, label);
+    submenu.append(button);
+  }
+}
+
+function closeSidebar() {
+  const sidebar = document.querySelector('#site-sidebar');
+  sidebar.classList.remove('open');
+  sidebar.setAttribute('aria-hidden', 'true');
+  sidebar.inert = true;
+  document.querySelector('#sidebar-backdrop').hidden = true;
+  document.querySelector('#menu-toggle').setAttribute('aria-expanded', 'false');
+  document.body.classList.remove('sidebar-open');
+}
+
+function openProfilesDialog(searchMode = false) {
+  profilesDialog.showModal();
+  if (searchMode) {
+    document.querySelector('#profile-card').hidden = true;
+    document.querySelector('#profile-status').textContent = 'Search public player profiles by username.';
+    document.querySelector('#profile-search-input').focus();
+  } else if (authSession?.access_token) {
+    loadPlayerProfile();
+  } else {
+    document.querySelector('#profile-card').hidden = true;
+    document.querySelector('#profile-status').textContent =
+      'Sign in to view your own profile, or search for a username.';
+  }
+}
+
+function runSidebarAction(action) {
+  closeSidebar();
+  if (action === 'online') openOnlineDialog('friends');
+  else if (action === 'watch') openOnlineDialog('public');
+  else if (action === 'watch-invite') openOnlineDialog('friends');
+  else if (action === 'bots') botDirectory.showModal();
+  else if (action === 'signup') openAccountDialog('signup');
+  else if (action === 'login') openAccountDialog('signin');
+  else if (action === 'profiles' || action === 'profile') openProfilesDialog();
+  else if (action === 'profile-search') openProfilesDialog(true);
+  else if (action === 'puzzle') document.querySelector('#puzzle-start').click();
+  else if (action === 'analysis') document.querySelector('#analysis-open').click();
+  else if (action === 'suggest') document.querySelector('#suggest-move').click();
+  else if (action === 'variants') customRulesDialog.showModal();
+  else if (action === 'history') document.querySelector('.moves-section').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  else if (action === 'opening-notes') document.querySelector('.game-insights').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  else if (action === 'settings') {
+    renderSoundSettings();
+    soundSettingsDialog.showModal();
+  } else if (action === 'coach') {
+    document.querySelector('.game-insights').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    showMessage('Coach notes', 'Move insights appear beside your move history after you play. Try Suggest a Move for a local position hint.');
+  } else if (action === 'help') {
+    showMessage('Openboard help', 'Choose a menu section to find bots, online games, puzzles, move analysis, variants, and player profiles.');
+  } else if (action === 'coming-soon') {
+    showMessage('Not available yet', 'This feature is not part of Openboard yet.');
+  }
+}
+
+document.querySelector('#menu-toggle').addEventListener('click', () => {
+  const sidebar = document.querySelector('#site-sidebar');
+  if (sidebar.classList.contains('open')) {
+    closeSidebar();
+    return;
+  }
+  renderSidebarSubmenu('play');
+  sidebar.classList.add('open');
+  sidebar.setAttribute('aria-hidden', 'false');
+  sidebar.inert = false;
+  document.querySelector('#sidebar-backdrop').hidden = false;
+  document.querySelector('#menu-toggle').setAttribute('aria-expanded', 'true');
+  document.body.classList.add('sidebar-open');
+});
+document.querySelector('#sidebar-backdrop').addEventListener('click', closeSidebar);
+document.querySelector('#site-sidebar').addEventListener('click', (event) => {
+  const sectionButton = event.target.closest('[data-menu-section]');
+  if (sectionButton) {
+    const section = sectionButton.dataset.menuSection;
+    document.querySelectorAll('.sidebar-section').forEach((button) => {
+      const active = button === sectionButton;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-expanded', String(active));
+    });
+    renderSidebarSubmenu(section);
+    return;
+  }
+  const actionButton = event.target.closest('[data-menu-action]');
+  if (actionButton && !actionButton.disabled) runSidebarAction(actionButton.dataset.menuAction);
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') closeSidebar();
+});
 
 function isCustomVariantActive() {
   return customRules.boardSize !== 8 || customRules.noDraws || customRules.customPieces.length > 0
@@ -2261,6 +2560,7 @@ function handleOnlineMessage(socket, message) {
   if (message.type === 'authenticated') {
     onlineIdentityVerified = true;
     onlinePlayerName = message.username;
+    authUsername = message.username;
     document.querySelector('#online-account-state').textContent = `Signed in as @${onlinePlayerName}`;
     document.querySelector('#online-auth-status').textContent = 'Account ready for online play.';
     if (onlinePendingRequest) {
@@ -2375,6 +2675,19 @@ function handleOnlineMessage(socket, message) {
     updateOnlineStatus(onlineSpectating
       ? `Spectating · ${watching}.`
       : `Online game · ${watching}.`);
+    return;
+  }
+  if (message.type === 'rating-updated') {
+    updateOnlineStatus('Game result saved. Your online Elo estimate and profile record are updated.');
+    if (profilesDialog.open) loadPlayerProfile();
+    return;
+  }
+  if (message.type === 'rating-update-failed') {
+    updateOnlineStatus('The game ended, but the online rating could not be saved. Check that the server rating schema is installed.');
+    return;
+  }
+  if (message.type === 'rating-not-counted') {
+    updateOnlineStatus('Game ended before the first move, so it was not rated.');
     return;
   }
   if (message.type === 'chat-message') {
@@ -2595,9 +2908,10 @@ function finishDisconnectOnlineGame(socket = onlineSocket) {
   startNewGame();
 }
 
-function markGameResult(soundEvent = 'draw') {
+function markGameResult(soundEvent = 'draw', humanScore = null) {
   if (gameResult) return;
   gameResult = true;
+  if (humanScore !== null) recordOfflineRating(humanScore);
   stopActiveSound();
   playSound(soundEvent);
 }
@@ -2610,6 +2924,7 @@ function startNewGame() {
   }
   if (onlineMode && !onlineReady && onlineSocket) {
     game.reset();
+    offlineRatingRecorded = false;
     configureStartingPosition();
     gameResult = false;
     moveInsights = [];
@@ -2630,6 +2945,7 @@ function startNewGame() {
     activeWorker = null;
   }
   game.reset();
+  offlineRatingRecorded = false;
   configureStartingPosition();
   gameResult = false;
   analysisMode = false;
@@ -2687,7 +3003,7 @@ function tickClock() {
     playSound('clock-warning');
   }
   if (clock[activeColor] === 0) {
-      markGameResult(activeColor === playerColor ? 'defeat' : 'victory');
+      markGameResult(activeColor === playerColor ? 'defeat' : 'victory', activeColor === playerColor ? 0 : 1);
     gameMessage.textContent = activeColor === playerColor ? 'Time expired. You lose on time.' : 'The opponent ran out of time. You win!';
     renderBoard();
   }
@@ -3024,25 +3340,41 @@ function showMessage(title, text) {
 }
 
 document.querySelector('#online-open').addEventListener('click', () => {
-  selectOnlineSection(authSession?.access_token ? 'play' : 'account');
-  selectOnlineTab('friends');
-  onlineDialog.showModal();
+  openOnlineDialog('friends');
 });
 document.querySelector('#online-tab').addEventListener('click', () => {
-  selectOnlineSection(authSession?.access_token ? 'play' : 'account');
-  selectOnlineTab('public');
-  onlineDialog.showModal();
+  openOnlineDialog('public');
 });
 document.querySelector('#online-close').addEventListener('click', () => onlineDialog.close());
+document.querySelector('#account-tab').addEventListener('click', () => openAccountDialog('signin'));
+document.querySelector('#account-close').addEventListener('click', () => accountDialog.close());
+document.querySelector('#online-continue').addEventListener('click', () => {
+  accountDialog.close();
+  openOnlineDialog('friends');
+});
+document.querySelector('#online-go-account').addEventListener('click', () => {
+  onlineDialog.close();
+  openAccountDialog('signin');
+});
+document.querySelector('#profiles-tab').addEventListener('click', () => {
+  openProfilesDialog();
+});
+document.querySelector('#profiles-close').addEventListener('click', () => profilesDialog.close());
+document.querySelector('#profile-search-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  const username = document.querySelector('#profile-search-input').value.trim();
+  if (!/^[A-Za-z0-9_]{3,20}$/.test(username)) {
+    document.querySelector('#profile-card').hidden = true;
+    document.querySelector('#profile-status').textContent = 'Usernames must be 3–20 letters, numbers, or underscores.';
+    return;
+  }
+  loadPlayerProfile(username);
+});
 document.querySelector('#online-leave-game').addEventListener('click', () => onlineLeaveDialog.showModal());
 document.querySelector('#online-leave-cancel').addEventListener('click', () => onlineLeaveDialog.close());
 document.querySelector('#online-leave-confirm').addEventListener('click', disconnectOnlineGame);
 document.querySelector('#online-return-main').addEventListener('click', disconnectOnlineGame);
 document.querySelector('#online-wait-reconnect').addEventListener('click', () => onlineOpponentLeftDialog.close());
-document.querySelector('#online-account-tab').addEventListener('click', () => selectOnlineSection('account'));
-document.querySelector('#online-play-tab').addEventListener('click', () => selectOnlineSection('play'));
-document.querySelector('#online-continue').addEventListener('click', () => selectOnlineSection('play'));
-document.querySelector('#online-go-account').addEventListener('click', () => selectOnlineSection('account'));
 document.querySelector('#online-friends-tab').addEventListener('click', () => selectOnlineTab('friends'));
 document.querySelector('#online-public-tab').addEventListener('click', () => selectOnlineTab('public'));
 document.querySelector('#online-host').addEventListener('click', () => connectToOnlineRoom('create'));
@@ -3129,7 +3461,7 @@ document.querySelector('#resign').addEventListener('click', () => {
   if (onlineMode && onlineSocket?.readyState === WebSocket.OPEN) {
     onlineSocket.send(JSON.stringify({ type: 'resign' }));
   }
-  markGameResult('defeat');
+  markGameResult('defeat', 0);
   gameMessage.textContent = onlineMode ? 'You resigned. Your opponent wins.' : 'You resigned. The opponent wins.';
   renderBoard();
 });
@@ -3143,7 +3475,7 @@ document.querySelector('#offer-draw').addEventListener('click', () => {
   const accepted = !onlineMode && Math.abs(materialBalance) < 150;
   showMessage('Draw offer', accepted ? 'The bot accepts your draw offer.' : 'The bot declines. The game continues.');
   if (accepted) {
-    markGameResult('draw');
+    markGameResult('draw', 0.5);
     gameMessage.textContent = 'Draw by agreement.';
     renderBoard();
   }

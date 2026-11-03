@@ -9,11 +9,12 @@
     <meta name="theme-color" content="#17231f" />
     <meta name="description" content="A free, original chess game with a built-in local AI opponent." />
     <title>Openboard — Play Chess</title>
-    <link rel="stylesheet" href="./src/style.css" />
+    <link rel="stylesheet" href="./src/style.css?v=27" />
   </head>
   <body>
     <div id="app">
       <header class="topbar">
+        <button class="menu-toggle" id="menu-toggle" type="button" aria-label="Open navigation menu" aria-expanded="false" aria-controls="site-sidebar">☰</button>
         <a class="brand" href="#" aria-label="Openboard home">
           <span class="brand-mark" aria-hidden="true">♞</span>
           <span>openboard</span>
@@ -21,9 +22,32 @@
         <nav class="primary-nav" aria-label="Game modes">
           <a class="primary-nav-tab" href="#game">Computer</a>
           <button class="primary-nav-tab" id="online-tab" type="button" aria-haspopup="dialog" aria-controls="online-dialog">Online</button>
+          <button class="primary-nav-tab" id="profiles-tab" type="button" aria-haspopup="dialog" aria-controls="profiles-dialog">Profiles</button>
+          <button class="primary-nav-tab account-nav-tab" id="account-tab" type="button" aria-haspopup="dialog" aria-controls="account-dialog">Account</button>
         </nav>
         <span class="topbar-note">Chess, on your terms.</span>
       </header>
+      <div class="sidebar-backdrop" id="sidebar-backdrop" hidden></div>
+      <aside class="site-sidebar" id="site-sidebar" aria-label="Main navigation" aria-hidden="true" inert>
+        <div class="sidebar-brand"><span class="brand-mark" aria-hidden="true">♞</span><strong>openboard</strong></div>
+        <nav class="sidebar-primary" aria-label="Explore">
+          <button class="sidebar-section active" type="button" data-menu-section="play" aria-expanded="true"><span>♟</span>Play</button>
+          <button class="sidebar-section" type="button" data-menu-section="puzzles" aria-expanded="false"><span>🧩</span>Puzzles</button>
+          <button class="sidebar-section" type="button" data-menu-section="learn" aria-expanded="false"><span>📘</span>Learn</button>
+          <button class="sidebar-section" type="button" data-menu-section="train" aria-expanded="false"><span>♜</span>Train</button>
+          <button class="sidebar-section" type="button" data-menu-section="watch" aria-expanded="false"><span>◉</span>Watch</button>
+          <button class="sidebar-section" type="button" data-menu-section="community" aria-expanded="false"><span>♙</span>Community</button>
+          <button class="sidebar-section" type="button" data-menu-section="other" aria-expanded="false"><span>•••</span>Other</button>
+        </nav>
+        <div class="sidebar-submenu" id="sidebar-submenu" aria-live="polite"></div>
+        <div class="sidebar-bottom">
+          <button class="sidebar-action" type="button" data-menu-action="profile-search"><span>⌕</span>Search profiles</button>
+          <button class="primary-button sidebar-signup" type="button" data-menu-action="signup">Sign Up</button>
+          <button class="secondary-button sidebar-login" type="button" data-menu-action="login">Log In</button>
+          <button class="sidebar-action muted" type="button" data-menu-action="help"><span>?</span>Help &amp; Support</button>
+          <span class="sidebar-language">♧ &nbsp; English</span>
+        </div>
+      </aside>
 
       <main class="layout">
         <section class="play-area" id="game" aria-label="Chess game">
@@ -251,17 +275,11 @@
         </div>
       </form>
     </dialog>
-    <dialog id="online-dialog" class="online-dialog" aria-labelledby="online-title">
+    <dialog id="account-dialog" class="online-dialog account-dialog" aria-labelledby="account-title">
       <div class="directory-header">
-        <div><p class="eyebrow">ONLINE PLAY</p><h2 id="online-title">Play online</h2></div>
-        <button class="directory-close" id="online-close" type="button" aria-label="Close online play">×</button>
+        <div><p class="eyebrow">OPENBOARD ACCOUNT</p><h2 id="account-title">Sign up or log in</h2></div>
+        <button class="directory-close" id="account-close" type="button" aria-label="Close account">×</button>
       </div>
-      <p class="editor-note">Create an account or sign in, then switch to Play to join or create a lobby.</p>
-      <div class="online-sections" role="tablist" aria-label="Online account and play">
-        <button class="online-section-tab active" id="online-account-tab" type="button" role="tab" aria-selected="true" aria-controls="online-account-panel">Account</button>
-        <button class="online-section-tab" id="online-play-tab" type="button" role="tab" aria-selected="false" aria-controls="online-play-panel">Play</button>
-      </div>
-      <section id="online-account-panel" class="online-section-panel" role="tabpanel" aria-labelledby="online-account-tab">
       <section class="online-account" aria-label="Online account">
         <div class="online-account-heading"><strong>Player account</strong><span id="online-account-state">Sign in or create an account</span></div>
         <label class="studio-field" id="online-username-field"><span>Username (3–20 letters, numbers, or underscores)</span><input id="online-username" maxlength="20" autocomplete="username" minlength="3" /></label>
@@ -277,11 +295,17 @@
         <p class="studio-status" id="online-auth-status" role="status">Use an email you can access to create an account. When signing in, you can use your email or username.</p>
         <button class="primary-button online-continue-button" id="online-continue" type="button" hidden>Continue to online play</button>
       </section>
-      </section>
-      <section id="online-play-panel" class="online-section-panel" role="tabpanel" aria-labelledby="online-play-tab" hidden>
+    </dialog>
+    <dialog id="online-dialog" class="online-dialog" aria-labelledby="online-title">
+      <div class="directory-header">
+        <div><p class="eyebrow">ONLINE PLAY</p><h2 id="online-title">Play online</h2></div>
+        <button class="directory-close" id="online-close" type="button" aria-label="Close online play">×</button>
+      </div>
+      <p class="editor-note">Create a private lobby, join by invite, or browse public games.</p>
+      <section id="online-play-panel" class="online-section-panel">
         <div id="online-signin-required" class="online-signin-required" hidden>
-          <p>Sign in or create an account in the Account tab before joining or creating a lobby.</p>
-          <button class="primary-button" id="online-go-account" type="button">Go to account</button>
+          <p>Sign in or create a free account before joining or creating a lobby.</p>
+          <button class="primary-button" id="online-go-account" type="button">Sign in or create account</button>
         </div>
         <div id="online-play-controls">
       <section class="online-lobby-settings" aria-label="Lobby settings">
@@ -308,6 +332,27 @@
       </section>
       <div class="online-footer-actions"><button class="secondary-button" id="online-disconnect" type="button">Play offline</button></div>
       <p class="studio-status" id="online-status" role="status">No online room connected.</p>
+    </dialog>
+    <dialog id="profiles-dialog" class="profiles-dialog" aria-labelledby="profiles-title">
+      <div class="directory-header">
+        <div><p class="eyebrow">PLAYER RATINGS</p><h2 id="profiles-title">Player profiles</h2></div>
+        <button class="directory-close" id="profiles-close" type="button" aria-label="Close profiles">×</button>
+      </div>
+      <p>Find a public player profile by username. Online ratings and records are saved to the account.</p>
+      <form class="profile-search" id="profile-search-form">
+        <label class="sr-only" for="profile-search-input">Player username</label>
+        <input id="profile-search-input" maxlength="20" autocomplete="off" placeholder="Search username" />
+        <button class="primary-button" type="submit">Search</button>
+      </form>
+      <p class="studio-status" id="profile-status" role="status">Sign in to view your own profile, or search for a username.</p>
+      <article class="profile-card" id="profile-card" hidden>
+        <div class="profile-card-heading"><span class="profile-avatar" id="profile-avatar">?</span><div><span class="eyebrow">OPENBOARD PLAYER</span><h3 id="profile-username"></h3></div></div>
+        <div class="profile-rating-grid">
+          <div class="profile-rating"><span>ONLINE ELO · ESTIMATE</span><strong id="profile-online-elo">1000</strong><small id="profile-online-record">Provisional · 0 games</small></div>
+          <div class="profile-rating" id="profile-offline-rating-card"><span>OFFLINE ELO · THIS DEVICE</span><strong id="profile-offline-elo">1000</strong><small id="profile-offline-record">Estimated from local bot games</small></div>
+        </div>
+        <p class="profile-disclaimer">These are Openboard estimates, not official or externally verified chess ratings. Offline progress is stored only in this browser.</p>
+      </article>
     </dialog>
     <dialog id="online-leave-dialog" aria-labelledby="online-leave-title">
       <form method="dialog" class="message-dialog-content">
@@ -396,6 +441,6 @@
     <script defer src="./vendor/chess.js"></script>
     <script defer src="./src/large-board-chess.js"></script>
     <script defer src="./src/piece-studio.js"></script>
-    <script defer src="./src/main.js?v=25"></script>
+    <script defer src="./src/main.js?v=27"></script>
   </body>
 </html>
