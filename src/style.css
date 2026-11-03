@@ -241,7 +241,10 @@ dialog p { color: var(--muted); font-size: 12px; }
 .sidebar-section > span, .sidebar-action > span { width: 22px; flex: 0 0 22px; color: var(--lime); font-size: 17px; text-align: center; }
 .sidebar-section:hover, .sidebar-section.active, .sidebar-action:hover { color: #f5f6ef; background: #ffffff0c; }
 .sidebar-submenu { position: absolute; top: 0; bottom: 0; left: 100%; width: min(250px, calc(100vw - 184px)); min-width: 136px; overflow-y: auto; padding: 27px 12px; border-left: 1px solid #ffffff0d; background: #191a18; box-shadow: 10px 0 30px #0004; }
-.sidebar-submenu h2 { margin: 0 0 16px 8px; color: #eef1eb; font-size: 16px; }
+.sidebar-submenu-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 16px 8px; }
+.sidebar-submenu h2 { margin: 0; color: #eef1eb; font-size: 16px; }
+.sidebar-submenu-close { display: grid; width: 28px; height: 28px; flex: 0 0 28px; place-items: center; border: 1px solid #ffffff20; border-radius: 7px; color: #e9eee7; background: #ffffff08; font-size: 20px; line-height: 1; cursor: pointer; }
+.sidebar-submenu-close:hover, .sidebar-submenu-close:focus-visible { color: var(--lime); border-color: #c8e36a70; background: #c8e36a14; }
 .sidebar-submenu-item { display: flex; width: 100%; min-height: 39px; align-items: center; gap: 10px; padding: 0 8px; border: 0; border-radius: 7px; color: #d0d5cf; background: transparent; font: inherit; font-size: 11px; text-align: left; cursor: pointer; }
 .sidebar-submenu-item > span:first-child { width: 22px; flex: 0 0 22px; color: var(--lime); font-size: 16px; text-align: center; }
 .sidebar-submenu-item:hover { color: #fff; background: #ffffff0c; }

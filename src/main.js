@@ -2245,9 +2245,18 @@ function renderSidebarSubmenu(section) {
   const menu = sidebarSections[section];
   if (!menu) return;
   submenu.replaceChildren();
+  const submenuHeader = document.createElement('div');
+  submenuHeader.className = 'sidebar-submenu-header';
   const heading = document.createElement('h2');
   heading.textContent = menu.title;
-  submenu.append(heading);
+  const closeButton = document.createElement('button');
+  closeButton.className = 'sidebar-submenu-close';
+  closeButton.type = 'button';
+  closeButton.dataset.closeSubmenu = '';
+  closeButton.setAttribute('aria-label', 'Close submenu');
+  closeButton.textContent = '×';
+  submenuHeader.append(heading, closeButton);
+  submenu.append(submenuHeader);
   for (const item of menu.items) {
     const button = document.createElement('button');
     button.className = 'sidebar-submenu-item';
@@ -2261,12 +2270,18 @@ function renderSidebarSubmenu(section) {
     button.append(icon, label);
     submenu.append(button);
   }
+  submenu.hidden = false;
 }
 
 function closeSidebar() {
   const sidebar = document.querySelector('#site-sidebar');
   if (!sidebar.classList.contains('open')) return;
   sidebar.classList.remove('open');
+  document.querySelector('#sidebar-submenu').hidden = true;
+  document.querySelectorAll('.sidebar-section').forEach((button) => {
+    button.classList.remove('active');
+    button.setAttribute('aria-expanded', 'false');
+  });
   sidebar.setAttribute('aria-hidden', 'true');
   sidebar.inert = true;
   document.querySelector('#sidebar-backdrop').hidden = true;
@@ -2328,7 +2343,7 @@ document.querySelector('#menu-toggle').addEventListener('click', () => {
     closeSidebar();
     return;
   }
-  renderSidebarSubmenu('play');
+  document.querySelector('#sidebar-submenu').hidden = true;
   sidebar.classList.add('open');
   sidebar.setAttribute('aria-hidden', 'false');
   sidebar.inert = false;
@@ -2342,15 +2357,29 @@ document.querySelector('#menu-toggle').addEventListener('click', () => {
 document.querySelector('#sidebar-close').addEventListener('click', closeSidebar);
 document.querySelector('#sidebar-backdrop').addEventListener('click', closeSidebar);
 document.querySelector('#site-sidebar').addEventListener('click', (event) => {
+  if (event.target.closest('[data-close-submenu]')) {
+    document.querySelector('#sidebar-submenu').hidden = true;
+    document.querySelectorAll('.sidebar-section').forEach((button) => {
+      button.classList.remove('active');
+      button.setAttribute('aria-expanded', 'false');
+    });
+    return;
+  }
   const sectionButton = event.target.closest('[data-menu-section]');
   if (sectionButton) {
     const section = sectionButton.dataset.menuSection;
+    const submenu = document.querySelector('#sidebar-submenu');
+    const isCurrentSection = sectionButton.classList.contains('active');
     document.querySelectorAll('.sidebar-section').forEach((button) => {
-      const active = button === sectionButton;
+      const active = button === sectionButton && !(isCurrentSection && !submenu.hidden);
       button.classList.toggle('active', active);
       button.setAttribute('aria-expanded', String(active));
     });
-    renderSidebarSubmenu(section);
+    if (isCurrentSection && !submenu.hidden) {
+      submenu.hidden = true;
+    } else {
+      renderSidebarSubmenu(section);
+    }
     return;
   }
   const actionButton = event.target.closest('[data-menu-action]');
