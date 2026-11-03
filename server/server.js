@@ -2203,7 +2203,10 @@ websocketServer.on('connection', (socket) => {
   socket.on('message', (rawMessage) => {
     handleMessage(socket, player, rawMessage.toString()).catch((error) => {
       console.error('Online game request failed:', error);
-      send(socket, { type: 'error', message: 'The server could not process that request.' });
+      send(socket, {
+        type: 'error',
+        message: error.statusCode ? error.message : 'The server could not process that request.',
+      });
     });
   });
   socket.on('close', () => leaveRoom(player));

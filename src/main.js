@@ -254,6 +254,7 @@ let onlinePreviousRules = null;
 let currentOnlineGameId = null;
 let pendingRematchRequestId = null;
 let rematchRequestPending = false;
+let rematchRequestTimeout = null;
 let joiningGameChallengeType = '';
 let resignationPending = false;
 let customRulesDialogContext = 'game';
@@ -4488,16 +4489,25 @@ function handleOnlineMessage(socket, message) {
     if (resignationPending) resignationPending = false;
     if (rematchRequestPending) {
       rematchRequestPending = false;
+      if (rematchRequestTimeout !== null) {
+        window.clearTimeout(rematchRequestTimeout);
+        rematchRequestTimeout = null;
+      }
       document.querySelector('#game-over-rematch').disabled = false;
       document.querySelector('#game-over-rematch').textContent = 'Rematch';
+      setGameOverStatus(message.message || 'The rematch request could not be sent.');
     }
     if (pendingRematchRequestId && gameOverDialog.open) {
       document.querySelector('#game-over-rematch').disabled = false;
+      setGameOverStatus(message.message || 'The rematch action could not be completed.');
     }
     if (pendingRematchRequestId && rematchOfferDialog.open) {
       document.querySelector('#rematch-accept').disabled = false;
       document.querySelector('#rematch-decline').disabled = false;
       setGameOverStatus(message.message || 'The rematch request could not be completed.');
+    }
+    if (pendingRematchRequestId && !gameOverDialog.open && !rematchOfferDialog.open) {
+      setGameOverStatus(message.message || 'The rematch action could not be completed.');
     }
     if (onlineMode) gameMessage.textContent = message.message || 'The room server rejected that action.';
     if (!onlineIdentityVerified) {
@@ -4694,6 +4704,10 @@ function handleOnlineMessage(socket, message) {
   if (message.type === 'rematch-waiting') {
     pendingRematchRequestId = message.requestId;
     rematchRequestPending = false;
+    if (rematchRequestTimeout !== null) {
+      window.clearTimeout(rematchRequestTimeout);
+      rematchRequestTimeout = null;
+    }
     document.querySelector('#game-over-rematch').disabled = false;
     document.querySelector('#game-over-rematch').textContent = 'Cancel Request';
     setGameOverStatus('Rematch requested. Waiting for your opponent...');
@@ -4716,6 +4730,10 @@ function handleOnlineMessage(socket, message) {
   if (message.type === 'rematch-request-cancelled') {
     pendingRematchRequestId = null;
     rematchRequestPending = false;
+    if (rematchRequestTimeout !== null) {
+      window.clearTimeout(rematchRequestTimeout);
+      rematchRequestTimeout = null;
+    }
     setRematchOfferBubble(false);
     const rematchButton = document.querySelector('#game-over-rematch');
     rematchButton.disabled = false;
@@ -4727,6 +4745,10 @@ function handleOnlineMessage(socket, message) {
   if (message.type === 'rematch-declined') {
     pendingRematchRequestId = null;
     rematchRequestPending = false;
+    if (rematchRequestTimeout !== null) {
+      window.clearTimeout(rematchRequestTimeout);
+      rematchRequestTimeout = null;
+    }
     setRematchOfferBubble(false);
     document.querySelector('#game-over-rematch').textContent = 'Rematch';
     setGameOverStatus('Your opponent declined the rematch.');
@@ -4747,6 +4769,10 @@ function handleOnlineMessage(socket, message) {
   if (message.type === 'rematch-expired') {
     pendingRematchRequestId = null;
     rematchRequestPending = false;
+    if (rematchRequestTimeout !== null) {
+      window.clearTimeout(rematchRequestTimeout);
+      rematchRequestTimeout = null;
+    }
     setRematchOfferBubble(false);
     document.querySelector('#game-over-rematch').disabled = false;
     document.querySelector('#game-over-rematch').textContent = 'Rematch';
@@ -4762,6 +4788,10 @@ function handleOnlineMessage(socket, message) {
     || message.type === 'opponent-disconnected') {
     pendingRematchRequestId = null;
     rematchRequestPending = false;
+    if (rematchRequestTimeout !== null) {
+      window.clearTimeout(rematchRequestTimeout);
+      rematchRequestTimeout = null;
+    }
     setRematchOfferBubble(false);
     document.querySelector('#game-over-rematch').textContent = 'Rematch';
     if (rematchOfferDialog.open) rematchOfferDialog.close();
@@ -4774,6 +4804,10 @@ function handleOnlineMessage(socket, message) {
   if (message.type === 'rematch-accepted') {
     pendingRematchRequestId = null;
     rematchRequestPending = false;
+    if (rematchRequestTimeout !== null) {
+      window.clearTimeout(rematchRequestTimeout);
+      rematchRequestTimeout = null;
+    }
     setRematchOfferBubble(false);
     if (rematchOfferDialog.open) rematchOfferDialog.close();
     setGameOverStatus('Your opponent accepted. Starting the rematch...');
@@ -4979,6 +5013,17 @@ async function connectToOnlineRoom(action, roomCode = null, roomPassword = '') {
     if (isCreateAction) setOnlineCreatePending(false);
     if (socket !== onlineSocket) return;
     onlineReady = false;
+    if (rematchRequestPending) {
+      rematchRequestPending = false;
+      if (rematchRequestTimeout !== null) {
+        window.clearTimeout(rematchRequestTimeout);
+        rematchRequestTimeout = null;
+      }
+      const rematchButton = document.querySelector('#game-over-rematch');
+      rematchButton.disabled = false;
+      rematchButton.textContent = 'Rematch';
+      setGameOverStatus('Disconnected before the server confirmed the rematch request. Reconnect and try again.');
+    }
     updateOnlineSuggestionAvailability();
     updateOnlineChatAvailability();
     pendingPremove = null;
@@ -5111,6 +5156,10 @@ function refreshRematchNotifications() {
 function resetRematchUi() {
   pendingRematchRequestId = null;
   rematchRequestPending = false;
+  if (rematchRequestTimeout !== null) {
+    window.clearTimeout(rematchRequestTimeout);
+    rematchRequestTimeout = null;
+  }
   const rematchButton = document.querySelector('#game-over-rematch');
   rematchButton.textContent = 'Rematch';
   rematchButton.disabled = false;
@@ -6129,6 +6178,14 @@ document.querySelector('#game-over-rematch').addEventListener('click', () => {
   rematchRequestPending = true;
   button.disabled = true;
   setGameOverStatus('Sending rematch request...');
+  rematchRequestTimeout = window.setTimeout(() => {
+    if (!rematchRequestPending) return;
+    rematchRequestPending = false;
+    rematchRequestTimeout = null;
+    button.disabled = false;
+    button.textContent = 'Rematch';
+    setGameOverStatus('The server did not confirm the rematch request. Check your connection and try again.');
+  }, 12_000);
   onlineSocket.send(JSON.stringify({ type: 'rematch-request', gameId: currentOnlineGameId }));
 });
 

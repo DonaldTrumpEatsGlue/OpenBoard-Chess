@@ -1529,6 +1529,40 @@ test('a rematch requested after the opponent returns to the menu appears in thei
   }
 });
 
+test('a failed inbox rematch explains when the social database schema is missing', async () => {
+  const whiteToken = createAccount('MissingSchemaSender');
+  const blackToken = createAccount('MissingSchemaRecipient');
+  const white = await connectWithAccessToken(whiteToken, 'MissingSchemaSender');
+  const black = await connectWithAccessToken(blackToken, 'MissingSchemaRecipient');
+  try {
+    const room = await request(white, { type: 'create-room', lobbyName: 'Missing rematch schema' });
+    const whiteStart = waitForMessage(white, (message) => message.type === 'game-start');
+    await Promise.all([
+      whiteStart,
+      request(black, { type: 'join-room', code: room.code }),
+    ]);
+
+    const whiteEnded = waitForMessage(white, (message) => message.type === 'game-ended');
+    const blackEnded = waitForMessage(black, (message) => message.type === 'game-ended');
+    white.send(JSON.stringify({ type: 'resign' }));
+    const [result] = await Promise.all([whiteEnded, blackEnded]);
+    const opponentReturned = waitForMessage(white, (message) => message.type === 'opponent-returned-to-menu');
+    await request(black, { type: 'leave-room' });
+    await opponentReturned;
+
+    socialSchemaMissing = true;
+    const rejected = await sendAndWait(white, {
+      type: 'rematch-request',
+      gameId: result.gameId,
+    }, (message) => message.type === 'error');
+    assert.match(rejected.message, /run supabase\/schema\.sql/i);
+  } finally {
+    socialSchemaMissing = false;
+    white.close();
+    black.close();
+  }
+});
+
 test('online player profiles omit the default rating for accounts with no rated games', async () => {
   const white = await connect(undefined, 'UnratedWhite');
   const black = await connect(undefined, 'UnratedBlack');
