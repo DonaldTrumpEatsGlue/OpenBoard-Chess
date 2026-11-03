@@ -169,6 +169,9 @@ const offlineRatingStorageKey = 'openboard-offline-ratings';
 const playableBoardSizes = [8, 10, 12, 14, 16, 18, 20];
 let authSession = null;
 let authUsername = '';
+let sidebarProfileRequestFor = '';
+let sidebarProfileRequestId = 0;
+let sidebarProfileIdentity = null;
 let authMode = 'signup';
 let passwordRecoveryMode = false;
 let passwordRecoveryCodeMode = false;
@@ -1728,6 +1731,7 @@ function initializeAuthSession() {
 
 function updateAccountUI(message = '') {
   const isSignedIn = Boolean(authSession?.access_token);
+  updateSidebarAccountControls(isSignedIn);
   const usernameField = document.querySelector('#online-username-field');
   const emailField = document.querySelector('#online-email-field');
   const identityField = document.querySelector('#online-email');
@@ -1766,6 +1770,56 @@ function updateAccountUI(message = '') {
   document.querySelector('#online-signin-required').hidden = isSignedIn && !passwordRecoveryMode && !passwordRecoveryCodeMode;
   document.querySelector('#online-play-controls').hidden = !isSignedIn || passwordRecoveryMode || passwordRecoveryCodeMode;
   if (message) document.querySelector('#online-auth-status').textContent = message;
+}
+
+function updateSidebarAccountControls(isSignedIn) {
+  const profileButton = document.querySelector('#sidebar-profile');
+  const profileName = document.querySelector('.sidebar-profile-name');
+  const profileFlag = document.querySelector('.sidebar-profile-flag');
+  document.querySelector('.sidebar-signup').hidden = isSignedIn;
+  document.querySelector('.sidebar-login').hidden = isSignedIn;
+  profileButton.hidden = !isSignedIn;
+
+  if (!isSignedIn) {
+    sidebarProfileRequestId += 1;
+    sidebarProfileRequestFor = '';
+    sidebarProfileIdentity = null;
+    return;
+  }
+
+  if (!authUsername && typeof authSession.user?.user_metadata?.username === 'string') {
+    authUsername = authSession.user.user_metadata.username;
+  }
+  const userId = authSession.user?.id || authSession.access_token;
+  profileName.textContent = authUsername ? `@${authUsername}` : 'Your profile';
+  profileFlag.textContent = '';
+  profileButton.setAttribute('aria-label', authUsername
+    ? `Your profile, ${authUsername}`
+    : 'Your profile');
+
+  if (sidebarProfileIdentity?.userId === userId) {
+    profileFlag.textContent = countryFlagEmoji(sidebarProfileIdentity.countryCode);
+    return;
+  }
+  if (sidebarProfileRequestFor === userId) return;
+
+  sidebarProfileRequestFor = userId;
+  const requestId = ++sidebarProfileRequestId;
+  requestPlayerProfile().then((profile) => {
+    if (requestId !== sidebarProfileRequestId
+      || !authSession?.access_token
+      || (authSession.user?.id || authSession.access_token) !== userId) return;
+    authUsername = profile.username;
+    sidebarProfileIdentity = { userId, countryCode: profile.countryCode };
+    profileName.textContent = `@${profile.username}`;
+    profileFlag.textContent = countryFlagEmoji(profile.countryCode);
+    profileButton.setAttribute('aria-label',
+      `Your profile, ${profile.username}${profile.countryCode ? `, ${countryLabel(profile.countryCode)}` : ''}`);
+  }).catch((error) => {
+    if (requestId === sidebarProfileRequestId) {
+      console.error('Could not load sidebar profile details:', error);
+    }
+  });
 }
 
 function makeAuthorizationHeader(accessToken) {
@@ -2780,6 +2834,7 @@ function runSidebarAction(action) {
   else if (action === 'bots') botDirectory.showModal();
   else if (action === 'signup') openAccountDialog('signup');
   else if (action === 'login') openAccountDialog('signin');
+  else if (action === 'profile') openProfilesPage();
   else if (action === 'profiles') openProfilesPage();
   else if (action === 'puzzle') document.querySelector('#puzzle-start').click();
   else if (action === 'analysis') document.querySelector('#analysis-open').click();
