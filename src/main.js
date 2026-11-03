@@ -1068,8 +1068,16 @@ function renderBoard() {
 function renderCapturedPieces() {
   const history = game.history({ verbose: true });
   const trays = [
-    { selector: '#human-captured-pieces', capturer: playerColor, label: 'you' },
-    { selector: '#opponent-captured-pieces', capturer: playerColor === 'w' ? 'b' : 'w', label: 'your opponent' },
+    {
+      selector: '#human-captured-pieces',
+      capturer: playerColor,
+      label: onlineSpectating ? (playerColor === 'w' ? 'White' : 'Black') : 'you',
+    },
+    {
+      selector: '#opponent-captured-pieces',
+      capturer: playerColor === 'w' ? 'b' : 'w',
+      label: onlineSpectating ? (playerColor === 'w' ? 'Black' : 'White') : 'your opponent',
+    },
   ];
   for (const { selector, capturer, label } of trays) {
     const tray = document.querySelector(selector);
@@ -3969,6 +3977,11 @@ function setOnlineGameState(active, spectating = false) {
   }
   onlineMode = active;
   onlineSpectating = active && spectating;
+  gamePage.classList.toggle('is-spectating', onlineSpectating);
+  document.querySelector('.game-panel').setAttribute(
+    'aria-label',
+    onlineSpectating ? 'Spectated game moves and chat' : 'Game controls and move history',
+  );
   document.querySelector('#online-game-actions').hidden = !active;
   updateSpectatorCount(0);
   setOnlineCreatePending(onlineCreatePending);
@@ -4148,6 +4161,7 @@ function handleOnlineMessage(socket, message) {
     onlineReady = true;
     playerColor = message.color === 'w' ? 'w' : 'b';
     if (onlineSpectating) {
+      renderSpectatorPlayers(message.players, message.playerCountries);
       setOnlineChatHistory({ players: message.playerChat, spectators: message.spectatorChat });
       restoreOnlinePosition(message);
       updateOnlineStatus(`Spectating ${message.players?.w || 'White'} vs ${message.players?.b || 'Black'}.`);
@@ -4186,22 +4200,7 @@ function handleOnlineMessage(socket, message) {
     playerColor = 'w';
     playColorSelect.value = playerColor;
     flipped = false;
-    if (message.players) {
-      document.querySelector('#opponent-name').textContent = 'Spectating';
-      const spectatorNames = document.querySelector('#bot-profile-name');
-      spectatorNames.replaceChildren();
-      if (message.players.w) {
-        spectatorNames.append(createCountryPlayerName(message.players.w, message.playerCountries?.w));
-      } else {
-        spectatorNames.append(document.createTextNode('White'));
-      }
-      spectatorNames.append(document.createTextNode(' vs '));
-      if (message.players.b) {
-        spectatorNames.append(createCountryPlayerName(message.players.b, message.playerCountries?.b));
-      } else {
-        spectatorNames.append(document.createTextNode('Black'));
-      }
-    }
+    renderSpectatorPlayers(message.players, message.playerCountries);
     setOnlineChatHistory({ players: message.playerChat, spectators: message.spectatorChat });
     updateOnlineChatAvailability();
     if (!restoreOnlinePosition(message)) return;
@@ -4519,9 +4518,47 @@ function startNewGame() {
 }
 
 function updateColorLabels() {
+  if (onlineSpectating) {
+    document.querySelector('#human-color-tag').textContent = 'WHITE';
+    document.querySelector('#opponent-color-tag').textContent = 'BLACK';
+    document.querySelector('#human-color-label').textContent = 'White';
+    document.querySelector('#human-captured-pieces').setAttribute('aria-label', 'Pieces captured by White');
+    document.querySelector('#opponent-captured-pieces').setAttribute('aria-label', 'Pieces captured by Black');
+    document.querySelector('#opponent-description').hidden = true;
+    document.querySelector('#opponent-strength').hidden = true;
+    return;
+  }
+  document.querySelector('#human-color-label').textContent = `${playerColor === 'w' ? 'White' : 'Black'} · ${game.turn() === playerColor ? 'Your move' : aiThinking ? 'Opponent thinking' : 'Game in progress'}`;
+  document.querySelector('#human-captured-pieces').setAttribute('aria-label', 'Pieces captured by you');
+  document.querySelector('#opponent-captured-pieces').setAttribute('aria-label', 'Pieces captured by your opponent');
   document.querySelector('#human-color-tag').textContent = playerColor === 'w' ? 'WHITE' : 'BLACK';
   document.querySelector('#opponent-color-tag').textContent = playerColor === 'w' ? 'BLACK' : 'WHITE';
-  document.querySelector('#human-color-label').textContent = `${playerColor === 'w' ? 'White' : 'Black'} · ${game.turn() === playerColor ? 'Your move' : aiThinking ? 'Opponent thinking' : 'Game in progress'}`;
+  document.querySelector('.human-row .player-details strong').textContent = 'You';
+  document.querySelector('.human-row .avatar').textContent = 'Y';
+  document.querySelector('#opponent-description').hidden = false;
+  document.querySelector('#opponent-strength').hidden = false;
+}
+
+function renderSpectatorPlayers(players, playerCountries = {}) {
+  playerCountries = playerCountries || {};
+  const rows = [
+    { row: document.querySelector('.opponent-row'), name: players?.b, countryCode: playerCountries.b, color: 'Black' },
+    { row: document.querySelector('.human-row'), name: players?.w, countryCode: playerCountries.w, color: 'White' },
+  ];
+  for (const { row, name, countryCode, color } of rows) {
+    const playerName = row.querySelector('.player-details strong');
+    playerName.replaceChildren(name
+      ? createCountryPlayerName(name, countryCode)
+      : document.createTextNode(color));
+    const avatar = row.querySelector('.avatar');
+    avatar.textContent = name ? [...name][0].toUpperCase() : color[0];
+    avatar.setAttribute('aria-label', `${color} player`);
+  }
+  document.querySelector('#opponent-description').hidden = true;
+  document.querySelector('#opponent-strength').hidden = true;
+  document.querySelector('#human-color-label').textContent = 'White';
+  document.querySelector('#opponent-color-tag').textContent = 'BLACK';
+  document.querySelector('#human-color-tag').textContent = 'WHITE';
 }
 
 function updateClockDisplay() {

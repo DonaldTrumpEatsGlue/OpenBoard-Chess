@@ -265,6 +265,25 @@ dialog p { color: var(--muted); font-size: 12px; }
 .country-flag { display: block; width: 100%; height: 100%; object-fit: cover; }
 .country-flag-fallback { color: #eaf0e8; font: 700 7px/1 Manrope, sans-serif; letter-spacing: -.03em; }
 .country-flag-fallback[hidden] { display: none; }
+#game-page.is-spectating .game-heading,
+#game-page.is-spectating .match-settings,
+#game-page.is-spectating #browse-bots,
+#game-page.is-spectating #online-open,
+#game-page.is-spectating #piece-studio-open,
+#game-page.is-spectating #custom-rules-open,
+#game-page.is-spectating #practice-coach,
+#game-page.is-spectating .opponent-card,
+#game-page.is-spectating .game-panel > .panel-header,
+#game-page.is-spectating .game-panel > .action-row,
+#game-page.is-spectating .game-panel > .secondary-actions,
+#game-page.is-spectating .game-panel > .puzzle-progress,
+#game-page.is-spectating .game-panel > .suggest-move-button,
+#game-page.is-spectating .game-insights,
+#game-page.is-spectating .game-panel > .panel-footer { display: none; }
+#game-page.is-spectating .game-panel { min-height: 0; margin-top: 0; padding: 16px; }
+.is-spectating .player-details > #opponent-description,
+.is-spectating .player-details > #opponent-strength { display: none; }
+.is-spectating .avatar { font-size: 13px; font-weight: 700; }
 .sidebar-primary { display: grid; min-height: 0; gap: 3px; overflow-y: auto; overscroll-behavior: contain; }
 .sidebar-section, .sidebar-action { display: flex; width: 100%; min-height: 39px; align-items: center; gap: 11px; padding: 0 9px; border: 0; border-radius: 7px; color: #d3d8d1; background: transparent; font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
 .sidebar-section > span, .sidebar-action > span { width: 22px; flex: 0 0 22px; color: var(--lime); font-size: 17px; text-align: center; }
