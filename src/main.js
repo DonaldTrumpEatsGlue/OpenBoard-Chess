@@ -1649,7 +1649,10 @@ async function requestPlayerProfile(username = '') {
   }
   if (!response.ok) throw new Error(profile.message || 'Could not load this player profile.');
   if (ownProfile && !profile.countryCode) {
-    profile.countryCode = authSession?.user?.user_metadata?.country_code || null;
+    const metadataCountryCode = authSession?.user?.user_metadata?.country_code || '';
+    profile.countryCode = /^[A-Za-z]{2}$/.test(metadataCountryCode)
+      ? metadataCountryCode.toUpperCase()
+      : null;
   }
   return profile;
 }
