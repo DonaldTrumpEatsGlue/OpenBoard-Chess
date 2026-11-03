@@ -4231,6 +4231,11 @@ function handleOnlineMessage(socket, message) {
       document.querySelector('#game-over-rematch').disabled = false;
       document.querySelector('#game-over-rematch').textContent = 'Rematch';
     }
+    if (pendingRematchRequestId && rematchOfferDialog.open) {
+      document.querySelector('#rematch-accept').disabled = false;
+      document.querySelector('#rematch-decline').disabled = false;
+      setGameOverStatus(message.message || 'The rematch request could not be completed.');
+    }
     if (onlineMode) gameMessage.textContent = message.message || 'The room server rejected that action.';
     if (!onlineIdentityVerified) {
       onlinePendingRequest = null;
@@ -4430,6 +4435,8 @@ function handleOnlineMessage(socket, message) {
     return;
   }
   if (message.type === 'rematch-offered') {
+    document.querySelector('#rematch-accept').disabled = false;
+    document.querySelector('#rematch-decline').disabled = false;
     pendingRematchRequestId = message.requestId;
     document.querySelector('#rematch-offer-message').textContent =
       `${message.name || 'Your opponent'} wants a rematch. Accept to start a new game with colors switched.`;
@@ -4454,6 +4461,8 @@ function handleOnlineMessage(socket, message) {
   if (message.type === 'rematch-declined-confirmed') {
     pendingRematchRequestId = null;
     rematchRequestPending = false;
+    document.querySelector('#rematch-accept').disabled = false;
+    document.querySelector('#rematch-decline').disabled = false;
     if (rematchOfferDialog.open) rematchOfferDialog.close();
     setGameOverStatus('You declined the rematch.');
     return;
@@ -4803,6 +4812,17 @@ function setGameOverStatus(message) {
   status.hidden = !message;
 }
 
+function resetRematchUi() {
+  pendingRematchRequestId = null;
+  rematchRequestPending = false;
+  const rematchButton = document.querySelector('#game-over-rematch');
+  rematchButton.textContent = 'Rematch';
+  rematchButton.disabled = false;
+  document.querySelector('#rematch-accept').disabled = false;
+  document.querySelector('#rematch-decline').disabled = false;
+  setGameOverStatus('');
+}
+
 function finishOnlineGameFromServer(message) {
   if (!onlineMode || message.gameId !== currentOnlineGameId || !message.termination) return;
   const score = onlineSpectating ? 0.5
@@ -4838,7 +4858,7 @@ function startNewGame() {
   if (gameOverDialog.open) gameOverDialog.close();
   if (resignConfirmDialog.open) resignConfirmDialog.close();
   if (rematchOfferDialog.open) rematchOfferDialog.close();
-  pendingRematchRequestId = null;
+  resetRematchUi();
   resignationPending = false;
   const requestedSize = Number(customRules.boardSize) || 8;
   if (requestedSize !== activeBoardSize) {
