@@ -1886,6 +1886,7 @@ function populateCountryOptions() {
 function renderPlayerProfile(profile, isOwnProfile = false) {
   const card = document.querySelector('#profile-card');
   currentViewedProfile = profile;
+  isOwnProfile = isOwnProfile || isCurrentUserProfile(profile);
   document.querySelector('#profile-avatar-letter').textContent = [...profile.username][0].toUpperCase();
   const avatarImage = document.querySelector('#profile-avatar-image');
   avatarImage.hidden = !profile.avatarData;
@@ -1928,7 +1929,7 @@ function renderPlayerProfile(profile, isOwnProfile = false) {
 
 function renderProfileActions(profile, isOwnProfile) {
   const actions = document.querySelector('#profile-actions');
-  actions.hidden = isOwnProfile || !profile.username;
+  actions.hidden = isOwnProfile || isCurrentUserProfile(profile) || !profile.username;
   if (actions.hidden) return;
   const friend = socialOverview.friends.some((entry) => (
     (profile.id && entry.id === profile.id)
@@ -2013,6 +2014,11 @@ async function challengeProfilePlayer() {
     return;
   }
   if (!currentViewedProfile?.username) return;
+  if (isCurrentUserProfile(currentViewedProfile)) {
+    document.querySelector('#profile-status').textContent = 'You cannot challenge yourself.';
+    renderProfileActions(currentViewedProfile, true);
+    return;
+  }
   profileChallengeUsername = currentViewedProfile.username;
   document.querySelector('#challenge-title').textContent = `Challenge @${profileChallengeUsername}`;
   document.querySelector('#challenge-description').textContent =
@@ -2027,6 +2033,10 @@ async function sendProfileChallengeInvite(roomCode) {
   const username = profileChallengeUsername;
   profileChallengeUsername = '';
   if (!username) return;
+  if (isCurrentUserUsername(username)) {
+    document.querySelector('#online-status').textContent = 'You cannot challenge yourself.';
+    return;
+  }
   let copied = false;
   try {
     await navigator.clipboard.writeText(roomCode);
@@ -2057,6 +2067,10 @@ async function sendScheduledProfileChallenge(event) {
   event.preventDefault();
   const username = profileChallengeUsername;
   if (!username) return;
+  if (isCurrentUserUsername(username)) {
+    document.querySelector('#challenge-status').textContent = 'You cannot challenge yourself.';
+    return;
+  }
   const scheduledAt = new Date(document.querySelector('#challenge-scheduled-at').value);
   if (Number.isNaN(scheduledAt.getTime()) || scheduledAt.getTime() < Date.now() + 60_000) {
     document.querySelector('#challenge-status').textContent = 'Choose a time at least one minute in the future.';
@@ -2922,6 +2936,23 @@ function playerNameWithCountry(username, countryCode) {
 function countryLabel(countryCode) {
   if (!/^[A-Z]{2}$/.test(countryCode || '')) return '';
   return new Intl.DisplayNames([navigator.language || 'en'], { type: 'region' }).of(countryCode);
+}
+
+function isCurrentUserProfile(profile) {
+  if (!authSession?.access_token || !profile) return false;
+  const currentUserId = authSession.user?.id;
+  return Boolean(
+    (currentUserId && profile.id === currentUserId)
+    || [authUsername, authSession.user?.user_metadata?.username]
+      .filter(Boolean)
+      .some((username) => profile.username?.toLowerCase() === username.toLowerCase()),
+  );
+}
+
+function isCurrentUserUsername(username) {
+  return Boolean(username && [authUsername, authSession?.user?.user_metadata?.username]
+    .filter(Boolean)
+    .some((currentUsername) => username.toLowerCase() === currentUsername.toLowerCase()));
 }
 
 async function requestSocialApi(path, method = 'GET', body) {
@@ -4876,6 +4907,11 @@ document.querySelector('#profile-add-friend').addEventListener('click', async ()
     return;
   }
   const status = document.querySelector('#profile-status');
+  if (isCurrentUserProfile(currentViewedProfile)) {
+    status.textContent = 'You cannot add yourself as a friend.';
+    renderProfileActions(currentViewedProfile, true);
+    return;
+  }
   const incoming = socialOverview.incomingRequests.find((request) => (
     request.username.toLowerCase() === currentViewedProfile.username.toLowerCase()
   ));
@@ -4916,6 +4952,11 @@ document.querySelector('#profile-block').addEventListener('click', async () => {
   if (!currentViewedProfile?.username) return;
   if (!authSession?.access_token) {
     openAccountDialog('signin');
+    return;
+  }
+  if (isCurrentUserProfile(currentViewedProfile)) {
+    document.querySelector('#profile-status').textContent = 'You cannot block yourself.';
+    renderProfileActions(currentViewedProfile, true);
     return;
   }
   const blocked = socialOverview.blockedUsers.some((entry) => entry.id === currentViewedProfile.id);
