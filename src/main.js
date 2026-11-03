@@ -861,6 +861,32 @@ function renderBoard() {
     });
   });
   renderMoves();
+  renderCapturedPieces();
+}
+
+function renderCapturedPieces() {
+  const history = game.history({ verbose: true });
+  const trays = [
+    { selector: '#human-captured-pieces', capturer: playerColor, label: 'you' },
+    { selector: '#opponent-captured-pieces', capturer: playerColor === 'w' ? 'b' : 'w', label: 'your opponent' },
+  ];
+  for (const { selector, capturer, label } of trays) {
+    const tray = document.querySelector(selector);
+    const captured = history
+      .filter((move) => move.color === capturer && move.captured)
+      .map((move) => ({ type: move.captured, color: move.color === 'w' ? 'b' : 'w' }));
+    tray.replaceChildren();
+    tray.hidden = captured.length === 0;
+    if (!captured.length) continue;
+    tray.setAttribute('aria-label', `${captured.length} ${captured.length === 1 ? 'piece' : 'pieces'} captured by ${label}`);
+    for (const piece of captured) {
+      const icon = document.createElement('span');
+      icon.className = `captured-piece ${piece.color === 'w' ? 'white-piece' : 'black-piece'}`;
+      icon.textContent = pieceTheme.symbols[piece.color][piece.type];
+      icon.setAttribute('aria-hidden', 'true');
+      tray.append(icon);
+    }
+  }
 }
 
 function isPromotionSquare(square, color) {
