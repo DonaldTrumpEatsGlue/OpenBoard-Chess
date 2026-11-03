@@ -294,6 +294,7 @@ dialog p { color: var(--muted); font-size: 12px; }
 #game-page.is-online-game .game-panel > .suggest-move-button,
 #game-page.is-online-game .game-panel > .secondary-actions > #offer-draw { display: none; }
 #game-page.is-spectating .game-panel { min-height: 0; margin-top: 0; padding: 16px; }
+#game-page [hidden] { display: none !important; }
 .is-spectating .player-details > #opponent-description,
 .is-spectating .player-details > #opponent-strength { display: none; }
 .is-spectating .avatar { font-size: 13px; font-weight: 700; }

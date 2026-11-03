@@ -3912,6 +3912,26 @@ function isCustomVariantActive() {
 }
 
 function configureOnlineControls(active, spectating = false) {
+  const localOnlySelectors = [
+    '.game-heading',
+    '.match-settings',
+    '#browse-bots',
+    '#online-open',
+    '#piece-studio-open',
+    '#custom-rules-open',
+    '.game-panel > .panel-header',
+    '.game-panel > .action-row',
+    '.game-panel > .puzzle-progress',
+    '.game-panel > .opponent-card',
+    '.game-insights',
+    '#practice-coach',
+    '#suggest-move',
+    '#offer-draw',
+  ];
+  for (const selector of localOnlySelectors) {
+    const element = document.querySelector(selector);
+    if (element) element.hidden = active;
+  }
   document.querySelector('#play-color').disabled = active;
   document.querySelector('#time-control').disabled = active;
   document.querySelector('#difficulty').disabled = active;
