@@ -1648,6 +1648,9 @@ async function requestPlayerProfile(username = '') {
     throw new Error('The online server returned an unreadable player profile.');
   }
   if (!response.ok) throw new Error(profile.message || 'Could not load this player profile.');
+  if (ownProfile && !profile.countryCode) {
+    profile.countryCode = authSession?.user?.user_metadata?.country_code || null;
+  }
   return profile;
 }
 
