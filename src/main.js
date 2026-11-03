@@ -134,6 +134,8 @@ let tutorialDemoGame = null;
 let tutorialDemoHighlights = [];
 let tutorialDemoStartFen = '';
 let tutorialDemoMoves = [];
+let tutorialDemoMoveNotes = [];
+let tutorialDemoMoveHighlights = [];
 let tutorialDemoStepIndex = 0;
 let tutorialPlaybackTimer = null;
 const learningContent = window.openboardLearningContent;
@@ -894,8 +896,7 @@ function renderBoard() {
   boardElement.replaceChildren();
   const gameOver = tutorialDemoGame ? displayGame.game_over() : isGameOver();
   const currentCheck = tutorialDemoGame ? displayGame.in_check() : isCheck();
-  const lastMove = displayGame.history({ verbose: true }).at(-1);
-  const lastMoveTo = lastMove?.to;
+  const lastMoveTo = displayGame.history({ verbose: true }).at(-1)?.to;
 
   rows.forEach((rank, rowIndex) => {
     cols.forEach((file, colIndex) => {
@@ -908,9 +909,7 @@ function renderBoard() {
       button.dataset.square = square;
       button.setAttribute('role', 'gridcell');
       button.setAttribute('aria-label', `${square}${piece ? `, ${piece.color === 'w' ? 'white' : 'black'} ${customIdentity?.name ?? piece.type}` : ''}`);
-      if (tutorialDemoHighlights.includes(square) || square === lastMove?.from || square === lastMove?.to) {
-        button.classList.add('tutorial-highlight');
-      }
+      if (tutorialDemoHighlights.includes(square)) button.classList.add('tutorial-highlight');
       if (suggestedMove?.from === square) button.classList.add('suggested-from');
       if (suggestedMove?.to === square) button.classList.add('suggested-to');
 
@@ -5121,7 +5120,7 @@ function loadPreferences() {
     console.error('Could not load puzzle progress:', error);
   }
   try {
-    const savedTutorialProgress = Number(localStorage.getItem('openboard-tutorial-progress') || 0);
+    const savedTutorialProgress = Number(localStorage.getItem('openboard-tutorial-progress-v2') || 0);
     tutorialProgress = Number.isInteger(savedTutorialProgress)
       ? Math.min(learningContent.lessons.length, Math.max(0, savedTutorialProgress))
       : 0;
@@ -5227,12 +5226,14 @@ function renderBeginnerLesson() {
   stopTutorialPlayback();
   const lesson = learningContent.lessons[tutorialLessonIndex];
   tutorialDemoStartFen = lesson.fen;
-  tutorialDemoMoves = lesson.moves;
+  tutorialDemoMoves = lesson.moves || [];
+  tutorialDemoMoveNotes = lesson.moveNotes || [];
+  tutorialDemoMoveHighlights = lesson.moveHighlights || [];
   tutorialDemoStepIndex = 0;
   tutorialDemoGame = new Chess();
-  if (!tutorialDemoStartFen || !tutorialDemoMoves?.length || !tutorialDemoGame.load(tutorialDemoStartFen)) {
+  if (!tutorialDemoStartFen || !tutorialDemoGame.load(tutorialDemoStartFen)) {
     tutorialDemoGame = null;
-    throw new Error(`The chess demonstration for "${lesson.title}" is missing a valid starting position or moves.`);
+    throw new Error(`The chess demonstration for "${lesson.title}" has an invalid position.`);
   }
   tutorialDemoHighlights = lesson.highlightSquares || [];
   renderBoard();
@@ -5244,8 +5245,7 @@ function renderBeginnerLesson() {
   document.querySelector('#tutorial-lesson-title').textContent = lesson.title;
   document.querySelector('#tutorial-lesson-text').textContent = lesson.text;
   document.querySelector('#tutorial-question').textContent = lesson.question;
-  document.querySelector('#tutorial-demo-note').textContent =
-    `Follow the highlighted moves on the chessboard. ${lesson.demoNote}`;
+  document.querySelector('#tutorial-demo-note').textContent = lesson.demoNote;
   document.querySelector('#tutorial-feedback').textContent = tutorialLessonIndex < tutorialProgress
     ? 'You completed this lesson before. Review it or move on.'
     : '';
@@ -5262,7 +5262,7 @@ function renderBeginnerLesson() {
       if (index === lesson.answer) {
         tutorialProgress = Math.max(tutorialProgress, tutorialLessonIndex + 1);
         try {
-          localStorage.setItem('openboard-tutorial-progress', String(tutorialProgress));
+          localStorage.setItem('openboard-tutorial-progress-v2', String(tutorialProgress));
         } catch (error) {
           console.error('Could not save tutorial progress:', error);
         }
@@ -5294,22 +5294,28 @@ function updateTutorialPlaybackControls() {
   const back = document.querySelector('#tutorial-step-back');
   const forward = document.querySelector('#tutorial-step-forward');
   const play = document.querySelector('#tutorial-play');
-  const playing = Boolean(tutorialPlaybackTimer);
+  const playing = tutorialPlaybackTimer !== null;
+  const replaying = tutorialDemoMoves.length > 0 && tutorialDemoStepIndex >= tutorialDemoMoves.length;
   back.disabled = tutorialDemoStepIndex === 0;
   forward.disabled = tutorialDemoStepIndex >= tutorialDemoMoves.length;
   play.disabled = tutorialDemoMoves.length === 0;
-  play.textContent = playing ? 'Pause' : tutorialDemoStepIndex >= tutorialDemoMoves.length ? 'Replay' : 'Play';
-  play.setAttribute('aria-label', playing ? 'Pause demonstration' : 'Play demonstration');
+  play.textContent = playing ? 'Pause' : replaying ? 'Replay' : 'Play';
+  play.setAttribute('aria-label', playing ? 'Pause demonstration' : replaying ? 'Replay demonstration' : 'Play demonstration');
   play.setAttribute('aria-pressed', String(playing));
+
   const lastMove = tutorialDemoGame?.history({ verbose: true }).at(-1);
   const position = tutorialDemoStepIndex === 0
     ? 'Starting position'
-    : `Move ${tutorialDemoStepIndex} of ${tutorialDemoMoves.length} · ${lastMove?.san || ''}`;
+    : `Step ${tutorialDemoStepIndex} of ${tutorialDemoMoves.length} · ${lastMove?.san || ''}`;
   document.querySelector('#tutorial-position').textContent = position;
+  const lesson = learningContent.lessons[tutorialLessonIndex];
+  document.querySelector('#tutorial-demo-note').textContent = tutorialDemoStepIndex === 0
+    ? lesson.demoNote
+    : tutorialDemoMoveNotes[tutorialDemoStepIndex - 1] || `The highlighted squares show ${lastMove?.san || 'the latest move'}.`;
 }
 
 function stopTutorialPlayback() {
-  if (tutorialPlaybackTimer) clearInterval(tutorialPlaybackTimer);
+  if (tutorialPlaybackTimer !== null) clearInterval(tutorialPlaybackTimer);
   tutorialPlaybackTimer = null;
   const play = document.querySelector('#tutorial-play');
   if (play) {
@@ -5317,6 +5323,25 @@ function stopTutorialPlayback() {
     play.setAttribute('aria-label', tutorialDemoStepIndex >= tutorialDemoMoves.length ? 'Replay demonstration' : 'Play demonstration');
     play.setAttribute('aria-pressed', 'false');
   }
+}
+
+function tutorialMovePath(move) {
+  const fromFile = move.from.charCodeAt(0) - 97;
+  const fromRank = Number(move.from[1]);
+  const toFile = move.to.charCodeAt(0) - 97;
+  const toRank = Number(move.to[1]);
+  const fileDistance = toFile - fromFile;
+  const rankDistance = toRank - fromRank;
+  const isStraightOrDiagonal = fileDistance === 0 || rankDistance === 0
+    || Math.abs(fileDistance) === Math.abs(rankDistance);
+  if (!isStraightOrDiagonal) return [move.from, move.to];
+
+  const steps = Math.max(Math.abs(fileDistance), Math.abs(rankDistance));
+  const squares = [];
+  for (let step = 0; step <= steps; step += 1) {
+    squares.push(`${String.fromCharCode(97 + fromFile + Math.sign(fileDistance) * step)}${fromRank + Math.sign(rankDistance) * step}`);
+  }
+  return squares;
 }
 
 function setTutorialDemoStep(stepIndex, keepPlaying = false) {
@@ -5332,18 +5357,23 @@ function setTutorialDemoStep(stepIndex, keepPlaying = false) {
       throw new Error(`Invalid tutorial move "${tutorialDemoMoves[index]}" in "${learningContent.lessons[tutorialLessonIndex].title}".`);
     }
   }
+  if (tutorialDemoStepIndex === 0) {
+    tutorialDemoHighlights = learningContent.lessons[tutorialLessonIndex].highlightSquares || [];
+  } else {
+    const move = tutorialDemoGame.history({ verbose: true }).at(-1);
+    tutorialDemoHighlights = tutorialDemoMoveHighlights[tutorialDemoStepIndex - 1] || tutorialMovePath(move);
+  }
   renderBoard();
   updateTutorialPlaybackControls();
 }
 
 function startTutorialPlayback() {
-  if (tutorialPlaybackTimer) return;
+  if (tutorialPlaybackTimer !== null) return;
   if (tutorialDemoStepIndex >= tutorialDemoMoves.length) setTutorialDemoStep(0);
   if (!tutorialDemoMoves.length) return;
   const speed = Number(document.querySelector('#tutorial-speed').value);
   tutorialPlaybackTimer = setInterval(() => {
-    const nextStep = tutorialDemoStepIndex + 1;
-    setTutorialDemoStep(nextStep, true);
+    setTutorialDemoStep(tutorialDemoStepIndex + 1, true);
     if (tutorialDemoStepIndex >= tutorialDemoMoves.length) stopTutorialPlayback();
     updateTutorialPlaybackControls();
   }, 1000 / speed);
@@ -5357,6 +5387,8 @@ function restoreTutorialBoard() {
   tutorialDemoHighlights = [];
   tutorialDemoStartFen = '';
   tutorialDemoMoves = [];
+  tutorialDemoMoveNotes = [];
+  tutorialDemoMoveHighlights = [];
   tutorialDemoStepIndex = 0;
   renderBoard();
 }
@@ -5409,6 +5441,7 @@ document.querySelector('#tutorial-dialog').addEventListener('cancel', (event) =>
 });
 document.querySelector('#tutorial-ask-question').addEventListener('click', () => {
   stopTutorialPlayback();
+  updateTutorialPlaybackControls();
   const choices = document.querySelector('#tutorial-choices');
   choices.querySelectorAll('button').forEach((button) => { button.disabled = false; });
   document.querySelector('#tutorial-question-feedback').textContent = '';
@@ -5428,7 +5461,7 @@ document.querySelector('#tutorial-step-forward').addEventListener('click', () =>
   setTutorialDemoStep(tutorialDemoStepIndex + 1);
 });
 document.querySelector('#tutorial-play').addEventListener('click', () => {
-  if (tutorialPlaybackTimer) {
+  if (tutorialPlaybackTimer !== null) {
     stopTutorialPlayback();
     updateTutorialPlaybackControls();
   } else {
@@ -5438,7 +5471,7 @@ document.querySelector('#tutorial-play').addEventListener('click', () => {
 document.querySelector('#tutorial-speed').addEventListener('input', (event) => {
   const speed = Number(event.currentTarget.value);
   document.querySelector('#tutorial-speed-value').textContent = `${speed}×`;
-  if (tutorialPlaybackTimer) {
+  if (tutorialPlaybackTimer !== null) {
     stopTutorialPlayback();
     startTutorialPlayback();
   }

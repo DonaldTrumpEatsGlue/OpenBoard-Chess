@@ -400,6 +400,7 @@ body[data-interface-theme="light"] .history-replay-move:hover, body[data-interfa
 .tutorial-player { display: grid; gap: 8px; padding: 10px; border: 1px solid #ffffff18; border-radius: 9px; background: #ffffff05; }
 .tutorial-player-controls { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 7px; }
 .tutorial-player-controls button { min-height: 34px; justify-content: center; padding: 0 7px; border-radius: 7px; cursor: pointer; font-size: 10px; }
+.tutorial-player-controls button:disabled { opacity: .45; cursor: default; }
 .tutorial-position { min-height: 16px; color: var(--lime); font-size: 10px; text-align: center; }
 .tutorial-speed-control { display: grid; gap: 4px; color: var(--muted); font-size: 9px; }
 .tutorial-speed-control > span { display: flex; justify-content: space-between; }

@@ -24,7 +24,7 @@ test('every training puzzle has a legal position and a valid checkmate solution'
 });
 
 test('beginner lessons have usable multiple-choice checks', () => {
-  assert.ok(lessons.length >= 10);
+  assert.ok(lessons.length >= 15);
   for (const lesson of lessons) {
     assert.ok(lesson.title && lesson.text && lesson.question);
     assert.ok(lesson.choices.length >= 2);
@@ -36,21 +36,49 @@ test('beginner lessons have usable multiple-choice checks', () => {
     for (const square of lesson.highlightSquares) {
       assert.match(square, /^[a-h][1-8]$/, `Invalid highlighted square for ${lesson.title}: ${square}`);
     }
-    assert.ok(lesson.moves?.length, `Missing step-by-step demonstration for ${lesson.title}`);
-    for (const san of lesson.moves) {
-      assert.ok(game.move(san), `Illegal demonstration move "${san}" for ${lesson.title}`);
+    const moves = lesson.moves || [];
+    assert.equal(lesson.moveNotes?.length || 0, moves.length, `Every move needs a plain-language explanation for ${lesson.title}`);
+    for (let index = 0; index < moves.length; index += 1) {
+      assert.ok(game.move(moves[index]), `Illegal tutorial move "${moves[index]}" for ${lesson.title}`);
+      for (const square of lesson.moveHighlights?.[index] || []) {
+        assert.match(square, /^[a-h][1-8]$/, `Invalid move highlight for ${lesson.title}: ${square}`);
+      }
     }
   }
-  const checkmate = lessons.find((lesson) => lesson.title === 'The goal of chess');
-  const mateGame = new Chess();
-  mateGame.load(checkmate.fen);
-  checkmate.moves.forEach((san) => mateGame.move(san));
-  assert.equal(mateGame.in_checkmate(), true, 'Goal lesson should demonstrate checkmate');
-  const stalemate = lessons.find((lesson) => lesson.title === 'Stalemate and draws');
-  const stalemateGame = new Chess();
-  stalemateGame.load(stalemate.fen);
-  stalemate.moves.forEach((san) => stalemateGame.move(san));
-  assert.equal(stalemateGame.in_stalemate(), true, 'Draw lesson should demonstrate stalemate');
+});
+
+test('tutorial teaches every piece with a move-by-move board example', () => {
+  for (const title of ['The pawn', 'The knight', 'The bishop', 'The rook', 'The queen', 'The king']) {
+    const lesson = lessons.find((entry) => entry.title === title);
+    assert.ok(lesson, `Missing piece lesson: ${title}`);
+    assert.ok(lesson.moves.length > 0, `Missing board demonstration moves for ${title}`);
+    assert.ok(lesson.moveNotes.every((note) => note.length > 20), `A move needs a clear explanation for ${title}`);
+  }
+
+  const goal = lessons.find(({ title }) => title === 'The goal of chess');
+  const winningGame = new Chess(goal.fen);
+  goal.moves.forEach((move) => winningGame.move(move));
+  assert.equal(winningGame.in_checkmate(), true, 'The goal lesson should end in checkmate');
+
+  const stalemate = lessons.find(({ title }) => title === 'Stalemate and draws');
+  assert.equal(new Chess(stalemate.fen).in_stalemate(), true, 'The draw lesson should demonstrate stalemate');
+});
+
+test('board setup lesson teaches the starting layout and turn order on the board', () => {
+  const lesson = lessons.find(({ title }) => title === 'The board and setup');
+  assert.ok(lesson);
+  assert.doesNotMatch(lesson.text, /^(place|set|put|arrange)\b/i);
+  const game = new Chess(lesson.fen);
+  assert.equal(game.fen().split(' ')[0], 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR');
+  assert.equal(Array.from(lesson.highlightSquares).join(','), [
+    'a1', 'b1', 'c1', 'd1', 'e1', 'f1', 'g1', 'h1',
+    'a8', 'b8', 'c8', 'd8', 'e8', 'f8', 'g8', 'h8',
+  ].join(','));
+  assert.match(lesson.text, /White moves first/);
+  assert.match(lesson.text, /players take turns/);
+  assert.match(lesson.text, /d1, a light square/);
+  assert.match(lesson.text, /d8, a dark square/);
+  assert.equal(lesson.choices[lesson.answer], 'Black');
 });
 
 test('the rule guide covers all special moves and common game endings', () => {

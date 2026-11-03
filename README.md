@@ -65,7 +65,7 @@ Run `npm run test:online` to test public room listing, private-room exclusion, a
 - Player profiles searchable by username, with separate estimated offline and online Elo and win/draw/loss records. Online and offline estimates start provisionally at 1200 and update after completed games; offline estimates are saved per account in the local browser. Signed-in players can choose a country or region from their own profile if signup location was not recorded.
 - Optional clocks, board and interface color themes, supplied local MP3 sound effects, per-event previews and controls, and saved preferences.
 - Thirteen checked mate-in-one puzzles, including a daily position, randomized next puzzles, hints, and saved solve counts; FEN and PGN loading, PGN export, and a basic analysis suggestion.
-- A 12-lesson beginner tutorial that plays legal move sequences on the main chessboard with step-back, step-forward, autoplay, adjustable speed, popup questions, and saved progress; plus a full chess rules reference covering all piece moves, check and checkmate, castling, en passant, promotion, stalemate, draws, resignation, and clocks.
+- A 15-lesson beginner tutorial that demonstrates every piece move step by step on the chessboard, explains each move in plain language, highlights its route, asks questions in a popup, and saves progress; plus a full chess rules reference covering all piece moves, check and checkmate, castling, en passant, promotion, stalemate, draws, resignation, and clocks.
 
 ## Engine and rating notes
 
