@@ -1,6 +1,8 @@
 const crypto = require('node:crypto');
 const http = require('node:http');
+const net = require('node:net');
 const { Chess } = require('chess.js');
+const geoip = require('geoip-lite');
 const { WebSocketServer, WebSocket } = require('ws');
 
 const port = Number(process.env.OPENBOARD_PORT || process.env.PORT || 3001);
@@ -234,7 +236,7 @@ async function authenticateAccessToken(accessToken) {
 
   const profileUrl = new URL(`${supabaseUrl}/rest/v1/profiles`);
   profileUrl.searchParams.set('id', `eq.${user.id}`);
-  profileUrl.searchParams.set('select', 'username');
+  profileUrl.searchParams.set('select', 'username,country_code');
   const profileResponse = await fetch(profileUrl, {
     headers,
     signal: AbortSignal.timeout(5000),
@@ -242,10 +244,50 @@ async function authenticateAccessToken(accessToken) {
   if (!profileResponse.ok) throw new Error('Could not load your reserved username.');
   const [profile] = await profileResponse.json();
   if (!profile?.username) throw new Error('Your account does not have a reserved username. Create a new account or contact the site owner.');
-  return { id: user.id, username: profile.username };
+  return { id: user.id, username: profile.username, countryCode: profile.country_code || null };
 }
 
-const publicProfileFields = 'username,online_elo,online_games,online_wins,online_draws,online_losses';
+function countryCodeForRequest(request) {
+  const forwardedFor = request.headers['x-forwarded-for'];
+  const forwardedAddress = typeof forwardedFor === 'string'
+    ? forwardedFor.split(',').map((address) => address.trim()).filter(Boolean).at(-1)
+    : '';
+  const address = (forwardedAddress || request.socket.remoteAddress || '')
+    .replace(/^::ffff:/, '')
+    .replace(/^\[|\]$/g, '')
+    .split('%')[0];
+  if (!net.isIP(address)) return null;
+  const countryCode = geoip.lookup(address)?.country;
+  return /^[A-Z]{2}$/.test(countryCode || '') ? countryCode : null;
+}
+
+async function createAccountWithCountry({ username, email, password, countryCode }) {
+  if (!supabaseUrl || !supabaseAnonKey) {
+    throw new Error('Online accounts are not configured on this server yet.');
+  }
+  const response = await fetch(`${supabaseUrl}/auth/v1/signup`, {
+    method: 'POST',
+    headers: {
+      apikey: supabaseAnonKey,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      email,
+      password,
+      data: { username, ...(countryCode ? { country_code: countryCode } : {}) },
+    }),
+    signal: AbortSignal.timeout(8000),
+  });
+  let result;
+  try {
+    result = await response.json();
+  } catch {
+    throw new Error('The account service returned an unreadable signup response.');
+  }
+  return { status: response.status, result };
+}
+
+const publicProfileFields = 'username,country_code,online_elo,online_games,online_wins,online_draws,online_losses';
 
 async function loadProfile(queryName, queryValue) {
   const profileUrl = new URL(`${supabaseUrl}/rest/v1/profiles`);
@@ -260,6 +302,7 @@ async function loadProfile(queryName, queryValue) {
   if (!profile) return null;
   return {
     username: profile.username,
+    countryCode: profile.country_code || null,
     onlineElo: profile.online_elo,
     onlineGames: profile.online_games,
     onlineWins: profile.online_wins,
@@ -337,10 +380,15 @@ function getPublicRooms(accountId) {
         code: room.code,
         name: room.lobbyName,
         host: room.players.w.name,
+        ...(room.players.w.countryCode ? { hostCountryCode: room.players.w.countryCode } : {}),
         hostOnline,
         locked: Boolean(room.passwordHash),
         inProgress,
-        ...(inProgress ? { opponent: room.players.b.name, opponentOnline } : {}),
+        ...(inProgress ? {
+          opponent: room.players.b.name,
+          ...(room.players.b.countryCode ? { opponentCountryCode: room.players.b.countryCode } : {}),
+          opponentOnline,
+        } : {}),
         joinable: !hostOnline || !opponentOnline,
         isYourGame: Boolean(ownColor),
         canJoin: ownColor ? !ownSeatOnline : (!hostOnline || !opponentOnline),
@@ -365,6 +413,7 @@ function sendRoomChat(room, player, text) {
     type: 'chat-message',
     channel,
     name: player.identity.username,
+    ...(player.identity.countryCode ? { countryCode: player.identity.countryCode } : {}),
     text,
     timestamp: Date.now(),
   };
@@ -434,7 +483,11 @@ async function handleMessage(socket, player, rawMessage) {
     player.authenticating = true;
     try {
       player.identity = await authenticateAccessToken(message.accessToken);
-      send(socket, { type: 'authenticated', username: player.identity.username });
+      send(socket, {
+        type: 'authenticated',
+        username: player.identity.username,
+        ...(player.identity.countryCode ? { countryCode: player.identity.countryCode } : {}),
+      });
     } catch (error) {
       send(socket, { type: 'error', message: error.message || 'Account authentication failed.' });
     } finally {
@@ -499,7 +552,12 @@ async function handleMessage(socket, player, rawMessage) {
       passwordHash: passwordSalt ? hashRoomPassword(roomPassword, passwordSalt) : null,
       chess: new Chess(),
       players: {
-        w: { socket, name: player.identity.username, accountId: player.identity.id },
+        w: {
+          socket,
+          name: player.identity.username,
+          countryCode: player.identity.countryCode,
+          accountId: player.identity.id,
+        },
         b: { socket: null, name: 'Black', accountId: null },
       },
       spectators: new Set(),
@@ -518,6 +576,7 @@ async function handleMessage(socket, player, rawMessage) {
       code,
       color: 'w',
       name: room.players.b.name,
+      countryCode: player.identity.countryCode || null,
       isPublic: room.isPublic,
       lobbyName: room.lobbyName,
       locked: Boolean(room.passwordHash),
@@ -575,16 +634,22 @@ async function handleMessage(socket, player, rawMessage) {
     }
     room.players[color].socket = socket;
     room.players[color].name = player.identity.username;
+    room.players[color].countryCode = player.identity.countryCode;
     room.players[color].accountId = player.identity.id;
     room.expiresAt = Date.now() + roomLifetimeMs;
     player.room = room;
     player.color = color;
     player.role = 'player';
     const players = { w: room.players.w.name, b: room.players.b.name };
+    const playerCountries = {
+      w: room.players.w.countryCode || null,
+      b: room.players.b.countryCode || null,
+    };
     const gameStart = {
       type: 'game-start',
       code: room.code,
       players,
+      playerCountries,
       fen: room.chess.fen(),
       pgn: room.chess.pgn(),
       spectators: room.spectators.size,
@@ -595,6 +660,7 @@ async function handleMessage(socket, player, rawMessage) {
       type: 'spectator-start',
       code: room.code,
       players,
+      playerCountries,
       fen: room.chess.fen(),
       pgn: room.chess.pgn(),
       waiting: false,
@@ -638,6 +704,10 @@ async function handleMessage(socket, player, rawMessage) {
       players: {
         w: room.players.w.name,
         b: room.players.b.name,
+      },
+      playerCountries: {
+        w: room.players.w.countryCode || null,
+        b: room.players.b.countryCode || null,
       },
       fen: room.chess.fen(),
       pgn: room.chess.pgn(),
@@ -833,7 +903,8 @@ const server = http.createServer(async (request, response) => {
     }
     return;
   }
-  if (['/auth/username', '/auth/recover', '/auth/verify-recovery'].includes(requestUrl.pathname)) {
+  if (['/auth/signup', '/auth/username', '/auth/recover', '/auth/verify-recovery'].includes(requestUrl.pathname)) {
+    const isSignup = requestUrl.pathname === '/auth/signup';
     const isRecovery = requestUrl.pathname === '/auth/recover';
     const isRecoveryVerification = requestUrl.pathname === '/auth/verify-recovery';
     addAuthCorsHeaders(request, response);
@@ -862,6 +933,41 @@ const server = http.createServer(async (request, response) => {
         'Cache-Control': 'no-store',
         'Content-Type': 'application/json; charset=utf-8',
       }).end(JSON.stringify({ message: error.message }));
+      return;
+    }
+    if (isSignup) {
+      const username = typeof credentials?.username === 'string' ? credentials.username.trim() : '';
+      const email = typeof credentials?.email === 'string' ? credentials.email.trim() : '';
+      const password = typeof credentials?.password === 'string' ? credentials.password : '';
+      if (!/^[A-Za-z0-9_]{3,20}$/.test(username)
+        || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+        || email.length > 254
+        || password.length < 8
+        || password.length > 72) {
+        response.writeHead(400, {
+          'Cache-Control': 'no-store',
+          'Content-Type': 'application/json; charset=utf-8',
+        }).end(JSON.stringify({ message: 'Enter a valid username, email address, and password.' }));
+        return;
+      }
+      try {
+        const { status, result } = await createAccountWithCountry({
+          username,
+          email,
+          password,
+          countryCode: countryCodeForRequest(request),
+        });
+        response.writeHead(status >= 200 && status < 300 ? status : status === 400 || status === 422 ? status : 503, {
+          'Cache-Control': 'no-store',
+          'Content-Type': 'application/json; charset=utf-8',
+        }).end(JSON.stringify(result));
+      } catch (error) {
+        console.error('Account signup failed:', error.message);
+        response.writeHead(503, {
+          'Cache-Control': 'no-store',
+          'Content-Type': 'application/json; charset=utf-8',
+        }).end(JSON.stringify({ message: error.message || 'Account signup is unavailable.' }));
+      }
       return;
     }
     if (isRecoveryVerification) {

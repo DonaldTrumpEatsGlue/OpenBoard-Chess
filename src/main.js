@@ -17,7 +17,8 @@ const customRulesDialog = document.querySelector('#custom-rules-dialog');
 const soundSettingsDialog = document.querySelector('#sound-settings-dialog');
 const onlineDialog = document.querySelector('#online-dialog');
 const accountDialog = document.querySelector('#account-dialog');
-const profilesDialog = document.querySelector('#profiles-dialog');
+const profilesPage = document.querySelector('#profiles-page');
+const gamePage = document.querySelector('#game-page');
 const onlineLeaveDialog = document.querySelector('#online-leave-dialog');
 const onlineOpponentLeftDialog = document.querySelector('#online-opponent-left-dialog');
 const pieceTheme = window.OpenboardPieceThemes.classic;
@@ -145,6 +146,7 @@ let onlineIdentityVerified = false;
 let onlineRoomCode = null;
 let onlineLeaveTimeout = null;
 let onlinePlayerName = '';
+let onlinePlayerCountryCode = null;
 let onlinePreviousClock = null;
 let onlinePreviousColor = null;
 let publicRooms = [];
@@ -1632,7 +1634,8 @@ async function requestPlayerProfile(username = '') {
 function renderPlayerProfile(profile, isOwnProfile = false) {
   const card = document.querySelector('#profile-card');
   document.querySelector('#profile-avatar').textContent = [...profile.username][0].toUpperCase();
-  document.querySelector('#profile-username').textContent = `@${profile.username}`;
+  document.querySelector('#profile-username').textContent = `${countryFlagEmoji(profile.countryCode)} @${profile.username}`.trim();
+  document.querySelector('#profile-country').textContent = countryLabel(profile.countryCode) || 'Country not available';
   document.querySelector('#profile-online-elo').textContent = Number(profile.onlineElo).toLocaleString();
   const games = Number(profile.onlineGames) || 0;
   const ratingLabel = games < 10 ? `Provisional · ${games} rated ${games === 1 ? 'game' : 'games'}` : `${games} rated games`;
@@ -1766,6 +1769,40 @@ async function requestSupabaseAuth(path, body, accessToken = '') {
     result = await response.json();
   } catch (error) {
     throw new Error(`Account service returned an unreadable response (${response.status}).`);
+  }
+  if (!response.ok) {
+    const detail = result.msg || result.message || result.error_description || result.error;
+    if (typeof detail === 'string' && /username_taken|duplicate key/i.test(detail)) {
+      throw new Error('That username is already taken. Choose a different one.');
+    }
+    if (typeof detail === 'string' && /email not confirmed/i.test(detail)) {
+      throw new Error('Confirm your email from the message we sent, then sign in.');
+    }
+    throw new Error(typeof detail === 'string' ? detail : 'The account service rejected that request.');
+  }
+  return result;
+}
+
+async function requestServerSignup(username, email, password) {
+  if (!onlineServerUrl) {
+    throw new Error('Account signup is unavailable because the online server is not configured.');
+  }
+  const endpoint = new URL(onlineServerUrl);
+  endpoint.protocol = endpoint.protocol === 'wss:' ? 'https:' : 'http:';
+  endpoint.pathname = '/auth/signup';
+  endpoint.search = '';
+  endpoint.hash = '';
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, email, password }),
+    signal: AbortSignal.timeout(10000),
+  });
+  let result;
+  try {
+    result = await response.json();
+  } catch {
+    throw new Error('The online server returned an unreadable signup response.');
   }
   if (!response.ok) {
     const detail = result.msg || result.message || result.error_description || result.error;
@@ -2017,11 +2054,7 @@ async function submitOnlineAuth() {
       if (!await checkUsernameAvailable(username)) {
         throw new Error('That username is already taken. Choose a different one.');
       }
-      const session = await requestSupabaseAuth('signup', {
-        email,
-        password,
-        data: { username },
-      });
+      const session = await requestServerSignup(username, email, password);
       if (!session.access_token || !session.refresh_token) {
         document.querySelector('#online-account-password').value = '';
         authMode = 'signin';
@@ -2099,8 +2132,8 @@ function renderPublicRooms() {
     copy.append(name, details);
     if (room.host) {
       details.textContent = room.inProgress
-        ? `@${room.host}${room.hostOnline ? '' : ' (reconnecting)'} vs @${room.opponent || '…'}${room.opponentOnline ? '' : ' (reconnecting)'} · ${room.locked ? 'Password required · ' : ''}${room.code}`
-        : `Hosted by @${room.host}${room.hostOnline ? '' : ' (reconnecting)'} · ${room.locked ? 'Password required · ' : ''}${room.code}`;
+        ? `${playerNameWithCountry(room.host, room.hostCountryCode)}${room.hostOnline ? '' : ' (reconnecting)'} vs ${room.opponent ? playerNameWithCountry(room.opponent, room.opponentCountryCode) : '…'}${room.opponentOnline ? '' : ' (reconnecting)'} · ${room.locked ? 'Password required · ' : ''}${room.code}`
+        : `Hosted by ${playerNameWithCountry(room.host, room.hostCountryCode)}${room.hostOnline ? '' : ' (reconnecting)'} · ${room.locked ? 'Password required · ' : ''}${room.code}`;
     }
     const spectatorCount = document.createElement('span');
     spectatorCount.className = 'public-room-spectator-count';
@@ -2292,21 +2325,62 @@ function closeSidebar() {
   menuToggle.focus();
 }
 
-function openProfilesDialog() {
-  profilesDialog.showModal();
-  if (authSession?.access_token) {
+function renderAppPage() {
+  const params = new URLSearchParams(location.search);
+  const isProfilesPage = params.get('page') === 'profiles';
+  gamePage.hidden = isProfilesPage;
+  profilesPage.hidden = !isProfilesPage;
+  if (!isProfilesPage) return;
+  const username = params.get('username');
+  document.querySelector('#profile-search-input').value = username || '';
+  if (username && /^[A-Za-z0-9_]{3,20}$/.test(username)) {
+    loadPlayerProfile(username);
+  } else if (authSession?.access_token) {
     loadPlayerProfile();
   } else {
     document.querySelector('#profile-card').hidden = true;
     document.querySelector('#profile-status').textContent =
-      'Sign in to view your own profile, or search for a username.';
+      'Search public player profiles by username.';
   }
+}
+
+function navigateToAppPage(page = '', username = '', replace = false) {
+  const url = new URL(location.href);
+  if (page) url.searchParams.set('page', page);
+  else url.searchParams.delete('page');
+  if (username) url.searchParams.set('username', username);
+  else url.searchParams.delete('username');
+  history[replace ? 'replaceState' : 'pushState']({ page }, '', url);
+  renderAppPage();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function openProfilesPage() {
+  navigateToAppPage('profiles');
+  if (!authSession?.access_token) {
+    document.querySelector('#profile-search-input').focus();
+  }
+}
+
+function countryFlagEmoji(countryCode) {
+  if (!/^[A-Z]{2}$/.test(countryCode || '')) return '';
+  return [...countryCode].map((letter) => String.fromCodePoint(0x1f1e6 + letter.charCodeAt(0) - 65)).join('');
+}
+
+function playerNameWithCountry(username, countryCode) {
+  const flag = countryFlagEmoji(countryCode);
+  return flag ? `${flag} @${username}` : `@${username}`;
+}
+
+function countryLabel(countryCode) {
+  if (!/^[A-Z]{2}$/.test(countryCode || '')) return '';
+  return new Intl.DisplayNames([navigator.language || 'en'], { type: 'region' }).of(countryCode);
 }
 
 function runSidebarAction(action) {
   closeSidebar();
   if (action === 'computer') {
-    location.hash = 'game';
+    navigateToAppPage();
     document.querySelector('#game').scrollIntoView({ behavior: 'smooth', block: 'start' });
   } else if (action === 'online') openOnlineDialog('friends');
   else if (action === 'watch') openOnlineDialog('public');
@@ -2314,7 +2388,7 @@ function runSidebarAction(action) {
   else if (action === 'bots') botDirectory.showModal();
   else if (action === 'signup') openAccountDialog('signup');
   else if (action === 'login') openAccountDialog('signin');
-  else if (action === 'profiles') openProfilesDialog();
+  else if (action === 'profiles') openProfilesPage();
   else if (action === 'puzzle') document.querySelector('#puzzle-start').click();
   else if (action === 'analysis') document.querySelector('#analysis-open').click();
   else if (action === 'suggest') document.querySelector('#suggest-move').click();
@@ -2436,7 +2510,7 @@ function renderOnlineChat(channel) {
     const item = document.createElement('li');
     item.className = 'online-chat-message';
     const name = document.createElement('strong');
-    name.textContent = `@${message.name}`;
+    name.textContent = playerNameWithCountry(message.name, message.countryCode);
     const text = document.createElement('span');
     text.textContent = message.text;
     item.append(name, text);
@@ -2596,8 +2670,10 @@ function handleOnlineMessage(socket, message) {
   if (message.type === 'authenticated') {
     onlineIdentityVerified = true;
     onlinePlayerName = message.username;
+    onlinePlayerCountryCode = message.countryCode || null;
     authUsername = message.username;
-    document.querySelector('#online-account-state').textContent = `Signed in as @${onlinePlayerName}`;
+    document.querySelector('#online-account-state').textContent =
+      `Signed in as ${playerNameWithCountry(onlinePlayerName, message.countryCode)}`;
     document.querySelector('#online-auth-status').textContent = 'Account ready for online play.';
     if (onlinePendingRequest) {
       socket.send(JSON.stringify(onlinePendingRequest));
@@ -2631,6 +2707,7 @@ function handleOnlineMessage(socket, message) {
         code: onlineRoomCode,
         name: message.lobbyName,
         host: onlinePlayerName,
+        ...(onlinePlayerCountryCode ? { hostCountryCode: onlinePlayerCountryCode } : {}),
         locked: Boolean(message.locked),
         inProgress: false,
         isYourGame: true,
@@ -2669,7 +2746,8 @@ function handleOnlineMessage(socket, message) {
       return;
     }
     if (message.players) {
-      const otherName = message.players[playerColor === 'w' ? 'b' : 'w'];
+      const otherColor = playerColor === 'w' ? 'b' : 'w';
+      const otherName = playerNameWithCountry(message.players[otherColor], message.playerCountries?.[otherColor]);
       document.querySelector('#opponent-name').textContent = otherName;
       document.querySelector('#bot-profile-name').textContent = otherName;
     }
@@ -2692,7 +2770,8 @@ function handleOnlineMessage(socket, message) {
     flipped = false;
     if (message.players) {
       document.querySelector('#opponent-name').textContent = 'Spectating';
-      document.querySelector('#bot-profile-name').textContent = `${message.players.w || 'White'} vs ${message.players.b || 'Black'}`;
+      document.querySelector('#bot-profile-name').textContent =
+        `${message.players.w ? playerNameWithCountry(message.players.w, message.playerCountries?.w) : 'White'} vs ${message.players.b ? playerNameWithCountry(message.players.b, message.playerCountries?.b) : 'Black'}`;
     }
     setOnlineChatHistory({ players: message.playerChat, spectators: message.spectatorChat });
     updateOnlineChatAvailability();
@@ -2715,7 +2794,7 @@ function handleOnlineMessage(socket, message) {
   }
   if (message.type === 'rating-updated') {
     updateOnlineStatus('Game result saved. Your online Elo estimate and profile record are updated.');
-    if (profilesDialog.open) loadPlayerProfile();
+    if (!profilesPage.hidden) loadPlayerProfile();
     return;
   }
   if (message.type === 'rating-update-failed') {
@@ -3388,7 +3467,7 @@ document.querySelector('#online-go-account').addEventListener('click', () => {
   onlineDialog.close();
   openAccountDialog('signin');
 });
-document.querySelector('#profiles-close').addEventListener('click', () => profilesDialog.close());
+document.querySelector('#profiles-back').addEventListener('click', () => navigateToAppPage());
 document.querySelector('#profile-search-form').addEventListener('submit', (event) => {
   event.preventDefault();
   const username = document.querySelector('#profile-search-input').value.trim();
@@ -3397,8 +3476,13 @@ document.querySelector('#profile-search-form').addEventListener('submit', (event
     document.querySelector('#profile-status').textContent = 'Usernames must be 3–20 letters, numbers, or underscores.';
     return;
   }
+  const url = new URL(location.href);
+  url.searchParams.set('page', 'profiles');
+  url.searchParams.set('username', username);
+  history.replaceState({ page: 'profiles' }, '', url);
   loadPlayerProfile(username);
 });
+window.addEventListener('popstate', renderAppPage);
 document.querySelector('#online-leave-game').addEventListener('click', () => onlineLeaveDialog.showModal());
 document.querySelector('#online-leave-cancel').addEventListener('click', () => onlineLeaveDialog.close());
 document.querySelector('#online-leave-confirm').addEventListener('click', disconnectOnlineGame);
@@ -3476,6 +3560,7 @@ if (!onlineServerUrl && !['localhost', '127.0.0.1', '::1'].includes(location.hos
   updateOnlineStatus('The owner has not connected the online server yet.');
 }
 initializeAuthSession();
+renderAppPage();
 try {
   const savedRoomCode = localStorage.getItem(onlineRoomStorageKey);
   if (savedRoomCode && /^[A-Z0-9]{6}$/.test(savedRoomCode)) {

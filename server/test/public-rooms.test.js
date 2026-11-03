@@ -15,6 +15,7 @@ let authUrl;
 const authUsers = new Map();
 const passwordRecoveryRequests = [];
 const ratedGameRequests = [];
+const signupRequests = [];
 let userIdCounter = 1;
 
 async function findOpenPort() {
@@ -44,12 +45,13 @@ async function waitForServer(port) {
   throw new Error('Online room server did not start in time.');
 }
 
-function createAccount(username, verified = false) {
+function createAccount(username, verified = false, countryCode = null) {
   const token = `test-access-token-long-${userIdCounter}`;
   const id = `00000000-0000-4000-8000-${String(userIdCounter++).padStart(12, '0')}`;
   authUsers.set(token, {
     id,
     username,
+    country_code: countryCode,
     email: `${username.toLowerCase()}@example.test`,
     online_elo: 1000,
     online_games: 0,
@@ -72,7 +74,11 @@ async function connectWithAccessToken(token, username, origin) {
   const socket = new WebSocket(endpoint, origin ? { origin } : {});
   await once(socket, 'open');
   const authenticated = request(socket, { type: 'authenticate', accessToken: token });
-  assert.deepEqual(await authenticated, { type: 'authenticated', username });
+  assert.deepEqual(await authenticated, {
+    type: 'authenticated',
+    username,
+    ...(authUsers.get(token)?.country_code ? { countryCode: authUsers.get(token).country_code } : {}),
+  });
   return socket;
 }
 
@@ -82,13 +88,14 @@ function request(socket, message) {
   return response;
 }
 
-function postJson(url, payload, origin = 'https://sample-user.github.io') {
+function postJson(url, payload, origin = 'https://sample-user.github.io', additionalHeaders = {}) {
   return new Promise((resolve, reject) => {
     const request = http.request(url, {
       method: 'POST',
       headers: {
         Origin: origin,
         'Content-Type': 'application/json',
+        ...additionalHeaders,
       },
     }, (response) => {
       let rawBody = '';
@@ -199,6 +206,22 @@ before(async () => {
     response.setHeader('Content-Type', 'application/json');
     const token = request.headers.authorization?.replace(/^Bearer /, '');
     const user = authUsers.get(token);
+    if (request.url === '/auth/v1/signup') {
+      let rawBody = '';
+      for await (const chunk of request) rawBody += chunk;
+      const { email, password, data } = JSON.parse(rawBody);
+      const accessToken = createAccount(data.username, false, data.country_code || null);
+      const account = authUsers.get(accessToken);
+      account.email = email;
+      account.password = password;
+      signupRequests.push({ username: data.username, countryCode: data.country_code || null });
+      response.writeHead(200).end(JSON.stringify({
+        access_token: accessToken,
+        refresh_token: `test-refresh-${accessToken}`,
+        user: { id: account.id, email },
+      }));
+      return;
+    }
     if (request.url === '/auth/v1/user') {
       response.writeHead(user ? 200 : 401).end(JSON.stringify(user || { message: 'Invalid token' }));
       return;
@@ -302,6 +325,7 @@ before(async () => {
             ? { id: account.id }
             : {
               username: account.username,
+              country_code: account.country_code,
               online_elo: account.online_elo,
               online_games: account.online_games,
               online_wins: account.online_wins,
@@ -317,8 +341,11 @@ before(async () => {
       response.writeHead(200).end(JSON.stringify(profile
         ? selectedFields === 'username'
           ? requestedUser ? [{ username: requestedUser.username }] : []
+          : selectedFields === 'username,country_code'
+            ? [{ username: profile.username, country_code: profile.country_code }]
           : [{
             username: profile.username,
+            country_code: profile.country_code,
             online_elo: profile.online_elo,
             online_games: profile.online_games,
             online_wins: profile.online_wins,
@@ -374,8 +401,10 @@ test('origin allowlist supports GitHub Pages subdomains and rejects unrelated we
 test('database schema reserves case-insensitive usernames when accounts are created', () => {
   const schema = readFileSync(path.resolve(__dirname, '../../supabase/schema.sql'), 'utf8');
   assert.match(schema, /username_key text not null unique/i);
+  assert.match(schema, /country_code text check \(country_code is null or country_code ~ '\^\[A-Z\]\{2\}\$'\)/i);
   assert.match(schema, /after insert on auth\.users/i);
   assert.match(schema, /new\.raw_user_meta_data\s*->>\s*'username'/i);
+  assert.match(schema, /new\.raw_user_meta_data\s*->>\s*'country_code'/i);
   assert.match(schema, /lower\(requested_username\)/i);
   assert.match(schema, /raise exception 'username_taken'/i);
   assert.doesNotMatch(schema, /new\.email_confirmed_at is null/i);
@@ -466,8 +495,70 @@ test('username sign-in returns an auth session without disclosing the account em
   assert.deepEqual(unknownAccount.body, { message: 'Invalid username or password.' });
 });
 
+test('signup derives and stores an approximate country code from the request IP', async () => {
+  const signupUrl = new URL(endpoint);
+  signupUrl.protocol = 'http:';
+  signupUrl.pathname = '/auth/signup';
+  signupUrl.search = '';
+  signupUrl.hash = '';
+
+  const result = await postJson(signupUrl, {
+    username: 'GeoProfile',
+    email: 'geo@example.test',
+    password: 'secure-password-123',
+    countryCode: 'ZZ',
+  }, 'https://sample-user.github.io', { 'x-forwarded-for': '8.8.8.8' });
+  assert.equal(result.status, 200);
+  assert.equal(signupRequests.at(-1).username, 'GeoProfile');
+  assert.equal(signupRequests.at(-1).countryCode, 'US');
+
+  const profileUrl = new URL(endpoint);
+  profileUrl.protocol = 'http:';
+  profileUrl.pathname = '/profiles/geoprofile';
+  profileUrl.search = '';
+  profileUrl.hash = '';
+  const profile = await getJson(profileUrl);
+  assert.equal(profile.body.countryCode, 'US');
+});
+
+test('country codes appear beside account names in lobbies, games, and chat', async () => {
+  const hostToken = createAccount('CountryHost', false, 'US');
+  const guestToken = createAccount('CountryGuest', false, 'GB');
+  const host = await connectWithAccessToken(hostToken, 'CountryHost');
+  const guest = await connectWithAccessToken(guestToken, 'CountryGuest');
+
+  try {
+    const created = await request(host, {
+      type: 'create-public-room',
+      lobbyName: 'Country test',
+    });
+    assert.equal(created.countryCode, 'US');
+
+    const listing = await request(guest, { type: 'list-public-rooms' });
+    assert.equal(listing.rooms[0].hostCountryCode, 'US');
+
+    const hostGamePromise = waitForMessage(host, (message) => message.type === 'game-start');
+    const guestGame = await request(guest, { type: 'join-public-room', code: created.code });
+    const hostGame = await hostGamePromise;
+    assert.deepEqual(hostGame.playerCountries, { w: 'US', b: 'GB' });
+    assert.deepEqual(guestGame.playerCountries, { w: 'US', b: 'GB' });
+
+    const chatPromise = waitForMessage(guest, (message) => (
+      message.type === 'chat-message' && message.text === 'Hello'
+    ));
+    host.send(JSON.stringify({ type: 'chat-send', text: 'Hello' }));
+    assert.equal((await chatPromise).countryCode, 'US');
+
+    const joinedListing = await request(guest, { type: 'list-public-rooms' });
+    assert.equal(joinedListing.rooms[0].opponentCountryCode, 'GB');
+  } finally {
+    host.close();
+    guest.close();
+  }
+});
+
 test('public player profiles show online ratings but never expose account emails', async () => {
-  const token = createAccount('PublicProfileOwner');
+  const token = createAccount('PublicProfileOwner', false, 'CA');
   const profileUrl = new URL(endpoint);
   profileUrl.protocol = 'http:';
   profileUrl.pathname = '/profiles/publicprofileowner';
@@ -478,6 +569,7 @@ test('public player profiles show online ratings but never expose account emails
   assert.equal(publicProfile.status, 200);
   assert.deepEqual(publicProfile.body, {
     username: 'PublicProfileOwner',
+    countryCode: 'CA',
     onlineElo: 1000,
     onlineGames: 0,
     onlineWins: 0,
@@ -495,6 +587,7 @@ test('public player profiles show online ratings but never expose account emails
   const ownProfile = await getJson(privateProfileUrl, token);
   assert.equal(ownProfile.status, 200);
   assert.equal(ownProfile.body.username, 'PublicProfileOwner');
+  assert.equal(ownProfile.body.countryCode, 'CA');
   assert.equal(JSON.stringify(ownProfile.body).includes('@example.test'), false);
 });
 

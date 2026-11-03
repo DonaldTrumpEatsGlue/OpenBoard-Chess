@@ -2,6 +2,7 @@ create table if not exists public.profiles (
   id uuid primary key references auth.users (id) on delete cascade,
   username text not null,
   username_key text not null unique,
+  country_code text check (country_code is null or country_code ~ '^[A-Z]{2}$'),
   online_elo integer not null default 1000 check (online_elo >= 100),
   online_games integer not null default 0 check (online_games >= 0),
   online_wins integer not null default 0 check (online_wins >= 0),
@@ -12,6 +13,7 @@ create table if not exists public.profiles (
 );
 
 alter table public.profiles
+  add column if not exists country_code text check (country_code is null or country_code ~ '^[A-Z]{2}$'),
   add column if not exists online_elo integer not null default 1000 check (online_elo >= 100),
   add column if not exists online_games integer not null default 0 check (online_games >= 0),
   add column if not exists online_wins integer not null default 0 check (online_wins >= 0),
@@ -106,6 +108,7 @@ set search_path = ''
 as $$
 declare
   requested_username text := new.raw_user_meta_data ->> 'username';
+  requested_country_code text := new.raw_user_meta_data ->> 'country_code';
 begin
   if exists (select 1 from public.profiles where id = new.id) then
     return new;
@@ -116,8 +119,13 @@ begin
     raise exception 'username_invalid';
   end if;
 
-  insert into public.profiles (id, username, username_key)
-  values (new.id, requested_username, lower(requested_username));
+  insert into public.profiles (id, username, username_key, country_code)
+  values (
+    new.id,
+    requested_username,
+    lower(requested_username),
+    case when requested_country_code ~ '^[A-Z]{2}$' then requested_country_code else null end
+  );
 
   return new;
 exception
@@ -133,11 +141,16 @@ create trigger on_openboard_user_created
 
 drop trigger if exists on_openboard_user_verified on auth.users;
 
-insert into public.profiles (id, username, username_key)
+insert into public.profiles (id, username, username_key, country_code)
 select
   users.id,
   users.raw_user_meta_data ->> 'username',
-  lower(users.raw_user_meta_data ->> 'username')
+  lower(users.raw_user_meta_data ->> 'username'),
+  case
+    when users.raw_user_meta_data ->> 'country_code' ~ '^[A-Z]{2}$'
+      then users.raw_user_meta_data ->> 'country_code'
+    else null
+  end
 from auth.users as users
 where users.raw_user_meta_data ->> 'username' ~ '^[A-Za-z0-9_]{3,20}$'
   and not exists (

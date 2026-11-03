@@ -19,6 +19,15 @@ if not exist "%NPM_CLI%" (
   pause
   exit /b 1
 )
+if not exist "%~dp0server\node_modules\geoip-lite\package.json" (
+  echo Installing Openboard online server dependencies...
+  "%NODE_EXE%" "%NPM_CLI%" --script-shell="%ComSpec%" --prefix "%~dp0server" ci
+  if errorlevel 1 (
+    echo Could not install Openboard online server dependencies.
+    pause
+    exit /b 1
+  )
+)
 "%NODE_EXE%" "%NPM_CLI%" --script-shell="%ComSpec%" run online-server
 if errorlevel 1 (
   echo The online room server stopped with an error.

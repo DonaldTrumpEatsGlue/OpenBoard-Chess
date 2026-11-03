@@ -3,11 +3,15 @@
   "private": true,
   "version": "1.0.0",
   "type": "commonjs",
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
     "chess.js": "^0.10.3",
+    "geoip-lite": "^2.0.3",
     "ws": "^8.22.1"
   }
 }
