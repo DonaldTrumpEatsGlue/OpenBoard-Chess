@@ -2181,10 +2181,10 @@ const sidebarSections = {
   play: {
     title: 'Play',
     items: [
+      { icon: '♟', label: 'Computer', action: 'computer' },
       { icon: '♟', label: 'Play Online', action: 'online' },
       { icon: '♟', label: 'Play Bots', action: 'bots' },
       { icon: '✦', label: 'Play Coach', action: 'coach' },
-      { icon: '▥', label: 'Stats & Ratings', action: 'profile' },
       { icon: '🏅', label: 'Tournaments', action: 'coming-soon' },
       { icon: '♞', label: 'Variants', action: 'variants' },
       { icon: '▤', label: 'Game History', action: 'history' },
@@ -2226,7 +2226,6 @@ const sidebarSections = {
     title: 'Community',
     items: [
       { icon: '♙', label: 'Player Profiles', action: 'profiles' },
-      { icon: '⌕', label: 'Search Players', action: 'profile-search' },
     ],
   },
   other: {
@@ -2293,13 +2292,9 @@ function closeSidebar() {
   menuToggle.focus();
 }
 
-function openProfilesDialog(searchMode = false) {
+function openProfilesDialog() {
   profilesDialog.showModal();
-  if (searchMode) {
-    document.querySelector('#profile-card').hidden = true;
-    document.querySelector('#profile-status').textContent = 'Search public player profiles by username.';
-    document.querySelector('#profile-search-input').focus();
-  } else if (authSession?.access_token) {
+  if (authSession?.access_token) {
     loadPlayerProfile();
   } else {
     document.querySelector('#profile-card').hidden = true;
@@ -2310,14 +2305,16 @@ function openProfilesDialog(searchMode = false) {
 
 function runSidebarAction(action) {
   closeSidebar();
-  if (action === 'online') openOnlineDialog('friends');
+  if (action === 'computer') {
+    location.hash = 'game';
+    document.querySelector('#game').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } else if (action === 'online') openOnlineDialog('friends');
   else if (action === 'watch') openOnlineDialog('public');
   else if (action === 'watch-invite') openOnlineDialog('friends');
   else if (action === 'bots') botDirectory.showModal();
   else if (action === 'signup') openAccountDialog('signup');
   else if (action === 'login') openAccountDialog('signin');
-  else if (action === 'profiles' || action === 'profile') openProfilesDialog();
-  else if (action === 'profile-search') openProfilesDialog(true);
+  else if (action === 'profiles') openProfilesDialog();
   else if (action === 'puzzle') document.querySelector('#puzzle-start').click();
   else if (action === 'analysis') document.querySelector('#analysis-open').click();
   else if (action === 'suggest') document.querySelector('#suggest-move').click();
@@ -3381,11 +3378,7 @@ function showMessage(title, text) {
 document.querySelector('#online-open').addEventListener('click', () => {
   openOnlineDialog('friends');
 });
-document.querySelector('#online-tab').addEventListener('click', () => {
-  openOnlineDialog('public');
-});
 document.querySelector('#online-close').addEventListener('click', () => onlineDialog.close());
-document.querySelector('#account-tab').addEventListener('click', () => openAccountDialog('signin'));
 document.querySelector('#account-close').addEventListener('click', () => accountDialog.close());
 document.querySelector('#online-continue').addEventListener('click', () => {
   accountDialog.close();
@@ -3394,9 +3387,6 @@ document.querySelector('#online-continue').addEventListener('click', () => {
 document.querySelector('#online-go-account').addEventListener('click', () => {
   onlineDialog.close();
   openAccountDialog('signin');
-});
-document.querySelector('#profiles-tab').addEventListener('click', () => {
-  openProfilesDialog();
 });
 document.querySelector('#profiles-close').addEventListener('click', () => profilesDialog.close());
 document.querySelector('#profile-search-form').addEventListener('submit', (event) => {

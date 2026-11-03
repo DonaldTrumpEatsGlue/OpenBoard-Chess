@@ -79,13 +79,6 @@ button { -webkit-tap-highlight-color: transparent; }
 .menu-toggle:hover, .menu-toggle[aria-expanded="true"] { border-color: #c8e36a70; background: #c8e36a14; }
 .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: #f5f6ef; font-family: Manrope, sans-serif; font-size: 19px; font-weight: 800; letter-spacing: -.8px; }
 .brand-mark { display: grid; place-items: center; width: 31px; height: 31px; border-radius: 9px; color: #1b2922; background: var(--lime); font-size: 21px; }
-.primary-nav { display: flex; align-self: stretch; align-items: center; gap: 6px; }
-.primary-nav-tab { display: grid; min-height: 38px; place-items: center; padding: 0 15px; border: 1px solid transparent; border-radius: 8px; color: #a7b2aa; background: transparent; font-size: 12px; font-weight: 600; text-decoration: none; cursor: pointer; }
-.primary-nav-tab:hover, .primary-nav-tab:focus-visible { color: #f5f6ef; background: #ffffff0a; }
-.primary-nav-tab[aria-controls="online-dialog"] { color: #e8eee6; border-color: #c8e36a42; background: #c8e36a0b; }
-.primary-nav-tab[aria-controls="online-dialog"]:hover { border-color: #c8e36a8a; background: #c8e36a18; }
-.primary-nav-tab[aria-controls="profiles-dialog"] { color: #e8eee6; border-color: #c8e36a42; background: #c8e36a0b; }
-.primary-nav-tab[aria-controls="profiles-dialog"]:hover { border-color: #c8e36a8a; background: #c8e36a18; }
 .topbar-note { color: #a7b2aa; font-size: 12px; letter-spacing: .03em; }
 .layout { width: min(1120px, calc(100% - 48px)); margin: 55px auto 36px; display: grid; grid-template-columns: minmax(0, 660px) minmax(280px, 340px); gap: clamp(32px, 6vw, 82px); align-items: start; }
 .game-heading { display: flex; align-items: end; justify-content: space-between; margin-bottom: 25px; gap: 16px; }
@@ -450,9 +443,6 @@ body[data-interface-theme="light"] .sound-event-row { border-color: #243d2a20; b
   .brand { gap: 5px; font-size: 15px; }
   .brand-mark { width: 26px; height: 26px; flex: 0 0 26px; font-size: 18px; }
   .topbar-note { display: none; }
-  .primary-nav { gap: 2px; }
-  .primary-nav-tab { min-height: 32px; padding: 0 6px; font-size: 9px; }
-  .account-nav-tab { display: none; }
   .layout { width: calc(100% - 20px); margin-top: 24px; }
   .game-heading { align-items: start; }
   h1 { font-size: 24px; }

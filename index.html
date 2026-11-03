@@ -9,7 +9,7 @@
     <meta name="theme-color" content="#17231f" />
     <meta name="description" content="A free, original chess game with a built-in local AI opponent." />
     <title>Openboard — Play Chess</title>
-    <link rel="stylesheet" href="./src/style.css?v=31" />
+    <link rel="stylesheet" href="./src/style.css?v=33" />
   </head>
   <body>
     <div id="app">
@@ -19,12 +19,6 @@
           <span class="brand-mark" aria-hidden="true">♞</span>
           <span>openboard</span>
         </a>
-        <nav class="primary-nav" aria-label="Game modes">
-          <a class="primary-nav-tab" href="#game">Computer</a>
-          <button class="primary-nav-tab" id="online-tab" type="button" aria-haspopup="dialog" aria-controls="online-dialog">Online</button>
-          <button class="primary-nav-tab" id="profiles-tab" type="button" aria-haspopup="dialog" aria-controls="profiles-dialog">Profiles</button>
-          <button class="primary-nav-tab account-nav-tab" id="account-tab" type="button" aria-haspopup="dialog" aria-controls="account-dialog">Account</button>
-        </nav>
         <span class="topbar-note">Chess, on your terms.</span>
       </header>
       <div class="sidebar-backdrop" id="sidebar-backdrop" hidden></div>
@@ -44,7 +38,6 @@
         </nav>
         <div class="sidebar-submenu" id="sidebar-submenu" aria-live="polite" hidden></div>
         <div class="sidebar-bottom">
-          <button class="sidebar-action" type="button" data-menu-action="profile-search"><span>⌕</span>Search profiles</button>
           <button class="primary-button sidebar-signup" type="button" data-menu-action="signup">Sign Up</button>
           <button class="secondary-button sidebar-login" type="button" data-menu-action="login">Log In</button>
           <button class="sidebar-action muted" type="button" data-menu-action="help"><span>?</span>Help &amp; Support</button>
@@ -444,6 +437,6 @@
     <script defer src="./vendor/chess.js"></script>
     <script defer src="./src/large-board-chess.js"></script>
     <script defer src="./src/piece-studio.js"></script>
-    <script defer src="./src/main.js?v=31"></script>
+    <script defer src="./src/main.js?v=33"></script>
   </body>
 </html>
