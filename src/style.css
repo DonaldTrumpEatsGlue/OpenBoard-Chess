@@ -522,6 +522,7 @@ body[data-interface-theme="light"] .history-replay-move:hover, body[data-interfa
 .profile-country { margin: 4px 0 0; color: #a7b3a9; font-size: 11px; }
 .profile-bio { margin: 0 0 14px; color: #c3cdc5; font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .profile-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
+.profile-actions[hidden] { display: none; }
 .profile-country-form { display: grid; gap: 8px; margin-top: 12px; padding: 12px; border: 1px solid #ffffff12; border-radius: 9px; background: #10191455; }
 .profile-rating-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
 .profile-rating { display: grid; gap: 6px; min-width: 0; padding: 12px; border: 1px solid #ffffff12; border-radius: 9px; background: #10191488; }
