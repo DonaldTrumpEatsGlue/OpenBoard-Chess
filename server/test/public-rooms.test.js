@@ -21,6 +21,8 @@ const socialFriendships = [];
 const socialDirectMessages = [];
 let userIdCounter = 1;
 let socialIdCounter = 1;
+let profileSchemaMissingOptionalColumns = false;
+let socialSchemaMissing = false;
 
 function nextSocialId() {
   return `10000000-0000-4000-8000-${String(socialIdCounter++).padStart(12, '0')}`;
@@ -278,6 +280,13 @@ before(async () => {
         '/rest/v1/rpc/openboard_send_direct_message',
         '/rest/v1/rpc/openboard_load_direct_messages',
       ].includes(request.url)) {
+      if (socialSchemaMissing) {
+        response.writeHead(404).end(JSON.stringify({
+          code: 'PGRST202',
+          message: 'Could not find the function in the schema cache.',
+        }));
+        return;
+      }
       let rawBody = '';
       for await (const chunk of request) rawBody += chunk;
       const body = JSON.parse(rawBody);
@@ -477,6 +486,16 @@ before(async () => {
       const url = new URL(request.url, 'http://localhost');
       const usernameKey = url.searchParams.get('username_key')?.slice(3);
       const selectedFields = url.searchParams.get('select');
+      if (profileSchemaMissingOptionalColumns
+        && selectedFields !== 'username'
+        && selectedFields !== 'id'
+        && selectedFields !== 'username_key') {
+        response.writeHead(400).end(JSON.stringify({
+          code: '42703',
+          message: 'column country_code does not exist',
+        }));
+        return;
+      }
       if (usernameKey !== undefined) {
         if (selectedFields === 'id' && request.headers.apikey !== 'test-service-role-key') {
           response.writeHead(401).end('{}');
@@ -488,6 +507,8 @@ before(async () => {
         response.writeHead(200).end(JSON.stringify(account
           ? [selectedFields === 'id'
             ? { id: account.id }
+            : selectedFields === 'username'
+              ? { username: account.username }
             : {
               username: account.username,
               country_code: account.country_code,
@@ -501,11 +522,10 @@ before(async () => {
         return;
       }
       const requestedId = url.searchParams.get('id')?.slice(3);
-      const requestedUser = user?.id === requestedId ? user : null;
       const profile = [...authUsers.values()].find((candidate) => candidate.id === requestedId);
       response.writeHead(200).end(JSON.stringify(profile
         ? selectedFields === 'username'
-          ? requestedUser ? [{ username: requestedUser.username }] : []
+          ? [{ username: profile.username }]
           : selectedFields === 'username,country_code'
             ? [{ username: profile.username, country_code: profile.country_code }]
           : [{
@@ -1577,4 +1597,45 @@ test('social API protects friend requests and direct messages behind account aut
   );
   assert.equal(unauthorizedMessage.status, 400);
   assert.match(unauthorizedMessage.body.message, /after you are friends/i);
+});
+
+test('player search and account identity remain usable before optional profile migrations', async () => {
+  const token = createAccount('LegacyProfileUser', true, 'US');
+  const account = authUsers.get(token);
+  let socket;
+  profileSchemaMissingOptionalColumns = true;
+  try {
+    const publicProfile = await getJson(socialUrl('/profiles/LegacyProfileUser'));
+    assert.equal(publicProfile.status, 200);
+    assert.deepEqual(publicProfile.body, {
+      username: 'LegacyProfileUser',
+      countryCode: null,
+      onlineElo: 1000,
+      onlineGames: 0,
+      onlineWins: 0,
+      onlineDraws: 0,
+      onlineLosses: 0,
+    });
+
+    const ownProfile = await getJson(socialUrl('/profile/me'), token);
+    assert.equal(ownProfile.status, 200);
+    assert.equal(ownProfile.body.username, 'LegacyProfileUser');
+    assert.equal(ownProfile.body.onlineElo, 1000);
+
+    socket = new WebSocket(endpoint);
+    await once(socket, 'open');
+    assert.deepEqual(await request(socket, { type: 'authenticate', accessToken: token }), {
+      type: 'authenticated',
+      username: 'LegacyProfileUser',
+    });
+
+    socialSchemaMissing = true;
+    const socialOverview = await getJson(socialUrl('/social/overview'), token);
+    assert.equal(socialOverview.status, 503);
+    assert.match(socialOverview.body.message, /run supabase\/schema\.sql/i);
+  } finally {
+    profileSchemaMissingOptionalColumns = false;
+    socialSchemaMissing = false;
+    socket?.close();
+  }
 });

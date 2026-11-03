@@ -253,12 +253,20 @@ async function authenticateAccessToken(accessToken) {
   const profileUrl = new URL(`${supabaseUrl}/rest/v1/profiles`);
   profileUrl.searchParams.set('id', `eq.${user.id}`);
   profileUrl.searchParams.set('select', 'username,country_code');
-  const profileResponse = await fetch(profileUrl, {
+  let { rows, missingColumns } = await requestProfileRows(
+    profileUrl,
     headers,
-    signal: AbortSignal.timeout(5000),
-  });
-  if (!profileResponse.ok) throw new Error('Could not load your reserved username.');
-  const [profile] = await profileResponse.json();
+    'Could not load your reserved username.',
+  );
+  if (missingColumns) {
+    profileUrl.searchParams.set('select', 'username');
+    ({ rows } = await requestProfileRows(
+      profileUrl,
+      headers,
+      'Could not load your reserved username.',
+    ));
+  }
+  const [profile] = rows;
   if (!profile?.username) throw new Error('Your account does not have a reserved username. Create a new account or contact the site owner.');
   return { id: user.id, username: profile.username, countryCode: profile.country_code || null };
 }
@@ -305,25 +313,53 @@ async function createAccountWithCountry({ username, email, password, countryCode
 
 const publicProfileFields = 'username,country_code,online_elo,online_games,online_wins,online_draws,online_losses';
 
+function isMissingProfileColumnError(error) {
+  return error?.code === '42703'
+    || error?.code === 'PGRST204'
+    || /column .* does not exist|could not find .*column.*schema cache/i.test(
+      `${error?.message || ''} ${error?.details || ''}`,
+    );
+}
+
+async function requestProfileRows(profileUrl, headers, failureMessage = 'Could not load this player profile.') {
+  const response = await fetch(profileUrl, {
+    headers,
+    signal: AbortSignal.timeout(5000),
+  });
+  if (response.ok) return { rows: await response.json(), missingColumns: false };
+
+  let error;
+  try {
+    error = await response.json();
+  } catch {
+    error = null;
+  }
+  if (response.status === 400 && isMissingProfileColumnError(error)) {
+    return { rows: null, missingColumns: true };
+  }
+  throw new Error(failureMessage);
+}
+
 async function loadProfile(queryName, queryValue) {
   const profileUrl = new URL(`${supabaseUrl}/rest/v1/profiles`);
   profileUrl.searchParams.set(queryName, `eq.${queryValue}`);
   profileUrl.searchParams.set('select', publicProfileFields);
-  const profileResponse = await fetch(profileUrl, {
-    headers: { apikey: supabaseAnonKey },
-    signal: AbortSignal.timeout(5000),
-  });
-  if (!profileResponse.ok) throw new Error('Could not load this player profile.');
-  const [profile] = await profileResponse.json();
+  const headers = { apikey: supabaseAnonKey };
+  let { rows, missingColumns } = await requestProfileRows(profileUrl, headers);
+  if (missingColumns) {
+    profileUrl.searchParams.set('select', 'username');
+    ({ rows } = await requestProfileRows(profileUrl, headers));
+  }
+  const [profile] = rows;
   if (!profile) return null;
   return {
     username: profile.username,
     countryCode: profile.country_code || null,
-    onlineElo: profile.online_elo,
-    onlineGames: profile.online_games,
-    onlineWins: profile.online_wins,
-    onlineDraws: profile.online_draws,
-    onlineLosses: profile.online_losses,
+    onlineElo: profile.online_elo ?? 1000,
+    onlineGames: profile.online_games ?? 0,
+    onlineWins: profile.online_wins ?? 0,
+    onlineDraws: profile.online_draws ?? 0,
+    onlineLosses: profile.online_losses ?? 0,
   };
 }
 
@@ -348,8 +384,13 @@ async function callSocialRpc(name, arguments_) {
     throw new Error('The social service returned an unreadable response.');
   }
   if (!response.ok) {
-    const error = new Error(result.message || 'The social service could not complete that request.');
-    error.statusCode = response.status < 500 ? response.status : 503;
+    const schemaMissing = response.status === 404
+      || result.code === 'PGRST202'
+      || result.code === '42883';
+    const error = new Error(schemaMissing
+      ? 'Social features need a database update. The site owner must run supabase/schema.sql in the Supabase SQL Editor.'
+      : result.message || 'The social service could not complete that request.');
+    error.statusCode = schemaMissing ? 503 : response.status < 500 ? response.status : 503;
     throw error;
   }
   return result;
