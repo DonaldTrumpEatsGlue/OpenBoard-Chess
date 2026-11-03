@@ -404,8 +404,18 @@ body[data-interface-theme="light"] .social-settings-view > label:not(.social-sou
 .game-over-content .eyebrow { margin: 7px 0 0; color: var(--lime); }
 .game-over-status { width: 100%; padding: 10px 12px; border: 1px solid #c8e36a35; border-radius: 8px; color: #e8eee6 !important; background: #c8e36a0c; font-size: 12px; }
 .game-over-actions { width: 100%; margin-top: 8px; }
-.rematch-offer-bubble { position: fixed; z-index: 20; right: max(18px, env(safe-area-inset-right)); bottom: max(18px, env(safe-area-inset-bottom)); display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 0 18px; border: 1px solid #c8e36a80; border-radius: 999px; color: #10170c; background: var(--lime); box-shadow: 0 8px 28px #0008; font: 700 14px/1 inherit; cursor: pointer; }
+.rematch-offer-bubble { position: fixed; z-index: 20; right: max(18px, env(safe-area-inset-right)); bottom: max(78px, calc(env(safe-area-inset-bottom) + 70px)); display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 0 18px; border: 1px solid #c8e36a80; border-radius: 999px; color: #10170c; background: var(--lime); box-shadow: 0 8px 28px #0008; font: 700 14px/1 inherit; cursor: pointer; }
 .rematch-offer-bubble[hidden] { display: none; }
+.game-over-dock { position: fixed; z-index: 18; right: max(14px, env(safe-area-inset-right)); bottom: max(14px, env(safe-area-inset-bottom)); left: max(14px, env(safe-area-inset-left)); display: flex; align-items: center; justify-content: center; gap: 9px; width: fit-content; max-width: calc(100vw - 28px); margin-inline: auto; padding: 9px; border: 1px solid #c8e36a55; border-radius: 14px; color: #e8eee6; background: #17231ff2; box-shadow: 0 12px 36px #0009; }
+.game-over-dock[hidden] { display: none; }
+.game-over-dock-label { padding: 0 8px; color: var(--muted); font-size: 13px; white-space: nowrap; }
+.game-over-dock button { min-height: 40px; justify-content: center; white-space: nowrap; }
+.game-over-dock .primary-button, .game-over-dock .secondary-button { padding: 0 13px; }
+@media (max-width: 560px) {
+  .game-over-dock { right: 8px; bottom: max(8px, env(safe-area-inset-bottom)); left: 8px; gap: 5px; padding: 7px; }
+  .game-over-dock-label { display: none; }
+  .game-over-dock button { flex: 1; min-width: 0; padding-inline: 8px !important; font-size: 12px; }
+}
 .game-over-dialog[data-result="defeat"] .game-over-icon { border-color: #e58b7e55; color: #f0a195; background: #e58b7e13; }
 .game-over-dialog[data-result="draw"] .game-over-icon { border-color: #91a5d555; color: #b7c8f2; background: #91a5d513; }
 @media (max-width: 380px) {

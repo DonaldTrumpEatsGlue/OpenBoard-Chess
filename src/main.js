@@ -5086,6 +5086,8 @@ function showGameOver(score, termination) {
   document.querySelector('#game-over-status').textContent = '';
   document.querySelector('#game-over-rematch').hidden = onlineSpectating;
   document.querySelector('#game-over-rematch').disabled = false;
+  document.querySelector('#game-over-dock-rematch').hidden = onlineSpectating;
+  document.querySelector('#game-over-dock').hidden = false;
   if (!gameOverDialog.open) gameOverDialog.showModal();
 }
 
@@ -5151,6 +5153,7 @@ function markGameResult(soundEvent = 'draw', humanScore = null, termination = 'd
 
 function startNewGame() {
   if (gameOverDialog.open) gameOverDialog.close();
+  document.querySelector('#game-over-dock').hidden = true;
   if (resignConfirmDialog.open) resignConfirmDialog.close();
   if (rematchOfferDialog.open) rematchOfferDialog.close();
   resetRematchUi();
@@ -6131,6 +6134,7 @@ document.querySelector('#game-over-rematch').addEventListener('click', () => {
 
 document.querySelector('#game-over-menu').addEventListener('click', () => {
   gameOverDialog.close();
+  document.querySelector('#game-over-dock').hidden = true;
   if (onlineMode) {
     if (onlineSocket?.readyState === WebSocket.OPEN) {
       onlineSocket.send(JSON.stringify({ type: 'leave-room' }));
@@ -6143,6 +6147,25 @@ document.querySelector('#game-over-menu').addEventListener('click', () => {
 
 document.querySelector('#game-over-close').addEventListener('click', () => {
   gameOverDialog.close();
+});
+
+document.querySelector('#game-over-dock-results').addEventListener('click', () => {
+  if (!gameResult) return;
+  if (!gameOverDialog.open) gameOverDialog.showModal();
+});
+
+document.querySelector('#game-over-dock-rematch').addEventListener('click', () => {
+  if (!gameResult) return;
+  if (!onlineMode) {
+    startNewGame();
+    return;
+  }
+  if (!gameOverDialog.open) gameOverDialog.showModal();
+  document.querySelector('#game-over-rematch').click();
+});
+
+document.querySelector('#game-over-dock-menu').addEventListener('click', () => {
+  document.querySelector('#game-over-menu').click();
 });
 
 document.querySelector('#rematch-offer-bubble').addEventListener('click', () => {
