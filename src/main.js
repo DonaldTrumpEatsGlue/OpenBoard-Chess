@@ -2330,6 +2330,7 @@ function renderSidebarSubmenu(section) {
 function closeSidebar() {
   const sidebar = document.querySelector('#site-sidebar');
   if (!sidebar.classList.contains('open')) return;
+  closeSocialPanel();
   sidebar.classList.remove('open');
   document.querySelector('#sidebar-submenu').hidden = true;
   document.querySelectorAll('.sidebar-section').forEach((button) => {

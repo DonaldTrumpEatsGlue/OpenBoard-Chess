@@ -9,7 +9,7 @@
     <meta name="theme-color" content="#17231f" />
     <meta name="description" content="A free, original chess game with a built-in local AI opponent." />
     <title>Openboard — Play Chess</title>
-    <link rel="stylesheet" href="./src/style.css?v=35" />
+    <link rel="stylesheet" href="./src/style.css?v=36" />
   </head>
   <body>
     <div id="app">
@@ -42,6 +42,20 @@
           <button class="secondary-button sidebar-login" type="button" data-menu-action="login">Log In</button>
           <button class="sidebar-action muted" type="button" data-menu-action="help"><span>?</span>Help &amp; Support</button>
           <span class="sidebar-language">♧ &nbsp; English</span>
+          <nav class="social-dock" aria-label="Social tools">
+            <button class="social-dock-button" type="button" data-social-panel="friends" aria-label="Friends" aria-expanded="false" title="Friends">
+              <span aria-hidden="true">♟</span><span class="social-dock-badge" data-social-badge="friends" hidden></span>
+            </button>
+            <button class="social-dock-button" type="button" data-social-panel="messages" aria-label="Messages" aria-expanded="false" title="Messages">
+              <span aria-hidden="true">✉</span><span class="social-dock-badge" data-social-badge="messages" hidden></span>
+            </button>
+            <button class="social-dock-button" type="button" data-social-panel="notifications" aria-label="Notifications" aria-expanded="false" title="Notifications">
+              <span aria-hidden="true">♢</span><span class="social-dock-badge" data-social-badge="notifications" hidden></span>
+            </button>
+            <button class="social-dock-button" type="button" data-social-panel="settings" aria-label="Settings" aria-expanded="false" title="Settings">
+              <span aria-hidden="true">⚙</span>
+            </button>
+          </nav>
         </div>
       </aside>
 
@@ -213,21 +227,6 @@
       </main>
 
       <footer class="site-footer"><span>OPENBOARD</span><span>Free chess for everyone.</span></footer>
-
-      <nav class="social-dock" aria-label="Social tools">
-        <button class="social-dock-button" type="button" data-social-panel="friends" aria-label="Friends" aria-expanded="false" title="Friends">
-          <span aria-hidden="true">♟</span><span class="social-dock-badge" data-social-badge="friends" hidden></span>
-        </button>
-        <button class="social-dock-button" type="button" data-social-panel="messages" aria-label="Messages" aria-expanded="false" title="Messages">
-          <span aria-hidden="true">✉</span><span class="social-dock-badge" data-social-badge="messages" hidden></span>
-        </button>
-        <button class="social-dock-button" type="button" data-social-panel="notifications" aria-label="Notifications" aria-expanded="false" title="Notifications">
-          <span aria-hidden="true">♢</span><span class="social-dock-badge" data-social-badge="notifications" hidden></span>
-        </button>
-        <button class="social-dock-button" type="button" data-social-panel="settings" aria-label="Settings" aria-expanded="false" title="Settings">
-          <span aria-hidden="true">⚙</span>
-        </button>
-      </nav>
 
       <aside class="social-panel" id="social-panel" aria-label="Social tools" hidden>
         <header class="social-panel-header">
@@ -511,6 +510,6 @@
     <script defer src="./vendor/chess.js"></script>
     <script defer src="./src/large-board-chess.js"></script>
     <script defer src="./src/piece-studio.js"></script>
-    <script defer src="./src/main.js?v=35"></script>
+    <script defer src="./src/main.js?v=36"></script>
   </body>
 </html>
