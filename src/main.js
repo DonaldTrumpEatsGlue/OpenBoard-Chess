@@ -254,6 +254,7 @@ let onlinePreviousRules = null;
 let currentOnlineGameId = null;
 let pendingRematchRequestId = null;
 let rematchRequestPending = false;
+let incomingRematchOffer = false;
 let rematchRequestTimeout = null;
 let joiningGameChallengeType = '';
 let resignationPending = false;
@@ -4606,6 +4607,8 @@ function handleOnlineMessage(socket, message) {
       if (rematchOfferDialog.open) rematchOfferDialog.close();
       pendingRematchRequestId = null;
       rematchRequestPending = false;
+      incomingRematchOffer = false;
+      document.querySelector('#game-over-dock').hidden = true;
       updateOnlineStatus('Rematch accepted. Starting a new game with colors switched.');
     }
     updateSpectatorCount(message.spectators);
@@ -4704,6 +4707,7 @@ function handleOnlineMessage(socket, message) {
   if (message.type === 'rematch-waiting') {
     pendingRematchRequestId = message.requestId;
     rematchRequestPending = false;
+    incomingRematchOffer = false;
     if (rematchRequestTimeout !== null) {
       window.clearTimeout(rematchRequestTimeout);
       rematchRequestTimeout = null;
@@ -4717,6 +4721,8 @@ function handleOnlineMessage(socket, message) {
     document.querySelector('#rematch-accept').disabled = false;
     document.querySelector('#rematch-decline').disabled = false;
     pendingRematchRequestId = message.requestId;
+    incomingRematchOffer = true;
+    document.querySelector('#game-over-rematch').textContent = 'Respond to Rematch';
     document.querySelector('#rematch-offer-bubble').hidden = false;
     document.querySelector('#rematch-offer-message').textContent =
       `${message.name || 'Your opponent'} wants a rematch. Accept to start a new game with colors switched.`;
@@ -4730,6 +4736,7 @@ function handleOnlineMessage(socket, message) {
   if (message.type === 'rematch-request-cancelled') {
     pendingRematchRequestId = null;
     rematchRequestPending = false;
+    incomingRematchOffer = false;
     if (rematchRequestTimeout !== null) {
       window.clearTimeout(rematchRequestTimeout);
       rematchRequestTimeout = null;
@@ -4745,6 +4752,7 @@ function handleOnlineMessage(socket, message) {
   if (message.type === 'rematch-declined') {
     pendingRematchRequestId = null;
     rematchRequestPending = false;
+    incomingRematchOffer = false;
     if (rematchRequestTimeout !== null) {
       window.clearTimeout(rematchRequestTimeout);
       rematchRequestTimeout = null;
@@ -4758,9 +4766,11 @@ function handleOnlineMessage(socket, message) {
   if (message.type === 'rematch-declined-confirmed') {
     pendingRematchRequestId = null;
     rematchRequestPending = false;
+    incomingRematchOffer = false;
     setRematchOfferBubble(false);
     document.querySelector('#rematch-accept').disabled = false;
     document.querySelector('#rematch-decline').disabled = false;
+    document.querySelector('#game-over-rematch').textContent = 'Rematch';
     if (rematchOfferDialog.open) rematchOfferDialog.close();
     setGameOverStatus('You declined the rematch.');
     refreshRematchNotifications();
@@ -4769,6 +4779,7 @@ function handleOnlineMessage(socket, message) {
   if (message.type === 'rematch-expired') {
     pendingRematchRequestId = null;
     rematchRequestPending = false;
+    incomingRematchOffer = false;
     if (rematchRequestTimeout !== null) {
       window.clearTimeout(rematchRequestTimeout);
       rematchRequestTimeout = null;
@@ -4778,6 +4789,7 @@ function handleOnlineMessage(socket, message) {
     document.querySelector('#game-over-rematch').textContent = 'Rematch';
     document.querySelector('#rematch-accept').disabled = false;
     document.querySelector('#rematch-decline').disabled = false;
+    document.querySelector('#game-over-rematch').textContent = 'Rematch';
     if (rematchOfferDialog.open) rematchOfferDialog.close();
     setGameOverStatus('The rematch request expired without a response.');
     refreshRematchNotifications();
@@ -4788,6 +4800,7 @@ function handleOnlineMessage(socket, message) {
     || message.type === 'opponent-disconnected') {
     pendingRematchRequestId = null;
     rematchRequestPending = false;
+    incomingRematchOffer = false;
     if (rematchRequestTimeout !== null) {
       window.clearTimeout(rematchRequestTimeout);
       rematchRequestTimeout = null;
@@ -4804,6 +4817,7 @@ function handleOnlineMessage(socket, message) {
   if (message.type === 'rematch-accepted') {
     pendingRematchRequestId = null;
     rematchRequestPending = false;
+    incomingRematchOffer = false;
     if (rematchRequestTimeout !== null) {
       window.clearTimeout(rematchRequestTimeout);
       rematchRequestTimeout = null;
@@ -5156,6 +5170,7 @@ function refreshRematchNotifications() {
 function resetRematchUi() {
   pendingRematchRequestId = null;
   rematchRequestPending = false;
+  incomingRematchOffer = false;
   if (rematchRequestTimeout !== null) {
     window.clearTimeout(rematchRequestTimeout);
     rematchRequestTimeout = null;
@@ -6156,6 +6171,10 @@ document.querySelector('#resign-confirm').addEventListener('click', () => {
 
 document.querySelector('#game-over-rematch').addEventListener('click', () => {
   const button = document.querySelector('#game-over-rematch');
+  if (incomingRematchOffer) {
+    if (!rematchOfferDialog.open) rematchOfferDialog.showModal();
+    return;
+  }
   if (!onlineMode) {
     gameOverDialog.close();
     startNewGame();
@@ -6177,6 +6196,7 @@ document.querySelector('#game-over-rematch').addEventListener('click', () => {
   if (rematchRequestPending) return;
   rematchRequestPending = true;
   button.disabled = true;
+  button.textContent = 'Sending…';
   setGameOverStatus('Sending rematch request...');
   rematchRequestTimeout = window.setTimeout(() => {
     if (!rematchRequestPending) return;
@@ -6213,6 +6233,11 @@ document.querySelector('#game-over-dock-results').addEventListener('click', () =
 
 document.querySelector('#game-over-dock-rematch').addEventListener('click', () => {
   if (!gameResult) return;
+  if (incomingRematchOffer) {
+    setRematchOfferBubble(false);
+    if (!rematchOfferDialog.open) rematchOfferDialog.showModal();
+    return;
+  }
   if (!onlineMode) {
     startNewGame();
     return;
