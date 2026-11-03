@@ -1010,6 +1010,13 @@ test('public player profiles show online ratings but never expose account emails
     onlineLosses: 0,
   });
   assert.equal(JSON.stringify(publicProfile.body).includes('@example.test'), false);
+  const viewedOwnProfile = await getJson(profileUrl, token);
+  assert.equal(viewedOwnProfile.status, 200);
+  assert.equal(viewedOwnProfile.body.isOwnProfile, true);
+  const otherToken = createAccount('OtherProfileViewer');
+  const viewedOtherProfile = await getJson(profileUrl, otherToken);
+  assert.equal(viewedOtherProfile.status, 200);
+  assert.equal(viewedOtherProfile.body.isOwnProfile, false);
 
   const privateProfileUrl = new URL(endpoint);
   privateProfileUrl.protocol = 'http:';
@@ -1019,6 +1026,7 @@ test('public player profiles show online ratings but never expose account emails
   assert.equal((await getJson(privateProfileUrl)).status, 401);
   const ownProfile = await getJson(privateProfileUrl, token);
   assert.equal(ownProfile.status, 200);
+  assert.equal(ownProfile.body.isOwnProfile, true);
   assert.equal(ownProfile.body.username, 'PublicProfileOwner');
   assert.equal(ownProfile.body.countryCode, 'CA');
   assert.equal(ownProfile.body.bio || '', '');
@@ -1997,9 +2005,13 @@ test('player search and account identity remain usable before optional profile m
       onlineDraws: 0,
       onlineLosses: 0,
     });
+    const viewedOwnProfile = await getJson(socialUrl('/profiles/LegacyProfileUser'), token);
+    assert.equal(viewedOwnProfile.status, 200);
+    assert.equal(viewedOwnProfile.body.isOwnProfile, true);
 
     const ownProfile = await getJson(socialUrl('/profile/me'), token);
     assert.equal(ownProfile.status, 200);
+    assert.equal(ownProfile.body.isOwnProfile, true);
     assert.equal(ownProfile.body.username, 'LegacyProfileUser');
     assert.equal(ownProfile.body.onlineElo, 1200);
 

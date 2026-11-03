@@ -1109,6 +1109,7 @@ const server = http.createServer(async (request, response) => {
     }
     try {
       let profile;
+      let viewerIdentity = null;
       if (isOwnProfileRequest) {
         const [, accessToken] = /^Bearer\s+(.+)$/i.exec(request.headers.authorization || '') || [];
         if (!accessToken) {
@@ -1164,6 +1165,7 @@ const server = http.createServer(async (request, response) => {
           });
           const result = await loadProfile('id', identity.id);
           if (!result) throw new Error('Your player profile could not be found.');
+          result.isOwnProfile = true;
           response.writeHead(200, {
             'Cache-Control': 'no-store',
             'Content-Type': 'application/json; charset=utf-8',
@@ -1171,7 +1173,10 @@ const server = http.createServer(async (request, response) => {
           return;
         }
         profile = await loadProfile('id', identity.id);
+        if (profile) profile.isOwnProfile = true;
       } else {
+        const [, accessToken] = /^Bearer\s+(.+)$/i.exec(request.headers.authorization || '') || [];
+        if (accessToken) viewerIdentity = await authenticateAccessToken(accessToken);
         let username;
         try {
           username = decodeURIComponent(publicProfileMatch[1]);
@@ -1190,6 +1195,10 @@ const server = http.createServer(async (request, response) => {
           return;
         }
         profile = await loadProfile('username_key', username.toLowerCase());
+        if (profile && viewerIdentity) {
+          profile.isOwnProfile = profile.id === viewerIdentity.id
+            || profile.username.toLowerCase() === viewerIdentity.username.toLowerCase();
+        }
       }
       if (!profile) {
         response.writeHead(404, {

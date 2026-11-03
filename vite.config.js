@@ -14,6 +14,10 @@ function stockfishAssetPath(fileName) {
   return resolve('node_modules/stockfish', fileName === 'Copying.txt' ? fileName : `bin/${fileName}`);
 }
 
+function countryFlagAssetPath(countryCode) {
+  return resolve('node_modules/flag-icons/flags/4x3', `${countryCode}.svg`);
+}
+
 function stockfishFiles() {
   return {
     name: 'openboard-stockfish-files',
@@ -39,6 +43,21 @@ function stockfishFiles() {
           .on('error', next)
           .pipe(response);
       });
+      server.middlewares.use('/flags/4x3', (request, response, next) => {
+        const countryCode = new URL(request.url, 'http://localhost').pathname
+          .replace(/^\/+/, '')
+          .replace(/\.svg$/i, '')
+          .toLowerCase();
+        if (!/^[a-z]{2}$/.test(countryCode)) {
+          next();
+          return;
+        }
+        response.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
+        response.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        createReadStream(countryFlagAssetPath(countryCode))
+          .on('error', next)
+          .pipe(response);
+      });
       server.middlewares.use('/vendor/chess.js', async (_request, response, next) => {
         try {
           const source = await readFile(resolve('node_modules/chess.js/chess.js'), 'utf8');
@@ -60,12 +79,19 @@ function stockfishFiles() {
       const sourceScripts = resolve('src');
       const outputScripts = resolve('dist/src');
       const outputVendor = resolve('dist/vendor');
-      await Promise.all([mkdir(outputScripts, { recursive: true }), mkdir(outputVendor, { recursive: true })]);
+      const outputFlags = resolve('dist/flags/4x3');
       await Promise.all([
-        ...['main.js', 'large-board-chess.js', 'piece-theme.js', 'piece-studio.js', 'sound-manifest.js', 'game-insights.js', 'learning-content.js', 'academy-content.js'].map((fileName) => copyFile(
+        mkdir(outputScripts, { recursive: true }),
+        mkdir(outputVendor, { recursive: true }),
+        mkdir(outputFlags, { recursive: true }),
+      ]);
+      await Promise.all([
+        ...['main.js', 'large-board-chess.js', 'piece-theme.js', 'piece-studio.js', 'sound-manifest.js', 'game-insights.js', 'learning-content.js', 'academy-content.js', 'profile-utils.js'].map((fileName) => copyFile(
           resolve(sourceScripts, fileName),
           resolve(outputScripts, fileName),
         )),
+        cp(resolve('node_modules/flag-icons/flags/4x3'), outputFlags, { recursive: true }),
+        copyFile(resolve('node_modules/flag-icons/LICENSE'), resolve('dist/flags/LICENSE')),
         readFile(resolve('node_modules/chess.js/chess.js'), 'utf8')
           .then((source) => writeFile(resolve(outputVendor, 'chess.js'), patchChessSource(source))),
         copyFile(resolve('node_modules/chess.js/LICENSE'), resolve(outputVendor, 'chess-LICENSE')),

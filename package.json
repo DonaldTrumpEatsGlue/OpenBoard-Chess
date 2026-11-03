@@ -15,6 +15,7 @@
     "test:game-insights": "node --test scripts/test-game-insights.mjs",
     "test:learning-content": "node --test scripts/test-learning-content.test.mjs",
     "test:academy-content": "node --test scripts/test-academy-content.test.mjs",
+    "test:profile-utils": "node --test scripts/test-profile-utils.test.mjs",
     "test:online": "node --test server/test/*.test.js",
     "online-server": "node server/server.js",
     "desktop": "npm run build && electron .",
@@ -27,6 +28,7 @@
   },
   "dependencies": {
     "chess.js": "^0.10.3",
+    "flag-icons": "^7.6.0",
     "stockfish": "^19.0.1",
     "ws": "^8.22.1"
   },

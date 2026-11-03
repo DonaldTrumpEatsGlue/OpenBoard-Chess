@@ -1844,11 +1844,20 @@ async function requestPlayerProfile(username = '') {
   const ownProfile = !username;
   const endpoint = profileEndpoint(ownProfile ? '/profile/me' : `/profiles/${encodeURIComponent(username)}`);
   const headers = {};
+  let session = null;
+  if (authSession?.access_token) {
+    try {
+      session = await getValidAuthSession();
+    } catch (error) {
+      if (ownProfile) throw error;
+      console.error('Could not refresh sign-in for public profile owner verification; loading the profile anonymously.', error);
+    }
+  }
   if (ownProfile) {
-    const session = await getValidAuthSession();
     if (!session?.access_token) throw new Error('Sign in to view your player profile.');
     headers.Authorization = `Bearer ${session.access_token}`;
   }
+  if (!ownProfile && session?.access_token) headers.Authorization = makeAuthorizationHeader(session.access_token);
   const response = await fetch(endpoint, { headers });
   let profile;
   try {
@@ -1877,7 +1886,7 @@ function populateCountryOptions() {
   for (const { code, name } of options) {
     const option = document.createElement('option');
     option.value = code;
-    option.textContent = `${countryFlagEmoji(code)} ${name}`;
+    option.textContent = `${name} (${code})`;
     countrySelect.append(option);
     settingsCountrySelect.append(option.cloneNode(true));
   }
@@ -1892,7 +1901,7 @@ function renderPlayerProfile(profile, isOwnProfile = false) {
   avatarImage.hidden = !profile.avatarData;
   avatarImage.removeAttribute('src');
   if (profile.avatarData) avatarImage.src = profile.avatarData;
-  document.querySelector('#profile-username').textContent = `${countryFlagEmoji(profile.countryCode)} @${profile.username}`.trim();
+  document.querySelector('#profile-username').replaceChildren(createCountryPlayerName(profile.username, profile.countryCode));
   document.querySelector('#profile-country').textContent = countryLabel(profile.countryCode) || 'Country not available';
   const bio = document.querySelector('#profile-bio');
   bio.textContent = profile.bio || '';
@@ -2166,7 +2175,7 @@ async function loadPlayerProfile(username = '') {
       };
     }
     if (!username) authUsername = profile.username;
-    renderPlayerProfile(profile, !username);
+    renderPlayerProfile(profile, !username || profile.isOwnProfile === true);
     status.textContent = username
       ? `Public profile for @${profile.username}.`
       : 'Your player profile.';
@@ -2230,9 +2239,17 @@ function updateAccountUI(message = '') {
     passwordRecoveryMode || authMode === 'signup' ? 'new-password' : 'current-password';
   usernameField.hidden = authMode !== 'signup' || isSignedIn || passwordRecoveryMode;
   emailField.hidden = isSignedIn || passwordRecoveryMode;
-  document.querySelector('#online-account-state').textContent = isSignedIn
-    ? `Signed in · ${authSession.user?.email || 'Openboard account'}`
-    : 'Sign in or create an account';
+  const accountState = document.querySelector('#online-account-state');
+  if (isSignedIn && onlineIdentityVerified && onlinePlayerName) {
+    accountState.replaceChildren(
+      document.createTextNode('Signed in as '),
+      createCountryPlayerName(onlinePlayerName, onlinePlayerCountryCode),
+    );
+  } else {
+    accountState.textContent = isSignedIn
+      ? `Signed in · ${authSession.user?.email || 'Openboard account'}`
+      : 'Sign in or create an account';
+  }
   document.querySelector('#online-username').disabled = authMode !== 'signup' || isSignedIn;
   document.querySelector('#online-email').disabled = isSignedIn;
   document.querySelector('#online-account-password').disabled = isSignedIn && !passwordRecoveryMode;
@@ -2273,13 +2290,14 @@ function updateSidebarAccountControls(isSignedIn) {
   }
   const userId = authSession.user?.id || authSession.access_token;
   profileName.textContent = authUsername ? `@${authUsername}` : 'Your profile';
-  profileFlag.textContent = '';
+  profileFlag.replaceChildren();
   profileButton.setAttribute('aria-label', authUsername
     ? `Your profile, ${authUsername}`
     : 'Your profile');
 
   if (sidebarProfileIdentity?.userId === userId) {
-    profileFlag.textContent = countryFlagEmoji(sidebarProfileIdentity.countryCode);
+    const flag = createCountryFlag(sidebarProfileIdentity.countryCode);
+    if (flag) profileFlag.append(flag);
     return;
   }
   if (sidebarProfileRequestFor === userId) return;
@@ -2293,7 +2311,9 @@ function updateSidebarAccountControls(isSignedIn) {
     authUsername = profile.username;
     sidebarProfileIdentity = { userId, countryCode: profile.countryCode };
     profileName.textContent = `@${profile.username}`;
-    profileFlag.textContent = countryFlagEmoji(profile.countryCode);
+    profileFlag.replaceChildren();
+    const flag = createCountryFlag(profile.countryCode);
+    if (flag) profileFlag.append(flag);
     profileButton.setAttribute('aria-label',
       `Your profile, ${profile.username}${profile.countryCode ? `, ${countryLabel(profile.countryCode)}` : ''}`);
   }).catch((error) => {
@@ -2688,9 +2708,24 @@ function renderPublicRooms() {
     };
     copy.append(name, details);
     if (room.host) {
-      details.textContent = room.inProgress
-        ? `${playerNameWithCountry(room.host, room.hostCountryCode)}${room.hostOnline ? '' : ' (reconnecting)'} vs ${room.opponent ? playerNameWithCountry(room.opponent, room.opponentCountryCode) : '…'}${room.opponentOnline ? '' : ' (reconnecting)'} · ${room.locked ? 'Password required · ' : ''}${room.code}`
-        : `Hosted by ${playerNameWithCountry(room.host, room.hostCountryCode)}${room.hostOnline ? '' : ' (reconnecting)'} · ${room.locked ? 'Password required · ' : ''}${room.code}`;
+      details.replaceChildren();
+      if (room.inProgress) {
+        details.append(createCountryPlayerName(room.host, room.hostCountryCode));
+        if (!room.hostOnline) details.append(document.createTextNode(' (reconnecting)'));
+        details.append(document.createTextNode(' vs '));
+        if (room.opponent) {
+          details.append(createCountryPlayerName(room.opponent, room.opponentCountryCode));
+          if (!room.opponentOnline) details.append(document.createTextNode(' (reconnecting)'));
+        } else {
+          details.append(document.createTextNode('…'));
+        }
+        details.append(document.createTextNode(` · ${room.locked ? 'Password required · ' : ''}${room.code}`));
+      } else {
+        details.append(document.createTextNode('Hosted by '));
+        details.append(createCountryPlayerName(room.host, room.hostCountryCode));
+        if (!room.hostOnline) details.append(document.createTextNode(' (reconnecting)'));
+        details.append(document.createTextNode(` · ${room.locked ? 'Password required · ' : ''}${room.code}`));
+      }
     }
     const spectatorCount = document.createElement('span');
     spectatorCount.className = 'public-room-spectator-count';
@@ -2923,14 +2958,45 @@ function openProfilesPage() {
   }
 }
 
-function countryFlagEmoji(countryCode) {
-  if (!/^[A-Z]{2}$/.test(countryCode || '')) return '';
-  return [...countryCode].map((letter) => String.fromCodePoint(0x1f1e6 + letter.charCodeAt(0) - 65)).join('');
+function createCountryFlag(countryCode) {
+  const code = typeof countryCode === 'string' ? countryCode.toLowerCase() : '';
+  if (!/^[a-z]{2}$/.test(code)) return null;
+  const flag = document.createElement('span');
+  flag.className = 'country-flag-wrap';
+  flag.setAttribute('role', 'img');
+  flag.setAttribute('aria-label', `${countryLabel(code.toUpperCase()) || code.toUpperCase()} flag`);
+  const image = document.createElement('img');
+  image.className = 'country-flag';
+  image.src = new URL(`flags/4x3/${code}.svg`, document.baseURI).href;
+  image.alt = '';
+  image.width = 20;
+  image.height = 15;
+  image.decoding = 'async';
+  const fallback = document.createElement('span');
+  fallback.className = 'country-flag-fallback';
+  fallback.textContent = code.toUpperCase();
+  fallback.hidden = true;
+  image.addEventListener('error', () => {
+    image.hidden = true;
+    fallback.hidden = false;
+  }, { once: true });
+  flag.append(image, fallback);
+  return flag;
 }
 
-function playerNameWithCountry(username, countryCode) {
-  const flag = countryFlagEmoji(countryCode);
-  return flag ? `${flag} @${username}` : `@${username}`;
+function createCountryPlayerName(username, countryCode) {
+  const label = document.createElement('span');
+  label.className = 'country-player-name';
+  const flag = createCountryFlag(countryCode);
+  if (flag) label.append(flag);
+  const name = document.createElement('span');
+  name.textContent = `@${username}`;
+  label.append(name);
+  return label;
+}
+
+function setCountryPlayerName(element, username, countryCode) {
+  element.replaceChildren(createCountryPlayerName(username, countryCode));
 }
 
 function countryLabel(countryCode) {
@@ -2940,13 +3006,10 @@ function countryLabel(countryCode) {
 
 function isCurrentUserProfile(profile) {
   if (!authSession?.access_token || !profile) return false;
-  const currentUserId = authSession.user?.id;
-  return Boolean(
-    (currentUserId && profile.id === currentUserId)
-    || [authUsername, authSession.user?.user_metadata?.username]
-      .filter(Boolean)
-      .some((username) => profile.username?.toLowerCase() === username.toLowerCase()),
-  );
+  return window.openboardProfileUtils.isOwnProfile(profile, {
+    userId: authSession.user?.id,
+    usernames: [authUsername, authSession.user?.user_metadata?.username],
+  });
 }
 
 function isCurrentUserUsername(username) {
@@ -3042,7 +3105,7 @@ function createSocialUserCopy(username, countryCode, detail = '') {
   const name = document.createElement('button');
   name.type = 'button';
   name.className = 'social-player-link';
-  name.textContent = playerNameWithCountry(username, countryCode);
+  name.append(createCountryPlayerName(username, countryCode));
   name.addEventListener('click', () => {
     closeSocialPanel();
     navigateToAppPage('profiles', username);
@@ -3664,8 +3727,11 @@ async function openSocialConversation(friendId) {
   const friend = socialOverview.friends.find((entry) => entry.id === friendId);
   if (!friend) return;
   activeSocialConversation = friend;
-  document.querySelector('#social-conversation-name').textContent =
-    playerNameWithCountry(friend.username, friend.countryCode);
+  setCountryPlayerName(
+    document.querySelector('#social-conversation-name'),
+    friend.username,
+    friend.countryCode,
+  );
   document.querySelector('#social-conversation-list').hidden = true;
   const conversation = document.querySelector('#social-conversation');
   conversation.hidden = false;
@@ -3851,7 +3917,7 @@ function renderOnlineChat(channel) {
     const item = document.createElement('li');
     item.className = 'online-chat-message';
     const name = document.createElement('strong');
-    name.textContent = playerNameWithCountry(message.name, message.countryCode);
+    name.append(createCountryPlayerName(message.name, message.countryCode));
     const text = document.createElement('span');
     text.textContent = message.text;
     item.append(name, text);
@@ -4013,8 +4079,10 @@ function handleOnlineMessage(socket, message) {
     onlinePlayerName = message.username;
     onlinePlayerCountryCode = message.countryCode || null;
     authUsername = message.username;
-    document.querySelector('#online-account-state').textContent =
-      `Signed in as ${playerNameWithCountry(onlinePlayerName, message.countryCode)}`;
+    document.querySelector('#online-account-state').replaceChildren(
+      document.createTextNode('Signed in as '),
+      createCountryPlayerName(onlinePlayerName, message.countryCode),
+    );
     document.querySelector('#online-auth-status').textContent = 'Account ready for online play.';
     if (onlinePendingRequest) {
       socket.send(JSON.stringify(onlinePendingRequest));
@@ -4089,9 +4157,16 @@ function handleOnlineMessage(socket, message) {
     }
     if (message.players) {
       const otherColor = playerColor === 'w' ? 'b' : 'w';
-      const otherName = playerNameWithCountry(message.players[otherColor], message.playerCountries?.[otherColor]);
-      document.querySelector('#opponent-name').textContent = otherName;
-      document.querySelector('#bot-profile-name').textContent = otherName;
+      setCountryPlayerName(
+        document.querySelector('#opponent-name'),
+        message.players[otherColor],
+        message.playerCountries?.[otherColor],
+      );
+      setCountryPlayerName(
+        document.querySelector('#bot-profile-name'),
+        message.players[otherColor],
+        message.playerCountries?.[otherColor],
+      );
     }
     setOnlineChatHistory({ players: message.playerChat, spectators: message.spectatorChat });
     updateOnlineChatAvailability();
@@ -4113,8 +4188,19 @@ function handleOnlineMessage(socket, message) {
     flipped = false;
     if (message.players) {
       document.querySelector('#opponent-name').textContent = 'Spectating';
-      document.querySelector('#bot-profile-name').textContent =
-        `${message.players.w ? playerNameWithCountry(message.players.w, message.playerCountries?.w) : 'White'} vs ${message.players.b ? playerNameWithCountry(message.players.b, message.playerCountries?.b) : 'Black'}`;
+      const spectatorNames = document.querySelector('#bot-profile-name');
+      spectatorNames.replaceChildren();
+      if (message.players.w) {
+        spectatorNames.append(createCountryPlayerName(message.players.w, message.playerCountries?.w));
+      } else {
+        spectatorNames.append(document.createTextNode('White'));
+      }
+      spectatorNames.append(document.createTextNode(' vs '));
+      if (message.players.b) {
+        spectatorNames.append(createCountryPlayerName(message.players.b, message.playerCountries?.b));
+      } else {
+        spectatorNames.append(document.createTextNode('Black'));
+      }
     }
     setOnlineChatHistory({ players: message.playerChat, spectators: message.spectatorChat });
     updateOnlineChatAvailability();

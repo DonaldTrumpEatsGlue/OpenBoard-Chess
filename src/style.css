@@ -257,8 +257,14 @@ dialog p { color: var(--muted); font-size: 12px; }
 .sidebar-profile:hover, .sidebar-profile:focus-visible { border-color: #c8e36a55; background: #c8e36a10; }
 .sidebar-profile-avatar { display: grid; width: 25px; height: 25px; flex: 0 0 25px; place-items: center; border-radius: 6px; color: var(--lime); background: #c8e36a17; font-size: 16px; }
 .sidebar-profile-name { min-width: 0; overflow: hidden; flex: 1 1 auto; text-overflow: ellipsis; white-space: nowrap; }
-.sidebar-profile-flag { flex: 0 0 auto; font-size: 14px; }
+.sidebar-profile-flag { display: flex; flex: 0 0 auto; align-items: center; }
 .sidebar-profile-flag:empty { display: none; }
+.country-player-name { display: inline-flex; min-width: 0; align-items: center; gap: 5px; vertical-align: middle; white-space: nowrap; }
+.country-player-name > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.country-flag-wrap { position: relative; display: inline-grid; width: 20px; height: 15px; flex: 0 0 20px; overflow: hidden; place-items: center; border: 1px solid #ffffff25; border-radius: 2px; background: #29362f; box-shadow: 0 1px 3px #0004; vertical-align: middle; }
+.country-flag { display: block; width: 100%; height: 100%; object-fit: cover; }
+.country-flag-fallback { color: #eaf0e8; font: 700 7px/1 Manrope, sans-serif; letter-spacing: -.03em; }
+.country-flag-fallback[hidden] { display: none; }
 .sidebar-primary { display: grid; min-height: 0; gap: 3px; overflow-y: auto; overscroll-behavior: contain; }
 .sidebar-section, .sidebar-action { display: flex; width: 100%; min-height: 39px; align-items: center; gap: 11px; padding: 0 9px; border: 0; border-radius: 7px; color: #d3d8d1; background: transparent; font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
 .sidebar-section > span, .sidebar-action > span { width: 22px; flex: 0 0 22px; color: var(--lime); font-size: 17px; text-align: center; }
@@ -512,6 +518,7 @@ body[data-interface-theme="light"] .history-replay-move:hover, body[data-interfa
 .profile-avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .profile-card-heading .eyebrow { margin-bottom: 4px; }
 .profile-card-heading h2 { margin: 0; font-size: 18px; }
+.profile-card-heading h2 .country-player-name { max-width: 100%; }
 .profile-country { margin: 4px 0 0; color: #a7b3a9; font-size: 11px; }
 .profile-bio { margin: 0 0 14px; color: #c3cdc5; font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .profile-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
