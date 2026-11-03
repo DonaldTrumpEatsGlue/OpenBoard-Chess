@@ -1067,10 +1067,17 @@ test('completed online games update both player ratings and records exactly once
     await Promise.all([whiteMove, blackMove]);
 
     const whiteResigned = waitForMessage(white, (message) => message.type === 'resigned');
+    const blackResigned = waitForMessage(black, (message) => message.type === 'resigned');
     const whiteUpdated = waitForMessage(white, (message) => message.type === 'rating-updated');
     const blackUpdated = waitForMessage(black, (message) => message.type === 'rating-updated');
     black.send(JSON.stringify({ type: 'resign' }));
-    await Promise.all([whiteResigned, whiteUpdated, blackUpdated]);
+    const [whiteResignedMessage, blackResignedMessage] = await Promise.all([whiteResigned, blackResigned]);
+    assert.equal(whiteResignedMessage.color, 'b');
+    assert.equal(blackResignedMessage.color, 'b');
+    await Promise.all([whiteUpdated, blackUpdated]);
+    const endedMove = await request(black, { type: 'move', from: 'e7', to: 'e5' });
+    assert.equal(endedMove.type, 'error');
+    assert.match(endedMove.message, /already ended/i);
 
     const whiteProfileUrl = new URL(endpoint);
     whiteProfileUrl.protocol = 'http:';

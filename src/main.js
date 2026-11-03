@@ -4443,8 +4443,13 @@ function handleOnlineMessage(socket, message) {
       renderBoard();
       return;
     }
-    if (message.color !== playerColor) {
-      pendingPremove = null;
+    pendingPremove = null;
+    if (message.color === playerColor) {
+      markGameResult('defeat', 0, 'resignation');
+      gameMessage.textContent = 'You resigned. Your opponent wins.';
+      updateOnlineStatus('You resigned. Your opponent wins.');
+      renderBoard();
+    } else {
       markGameResult('victory');
       gameMessage.textContent = 'Your opponent resigned. You win!';
       updateOnlineStatus('Your opponent resigned.');
@@ -5505,11 +5510,17 @@ try {
 document.querySelector('#resign').addEventListener('click', () => {
   if (onlineSpectating) return;
   if (!game.history().length || isGameOver() || gameResult) return;
-  if (onlineMode && onlineSocket?.readyState === WebSocket.OPEN) {
+  if (onlineMode) {
+    if (!onlineReady || onlineSocket?.readyState !== WebSocket.OPEN) {
+      updateOnlineStatus('The room is not connected. Reconnect before resigning.');
+      return;
+    }
     onlineSocket.send(JSON.stringify({ type: 'resign' }));
+    updateOnlineStatus('Resigning… waiting for the room server.');
+    return;
   }
   markGameResult('defeat', 0, 'resignation');
-  gameMessage.textContent = onlineMode ? 'You resigned. Your opponent wins.' : 'You resigned. The opponent wins.';
+  gameMessage.textContent = 'You resigned. The opponent wins.';
   renderBoard();
 });
 
