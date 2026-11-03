@@ -2353,6 +2353,7 @@ document.querySelector('#menu-toggle').addEventListener('click', () => {
   menuToggle.setAttribute('aria-label', 'Close navigation menu');
   menuToggle.textContent = '×';
   document.body.classList.add('sidebar-open');
+  document.querySelector('#sidebar-close').focus();
 });
 document.querySelector('#sidebar-close').addEventListener('click', closeSidebar);
 document.querySelector('#sidebar-backdrop').addEventListener('click', closeSidebar);
