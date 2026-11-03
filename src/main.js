@@ -25,6 +25,7 @@ const gamePage = document.querySelector('#game-page');
 const socialPanel = document.querySelector('#social-panel');
 const onlineLeaveDialog = document.querySelector('#online-leave-dialog');
 const onlineOpponentLeftDialog = document.querySelector('#online-opponent-left-dialog');
+const onlineDrawOfferDialog = document.querySelector('#online-draw-offer-dialog');
 const pieceTheme = window.OpenboardPieceThemes.classic;
 const soundManifest = window.OpenboardSoundManifest;
 const defaultAudioSettings = {
@@ -3926,17 +3927,17 @@ function configureOnlineControls(active, spectating = false) {
     '.game-insights',
     '#practice-coach',
     '#suggest-move',
-    '#offer-draw',
   ];
   for (const selector of localOnlySelectors) {
     const element = document.querySelector(selector);
     if (element) element.hidden = active;
   }
+  document.querySelector('#offer-draw').hidden = active && (spectating || customRules.noDraws);
   document.querySelector('#play-color').disabled = active;
   document.querySelector('#time-control').disabled = active;
   document.querySelector('#difficulty').disabled = active;
   document.querySelector('#new-game').disabled = active;
-  document.querySelector('#offer-draw').disabled = active || customRules.noDraws;
+  document.querySelector('#offer-draw').disabled = customRules.noDraws || (active && spectating);
   document.querySelector('#resign').disabled = active && spectating;
   document.querySelector('#flip').disabled = active;
   document.querySelector('#undo').disabled = active;
@@ -4084,6 +4085,7 @@ function applyOnlineMove(message) {
     updateOnlineStatus('The received move did not match this board. Disconnect and create a new room.');
     return;
   }
+  if (onlineDrawOfferDialog.open) onlineDrawOfferDialog.close();
   if (message.fen && game.fen() !== message.fen) {
     console.error('Online board state did not match the server position.');
     updateOnlineStatus('Board state mismatch. Disconnect and create a new room.');
@@ -4169,6 +4171,7 @@ function applyOnlineVariant(value) {
   customRules = variant;
   populateCustomRulesForm();
   updateCustomRulesSummary();
+  if (onlineMode) configureOnlineControls(true, onlineSpectating);
 }
 
 function restoreOnlinePosition(message) {
@@ -4372,6 +4375,32 @@ function handleOnlineMessage(socket, message) {
   }
   if (message.type === 'rating-not-counted') {
     updateOnlineStatus('Game ended before the first move, so it was not rated.');
+    return;
+  }
+  if (message.type === 'draw-offer-sent') {
+    updateOnlineStatus('Draw offer sent. Waiting for your opponent.');
+    return;
+  }
+  if (message.type === 'draw-offered') {
+    if (onlineSpectating || customRules.noDraws) return;
+    document.querySelector('#online-draw-offer-message').textContent =
+      `${message.name || 'Your opponent'} offers a draw.`;
+    if (!onlineDrawOfferDialog.open) onlineDrawOfferDialog.showModal();
+    return;
+  }
+  if (message.type === 'draw-offer-declined') {
+    if (onlineDrawOfferDialog.open) onlineDrawOfferDialog.close();
+    updateOnlineStatus(message.reason === 'move'
+      ? 'Your opponent declined the draw offer by continuing play.'
+      : 'Your opponent declined the draw offer.');
+    return;
+  }
+  if (message.type === 'draw-agreed') {
+    if (onlineDrawOfferDialog.open) onlineDrawOfferDialog.close();
+    markGameResult('draw', 0.5, 'draw');
+    gameMessage.textContent = 'Draw by agreement.';
+    updateOnlineStatus('Draw agreed. The game is over.');
+    renderBoard();
     return;
   }
   if (message.type === 'chat-message') {
@@ -5486,17 +5515,44 @@ document.querySelector('#resign').addEventListener('click', () => {
 
 document.querySelector('#offer-draw').addEventListener('click', () => {
   if (customRules.noDraws || !game.history().length || isGameOver() || gameResult) return;
+  if (onlineMode) {
+    if (onlineSpectating) return;
+    if (onlineSocket?.readyState !== WebSocket.OPEN) {
+      updateOnlineStatus('The room server is disconnected. Reconnect before offering a draw.');
+      return;
+    }
+    onlineSocket.send(JSON.stringify({ type: 'offer-draw' }));
+    return;
+  }
   const materialBalance = game.board().flat().filter(Boolean).reduce((score, piece) => {
     const pieceScore = pieceValues[piece.type] * (piece.color === playerColor ? 1 : -1);
     return score + pieceScore;
   }, 0);
-  const accepted = !onlineMode && Math.abs(materialBalance) < 150;
+  const accepted = Math.abs(materialBalance) < 150;
   showMessage('Draw offer', accepted ? 'The bot accepts your draw offer.' : 'The bot declines. The game continues.');
   if (accepted) {
     markGameResult('draw', 0.5, 'draw');
     gameMessage.textContent = 'Draw by agreement.';
     renderBoard();
   }
+});
+
+function respondToOnlineDrawOffer(accept) {
+  if (onlineSocket?.readyState === WebSocket.OPEN) {
+    onlineSocket.send(JSON.stringify({ type: 'draw-response', accept }));
+  }
+  onlineDrawOfferDialog.close();
+}
+
+document.querySelector('#online-draw-offer-accept').addEventListener('click', () => {
+  respondToOnlineDrawOffer(true);
+});
+document.querySelector('#online-draw-offer-decline').addEventListener('click', () => {
+  respondToOnlineDrawOffer(false);
+});
+onlineDrawOfferDialog.addEventListener('cancel', (event) => {
+  event.preventDefault();
+  respondToOnlineDrawOffer(false);
 });
 
 document.querySelector('#export-pgn').addEventListener('click', async () => {

@@ -9,7 +9,7 @@
     <meta name="theme-color" content="#17231f" />
     <meta name="description" content="A free, original chess game with a built-in local AI opponent." />
     <title>Openboard — Play Chess</title>
-    <link rel="stylesheet" href="./src/style.css?v=51" />
+    <link rel="stylesheet" href="./src/style.css?v=52" />
   </head>
   <body>
     <div id="app">
@@ -405,6 +405,16 @@
         <button class="primary-button" value="close">Got it</button>
       </form>
     </dialog>
+    <dialog id="online-draw-offer-dialog" aria-labelledby="online-draw-offer-title">
+      <div class="message-dialog-content">
+        <h2 id="online-draw-offer-title">Draw offer</h2>
+        <p id="online-draw-offer-message">Your opponent offers a draw.</p>
+        <div class="message-dialog-actions">
+          <button class="primary-button" id="online-draw-offer-accept" type="button">Accept draw</button>
+          <button class="secondary-button" id="online-draw-offer-decline" type="button">Decline</button>
+        </div>
+      </div>
+    </dialog>
     <dialog id="tutorial-dialog" aria-labelledby="tutorial-title">
       <div class="learning-dialog-content">
         <header class="learning-dialog-header">
@@ -750,6 +760,6 @@
     <script defer src="./src/learning-content.js?v=49"></script>
     <script defer src="./src/academy-content.js?v=1"></script>
     <script defer src="./src/profile-utils.js?v=1"></script>
-    <script defer src="./src/main.js?v=61"></script>
+    <script defer src="./src/main.js?v=62"></script>
   </body>
 </html>

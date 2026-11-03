@@ -143,6 +143,7 @@ function normalizeOnlineVariant(value) {
 
 function configureRoomChess(room) {
   room.chess = new Chess();
+  room.drawOfferBy = null;
   room.customMovementBySquare = new Map();
   room.customPieceBySquare = new Map();
   room.chess.clearCustomMovements();
@@ -913,6 +914,7 @@ async function handleMessage(socket, player, rawMessage) {
       playerChat: [],
       spectatorChat: [],
       gameEnded: false,
+      drawOfferBy: null,
       ratingSettlementStarted: false,
       expiresAt: Date.now() + roomLifetimeMs,
     };
@@ -1109,6 +1111,61 @@ async function handleMessage(socket, player, rawMessage) {
     return;
   }
 
+  if (message.type === 'offer-draw') {
+    if (room.gameEnded) {
+      send(socket, { type: 'error', message: 'This game has already ended.' });
+      return;
+    }
+    if (room.variant.noDraws) {
+      send(socket, { type: 'error', message: 'Draw offers are disabled by this room’s custom rules.' });
+      return;
+    }
+    if (!room.chess.history().length) {
+      send(socket, { type: 'error', message: 'Play at least one move before offering a draw.' });
+      return;
+    }
+    if (room.drawOfferBy) {
+      send(socket, { type: 'error', message: 'A draw offer is already awaiting a response.' });
+      return;
+    }
+    const opponentColor = player.color === 'w' ? 'b' : 'w';
+    const opponent = room.players[opponentColor];
+    if (opponent.socket?.readyState !== WebSocket.OPEN) {
+      send(socket, { type: 'error', message: 'Your opponent must be connected to receive a draw offer.' });
+      return;
+    }
+    room.drawOfferBy = player.color;
+    send(socket, { type: 'draw-offer-sent' });
+    send(opponent.socket, {
+      type: 'draw-offered',
+      color: player.color,
+      name: player.identity.username,
+    });
+    return;
+  }
+
+  if (message.type === 'draw-response') {
+    if (room.gameEnded || typeof message.accept !== 'boolean') {
+      send(socket, { type: 'error', message: 'That draw response is invalid.' });
+      return;
+    }
+    const opponentColor = player.color === 'w' ? 'b' : 'w';
+    if (room.drawOfferBy !== opponentColor) {
+      send(socket, { type: 'error', message: 'There is no opponent draw offer to respond to.' });
+      return;
+    }
+    const offerer = room.players[opponentColor];
+    room.drawOfferBy = null;
+    if (!message.accept) {
+      send(offerer.socket, { type: 'draw-offer-declined' });
+      return;
+    }
+    room.gameEnded = true;
+    broadcast(room, { type: 'draw-agreed' });
+    await recordOnlineResult(room, 0.5, 'draw');
+    return;
+  }
+
   if (message.type === 'move') {
     if (room.gameEnded) {
       send(socket, { type: 'error', message: 'This game has already ended.' });
@@ -1130,6 +1187,13 @@ async function handleMessage(socket, player, rawMessage) {
     if (!move) {
       send(socket, { type: 'error', message: 'The server rejected that illegal move.' });
       return;
+    }
+    if (room.drawOfferBy && room.drawOfferBy !== player.color) {
+      send(room.players[room.drawOfferBy].socket, {
+        type: 'draw-offer-declined',
+        reason: 'move',
+      });
+      room.drawOfferBy = null;
     }
     room.expiresAt = Date.now() + roomLifetimeMs;
     broadcast(room, {

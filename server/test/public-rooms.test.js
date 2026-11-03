@@ -1255,6 +1255,9 @@ test('private and public lobbies share and enforce their custom chess rules', as
     });
     assert.equal(privateLobby.type, 'room-created');
     assert.deepEqual(privateLobby.variant, variant);
+    const disabledDrawOffer = await request(privateHost, { type: 'offer-draw' });
+    assert.equal(disabledDrawOffer.type, 'error');
+    assert.match(disabledDrawOffer.message, /draw offers are disabled/i);
 
     const hostStart = waitForMessage(host, (message) => message.type === 'game-start');
     const guestStart = waitForMessage(guest, (message) => message.type === 'game-start');
@@ -1290,6 +1293,49 @@ test('private and public lobbies share and enforce their custom chess rules', as
     guest.close();
     privateHost.close();
     invalidVariantHost.close();
+  }
+});
+
+test('players can offer and agree to a draw when room rules allow it', async () => {
+  const host = await connect(undefined, 'DrawOfferHost');
+  const guest = await connect(undefined, 'DrawOfferGuest');
+  try {
+    const created = await request(host, { type: 'create-room', lobbyName: 'Draw offer room' });
+    const hostStart = waitForMessage(host, (message) => message.type === 'game-start');
+    const guestStart = await request(guest, { type: 'join-room', code: created.code });
+    assert.equal(guestStart.type, 'game-start');
+    await hostStart;
+
+    const hostFirstMove = waitForMessage(host, (message) => message.type === 'move');
+    const guestFirstMove = waitForMessage(guest, (message) => message.type === 'move');
+    host.send(JSON.stringify({ type: 'move', from: 'e2', to: 'e4' }));
+    await Promise.all([hostFirstMove, guestFirstMove]);
+    const hostSecondMove = waitForMessage(host, (message) => message.type === 'move');
+    const guestSecondMove = waitForMessage(guest, (message) => message.type === 'move');
+    guest.send(JSON.stringify({ type: 'move', from: 'e7', to: 'e5' }));
+    await Promise.all([hostSecondMove, guestSecondMove]);
+
+    const offerReceived = waitForMessage(guest, (message) => message.type === 'draw-offered');
+    const offerSent = await sendAndWait(host, { type: 'offer-draw' }, (message) => message.type === 'draw-offer-sent');
+    assert.equal(offerSent.type, 'draw-offer-sent');
+    assert.equal((await offerReceived).name, 'DrawOfferHost');
+
+    const declined = waitForMessage(host, (message) => message.type === 'draw-offer-declined');
+    guest.send(JSON.stringify({ type: 'draw-response', accept: false }));
+    await declined;
+
+    const secondOfferReceived = waitForMessage(guest, (message) => message.type === 'draw-offered');
+    const secondOfferSent = await sendAndWait(host, { type: 'offer-draw' }, (message) => message.type === 'draw-offer-sent');
+    assert.equal(secondOfferSent.type, 'draw-offer-sent');
+    await secondOfferReceived;
+
+    const hostAgreed = waitForMessage(host, (message) => message.type === 'draw-agreed');
+    const guestAgreed = waitForMessage(guest, (message) => message.type === 'draw-agreed');
+    guest.send(JSON.stringify({ type: 'draw-response', accept: true }));
+    await Promise.all([hostAgreed, guestAgreed]);
+  } finally {
+    host.close();
+    guest.close();
   }
 });
 
