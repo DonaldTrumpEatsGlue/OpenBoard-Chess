@@ -914,6 +914,7 @@ test('online actions require an account and use its reserved username without em
         code: created.code,
         name: 'Sunday Chess',
         host: 'ReservedOwner',
+        variantLabel: 'Standard chess',
         hostOnline: true,
         locked: false,
         inProgress: false,
@@ -1811,6 +1812,7 @@ test('a disconnected guest sees a popup event and can reclaim their reserved sea
       code: room.code,
       name: 'Reconnect guest',
       host: 'RejoinHost',
+      variantLabel: 'Standard chess',
       hostOnline: true,
       locked: false,
       inProgress: true,
@@ -1908,6 +1910,7 @@ test('a player cannot join or spectate their own public lobby, which remains vis
       code: room.code,
       name: 'Visible own room',
       host: 'OwnRoomHost',
+      variantLabel: 'Standard chess',
       hostOnline: true,
       locked: false,
       inProgress: false,
@@ -2012,9 +2015,32 @@ test('public room browser lists joinable games but not private invites or full g
   const privateHost = await connect(undefined, 'PrivateHost');
   const browser = await connect(undefined, 'RoomBrowser');
   const joiner = await connect(undefined, 'RoomJoiner');
+  const starVariant = {
+    boardSize: 8,
+    noDraws: true,
+    pieceMovements: {
+      p: { w: ['p'], b: ['p'] },
+      n: { w: ['n'], b: ['n'] },
+      b: { w: ['b'], b: ['b'] },
+      r: { w: ['r'], b: ['r'] },
+      q: { w: ['q'], b: ['q'] },
+    },
+    customPieces: [{
+      id: 'star-piece',
+      name: 'Star',
+      symbol: 'S',
+      replaces: 'n',
+      color: 'both',
+      movements: ['q'],
+    }],
+  };
 
   try {
-    const publicRoom = await request(host, { type: 'create-public-room', lobbyName: 'Public Lobby' });
+    const publicRoom = await request(host, {
+      type: 'create-public-room',
+      lobbyName: 'Public Lobby',
+      variant: starVariant,
+    });
     const privateRoom = await request(privateHost, { type: 'create-room', lobbyName: 'Private Lobby' });
     assert.equal(publicRoom.type, 'room-created');
     assert.equal(publicRoom.isPublic, true);
@@ -2026,6 +2052,7 @@ test('public room browser lists joinable games but not private invites or full g
       code: publicRoom.code,
       name: 'Public Lobby',
       host: 'PublicHost',
+      variantLabel: 'Star variant · custom rules · no draws',
       hostOnline: true,
       locked: false,
       inProgress: false,
@@ -2061,6 +2088,7 @@ test('public room browser lists joinable games but not private invites or full g
       code: publicRoom.code,
       name: 'Public Lobby',
       host: 'PublicHost',
+      variantLabel: 'Star variant · custom rules · no draws',
       hostOnline: true,
       locked: false,
       inProgress: true,
@@ -2123,6 +2151,7 @@ test('spectators can watch live public games without taking player slots', async
       code: created.code,
       name: 'Live Match',
       host: 'SpectateHost',
+      variantLabel: 'Standard chess',
       hostOnline: true,
       locked: false,
       inProgress: true,

@@ -143,6 +143,28 @@ function normalizeOnlineVariant(value) {
   return { boardSize: 8, noDraws: value.noDraws, pieceMovements, customPieces };
 }
 
+function publicRoomVariantLabel(variant) {
+  const pieceNames = [...new Set(variant.customPieces.map((piece) => piece.name.trim()).filter(Boolean))];
+  const changedMovements = Object.entries(standardPieceMovements).filter(([piece, standardSides]) => (
+    ['w', 'b'].some((color) => (
+      JSON.stringify(variant.pieceMovements[piece][color]) !== JSON.stringify(standardSides[color])
+    ))
+  )).length;
+  const hasCustomRules = variant.noDraws || changedMovements > 0 || variant.customPieces.length > 0;
+  const details = [];
+  if (pieceNames.length) {
+    const visibleNames = pieceNames.slice(0, 3);
+    if (pieceNames.length > visibleNames.length) visibleNames.push(`+${pieceNames.length - visibleNames.length} more`);
+    details.push(`${visibleNames.join(', ')} variant`);
+  } else {
+    details.push(hasCustomRules ? 'Custom rules' : 'Standard chess');
+  }
+  if (pieceNames.length && hasCustomRules) details.push('custom rules');
+  if (changedMovements) details.push(`${changedMovements} movement rule${changedMovements === 1 ? '' : 's'} changed`);
+  if (variant.noDraws) details.push('no draws');
+  return details.join(' · ');
+}
+
 function configureRoomChess(room) {
   room.chess = new Chess();
   room.drawOfferBy = null;
@@ -855,6 +877,7 @@ function getPublicRooms(accountId) {
         code: room.code,
         name: room.lobbyName,
         host: room.players.w.name,
+        variantLabel: publicRoomVariantLabel(room.variant),
         ...(room.players.w.countryCode ? { hostCountryCode: room.players.w.countryCode } : {}),
         hostOnline,
         locked: Boolean(room.passwordHash),

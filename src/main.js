@@ -2771,6 +2771,9 @@ function renderPublicRooms() {
     details.textContent = room.inProgress
       ? `Live game · ${room.code}`
       : `Waiting for a player · ${room.code}`;
+    const variantLabel = document.createElement('span');
+    variantLabel.className = 'public-room-variant';
+    variantLabel.textContent = room.variantLabel || 'Standard chess';
     const connectToRoom = (action) => {
       const password = room.locked ? window.prompt(`Password for “${room.name}”`) : '';
       if (room.locked && password === null) return;
@@ -2797,6 +2800,7 @@ function renderPublicRooms() {
         details.append(document.createTextNode(` · ${room.locked ? 'Password required · ' : ''}${room.code}`));
       }
     }
+    copy.append(variantLabel);
     const spectatorCount = document.createElement('span');
     spectatorCount.className = 'public-room-spectator-count';
     spectatorCount.textContent = `Spectators: ${room.spectators || 0}`;

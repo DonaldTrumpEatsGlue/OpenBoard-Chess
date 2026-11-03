@@ -662,6 +662,7 @@ body[data-interface-theme="light"] #custom-rules-dialog { color: #27382d; backgr
 .public-room-copy { display: grid; flex: 1; gap: 4px; min-width: 0; }
 .public-room-copy strong { overflow: hidden; color: #eaf0e8; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .public-room-copy span { color: var(--muted); font-size: 10px; }
+.public-room-copy .public-room-variant { width: fit-content; padding: 3px 7px; border: 1px solid #b9dd6440; border-radius: 999px; color: #d3ed91; background: #b9dd6410; font-size: 9px; font-weight: 650; }
 .public-room-copy .public-room-spectator-count { color: #eaf0e8; font-size: 11px; font-weight: 600; }
 .public-room-card button { min-height: 32px; padding: 0 12px; border-radius: 7px; cursor: pointer; }
 .public-room-empty { align-self: center; margin: 0; padding: 24px 10px; color: var(--muted); font-size: 11px; text-align: center; }
@@ -697,6 +698,7 @@ body[data-interface-theme="light"] .online-section-tab.active { color: #19231b; 
 body[data-interface-theme="light"] .online-signin-required { border-color: #243d2a20; background: #fff; }
 body[data-interface-theme="light"] .public-room-card { border-color: #243d2a20; background: #fff; }
 body[data-interface-theme="light"] .public-room-copy strong { color: #27382d; }
+body[data-interface-theme="light"] .public-room-copy .public-room-variant { color: #45621f; border-color: #708d3838; background: #90b84d18; }
 body[data-interface-theme="light"] .online-chat { border-color: #243d2a20; background: #fffefa; }
 body[data-interface-theme="light"] .online-chat-messages { background: #edf0e8; }
 body[data-interface-theme="light"] .online-chat-message { color: #27382d; }
