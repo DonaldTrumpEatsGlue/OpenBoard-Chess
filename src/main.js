@@ -2265,12 +2265,17 @@ function renderSidebarSubmenu(section) {
 
 function closeSidebar() {
   const sidebar = document.querySelector('#site-sidebar');
+  if (!sidebar.classList.contains('open')) return;
   sidebar.classList.remove('open');
   sidebar.setAttribute('aria-hidden', 'true');
   sidebar.inert = true;
   document.querySelector('#sidebar-backdrop').hidden = true;
-  document.querySelector('#menu-toggle').setAttribute('aria-expanded', 'false');
+  const menuToggle = document.querySelector('#menu-toggle');
+  menuToggle.setAttribute('aria-expanded', 'false');
+  menuToggle.setAttribute('aria-label', 'Open navigation menu');
+  menuToggle.textContent = '☰';
   document.body.classList.remove('sidebar-open');
+  menuToggle.focus();
 }
 
 function openProfilesDialog(searchMode = false) {
@@ -2328,9 +2333,13 @@ document.querySelector('#menu-toggle').addEventListener('click', () => {
   sidebar.setAttribute('aria-hidden', 'false');
   sidebar.inert = false;
   document.querySelector('#sidebar-backdrop').hidden = false;
-  document.querySelector('#menu-toggle').setAttribute('aria-expanded', 'true');
+  const menuToggle = document.querySelector('#menu-toggle');
+  menuToggle.setAttribute('aria-expanded', 'true');
+  menuToggle.setAttribute('aria-label', 'Close navigation menu');
+  menuToggle.textContent = '×';
   document.body.classList.add('sidebar-open');
 });
+document.querySelector('#sidebar-close').addEventListener('click', closeSidebar);
 document.querySelector('#sidebar-backdrop').addEventListener('click', closeSidebar);
 document.querySelector('#site-sidebar').addEventListener('click', (event) => {
   const sectionButton = event.target.closest('[data-menu-section]');
