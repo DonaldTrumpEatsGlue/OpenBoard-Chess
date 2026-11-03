@@ -1130,14 +1130,33 @@ test('unplayed online games do not change player ratings', async () => {
 });
 
 test('completed players must both agree to rematch and alternate colors without overwriting results', async () => {
-  const white = await connect(undefined, 'RematchPlayerOne');
-  const black = await connect(undefined, 'RematchPlayerTwo');
+  const whiteToken = createAccount('RematchPlayerOne', false, 'US');
+  const blackToken = createAccount('RematchPlayerTwo', false, 'CA');
+  authUsers.get(whiteToken).online_elo = 1447;
+  authUsers.get(whiteToken).online_games = 4;
+  authUsers.get(blackToken).online_elo = 1315;
+  authUsers.get(blackToken).online_games = 2;
+  const white = await connectWithAccessToken(whiteToken, 'RematchPlayerOne');
+  const black = await connectWithAccessToken(blackToken, 'RematchPlayerTwo');
   const resultCount = ratedGameRequests.length;
   try {
     const room = await request(white, { type: 'create-room', lobbyName: 'Rematch room' });
     const whiteStart = waitForMessage(white, (message) => message.type === 'game-start');
     const blackStart = request(black, { type: 'join-room', code: room.code });
-    await Promise.all([whiteStart, blackStart]);
+    const [whiteInitial, blackInitial] = await Promise.all([whiteStart, blackStart]);
+    assert.deepEqual(whiteInitial.playerProfiles, blackInitial.playerProfiles);
+    assert.deepEqual(whiteInitial.playerProfiles.w, {
+      id: authUsers.get(whiteToken).id,
+      username: 'RematchPlayerOne',
+      countryCode: 'US',
+      onlineElo: 1447,
+    });
+    assert.deepEqual(whiteInitial.playerProfiles.b, {
+      id: authUsers.get(blackToken).id,
+      username: 'RematchPlayerTwo',
+      countryCode: 'CA',
+      onlineElo: 1315,
+    });
 
     const firstMoveWhite = waitForMessage(white, (message) => message.type === 'move');
     const firstMoveBlack = waitForMessage(black, (message) => message.type === 'move');
@@ -1149,8 +1168,10 @@ test('completed players must both agree to rematch and alternate colors without 
     const oldGameEnded = waitForMessage(white, (message) => message.type === 'game-ended');
     const firstRatingSaved = waitForMessage(white, (message) => message.type === 'rating-updated');
     black.send(JSON.stringify({ type: 'resign' }));
-    const [, , endedGame] = await Promise.all([whiteResigned, blackResigned, oldGameEnded, firstRatingSaved]);
+    const [, , endedGame, updatedRatings] = await Promise.all([whiteResigned, blackResigned, oldGameEnded, firstRatingSaved]);
     const originalGameId = endedGame.gameId;
+    assert.ok(Number.isInteger(updatedRatings.playerProfiles.w.onlineElo));
+    assert.ok(Number.isInteger(updatedRatings.playerProfiles.b.onlineElo));
     const oldPgn = ratedGameRequests.at(-1).p_pgn;
     assert.match(oldPgn, /e4/);
 
@@ -1196,6 +1217,12 @@ test('completed players must both agree to rematch and alternate colors without 
     const [whitePosition, blackPosition] = await Promise.all([whiteRematch, blackRematch]);
     assert.equal(whitePosition.color, 'b');
     assert.equal(blackPosition.color, 'w');
+    assert.equal(whitePosition.playerProfiles.w.id, authUsers.get(blackToken).id);
+    assert.equal(whitePosition.playerProfiles.b.id, authUsers.get(whiteToken).id);
+    assert.equal(whitePosition.playerProfiles.w.username, 'RematchPlayerTwo');
+    assert.equal(whitePosition.playerProfiles.b.username, 'RematchPlayerOne');
+    assert.equal(whitePosition.playerProfiles.w.onlineElo, updatedRatings.playerProfiles.b.onlineElo);
+    assert.equal(whitePosition.playerProfiles.b.onlineElo, updatedRatings.playerProfiles.w.onlineElo);
     assert.equal(whitePosition.fen, blackPosition.fen);
     assert.deepEqual(whitePosition.moves, []);
     assert.notEqual(whitePosition.gameId, originalGameId);
@@ -1271,6 +1298,27 @@ test('a pending rematch is cancelled when a player returns to menu or disconnect
       white.close();
       black.close();
     }
+  }
+});
+
+test('online player profiles omit the default rating for accounts with no rated games', async () => {
+  const white = await connect(undefined, 'UnratedWhite');
+  const black = await connect(undefined, 'UnratedBlack');
+  try {
+    const room = await request(white, { type: 'create-room', lobbyName: 'Unrated profile test' });
+    const whiteStart = waitForMessage(white, (message) => message.type === 'game-start');
+    const blackStart = request(black, { type: 'join-room', code: room.code });
+    const [whiteGame, blackGame] = await Promise.all([whiteStart, blackStart]);
+    assert.deepEqual(whiteGame.playerProfiles, blackGame.playerProfiles);
+    assert.equal(whiteGame.playerProfiles.w.username, 'UnratedWhite');
+    assert.equal(whiteGame.playerProfiles.b.username, 'UnratedBlack');
+    assert.equal(whiteGame.playerProfiles.w.onlineElo, null);
+    assert.equal(whiteGame.playerProfiles.b.onlineElo, null);
+    assert.equal(whiteGame.playerProfiles.w.countryCode, null);
+    assert.equal(whiteGame.playerProfiles.b.countryCode, null);
+  } finally {
+    white.close();
+    black.close();
   }
 });
 
@@ -1703,15 +1751,21 @@ test('a disconnected guest sees a popup event and can reclaim their reserved sea
 });
 
 test('a disconnected public host can rejoin with their original color', async () => {
-  const hostToken = createAccount('ReturningHost');
+  const hostToken = createAccount('ReturningHost', false, 'US');
+  authUsers.get(hostToken).online_elo = 1600;
+  authUsers.get(hostToken).online_games = 5;
   const host = await connectWithAccessToken(hostToken, 'ReturningHost');
-  const guest = await connect(undefined, 'WaitingGuest');
+  const guestToken = createAccount('WaitingGuest', false, 'GB');
+  const guest = await connectWithAccessToken(guestToken, 'WaitingGuest');
   const browser = await connect(undefined, 'ReturningBrowser');
   try {
     const room = await request(host, { type: 'create-public-room', lobbyName: 'Reconnect host' });
     const guestStart = request(guest, { type: 'join-public-room', code: room.code });
     const hostStart = waitForMessage(host, (message) => message.type === 'game-start');
-    await Promise.all([guestStart, hostStart]);
+    const [guestGame, hostGame] = await Promise.all([guestStart, hostStart]);
+    assert.equal(hostGame.playerProfiles.w.id, authUsers.get(hostToken).id);
+    assert.equal(hostGame.playerProfiles.w.onlineElo, 1600);
+    assert.equal(guestGame.playerProfiles.b.id, authUsers.get(guestToken).id);
     const departure = waitForMessage(guest, (message) => message.type === 'opponent-left');
     host.close();
     await departure;
@@ -1727,7 +1781,11 @@ test('a disconnected public host can rejoin with their original color', async ()
       const resumedGuest = waitForMessage(guest, (message) => message.type === 'game-start');
       const resumedHostGame = await request(rejoinedHost, { type: 'join-public-room', code: room.code });
       assert.equal(resumedHostGame.color, 'w');
-      assert.equal((await resumedGuest).color, 'b');
+      const resumedGuestGame = await resumedGuest;
+      assert.equal(resumedGuestGame.color, 'b');
+      assert.equal(resumedHostGame.playerProfiles.w.id, authUsers.get(hostToken).id);
+      assert.equal(resumedHostGame.playerProfiles.w.onlineElo, 1600);
+      assert.equal(resumedHostGame.playerProfiles.b.id, authUsers.get(guestToken).id);
     } finally {
       rejoinedHost.close();
     }

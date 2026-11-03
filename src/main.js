@@ -3955,8 +3955,14 @@ function configureOnlineControls(active, spectating = false) {
   updateOnlineSuggestionAvailability();
   document.querySelector('#opponent-card').hidden = active;
   document.querySelector('#opponent-name').textContent = active
-    ? spectating ? 'Spectating' : 'Friend'
+    ? spectating ? 'Spectating' : 'Waiting for opponent'
     : bots[difficultySelect.value].name;
+  document.querySelector('#opponent-description').hidden = active;
+  document.querySelector('#opponent-strength').hidden = active;
+  document.querySelector('#opponent-strength').textContent = 'Unrated';
+  document.querySelector('.opponent-row').dataset.playerId = '';
+  document.querySelector('.opponent-row .avatar').textContent = active ? '?' : '✦';
+  document.querySelector('.human-row').dataset.playerId = '';
   document.querySelector('.panel-header .live-indicator').lastChild.textContent = active ? ' ONLINE' : ' LOCAL';
 }
 
@@ -4275,6 +4281,9 @@ function handleOnlineMessage(socket, message) {
     }
     onlineRoomCode = message.code;
     currentOnlineGameId = message.gameId || null;
+    if (message.playerProfiles?.w?.id) {
+      document.querySelector('.human-row').dataset.playerId = message.playerProfiles.w.id;
+    }
     saveOnlineRoomCode(onlineRoomCode);
     playerColor = message.color;
     playColorSelect.value = playerColor;
@@ -4328,7 +4337,7 @@ function handleOnlineMessage(socket, message) {
     onlineReady = true;
     playerColor = message.color === 'w' ? 'w' : 'b';
     if (onlineSpectating) {
-      renderSpectatorPlayers(message.players, message.playerCountries);
+      renderSpectatorPlayers(message.players, message.playerCountries, message.playerProfiles);
       setOnlineChatHistory({ players: message.playerChat, spectators: message.spectatorChat });
       restoreOnlinePosition(message);
       if (message.gameOver) finishOnlineGameFromServer(message);
@@ -4337,19 +4346,19 @@ function handleOnlineMessage(socket, message) {
       onlineDialog.close();
       return;
     }
-    if (message.players) {
-      const otherColor = playerColor === 'w' ? 'b' : 'w';
-      setCountryPlayerName(
-        document.querySelector('#opponent-name'),
-        message.players[otherColor],
-        message.playerCountries?.[otherColor],
-      );
-      setCountryPlayerName(
-        document.querySelector('#bot-profile-name'),
-        message.players[otherColor],
-        message.playerCountries?.[otherColor],
-      );
-    }
+    const otherColor = playerColor === 'w' ? 'b' : 'w';
+    const localProfile = message.playerProfiles?.[playerColor];
+    if (localProfile?.id) document.querySelector('.human-row').dataset.playerId = localProfile.id;
+    const opponentProfile = message.playerProfiles?.[otherColor] || (
+      typeof message.players?.[otherColor] === 'string'
+        ? {
+          username: message.players[otherColor],
+          countryCode: message.playerCountries?.[otherColor],
+          onlineElo: null,
+        }
+        : null
+    );
+    renderOnlineOpponentProfile(opponentProfile, otherColor);
     setOnlineChatHistory({ players: message.playerChat, spectators: message.spectatorChat });
     updateOnlineChatAvailability();
     playColorSelect.value = playerColor;
@@ -4369,7 +4378,7 @@ function handleOnlineMessage(socket, message) {
     playerColor = 'w';
     playColorSelect.value = playerColor;
     flipped = false;
-    renderSpectatorPlayers(message.players, message.playerCountries);
+    renderSpectatorPlayers(message.players, message.playerCountries, message.playerProfiles);
     setOnlineChatHistory({ players: message.playerChat, spectators: message.spectatorChat });
     updateOnlineChatAvailability();
     if (!restoreOnlinePosition(message)) return;
@@ -4391,6 +4400,10 @@ function handleOnlineMessage(socket, message) {
     return;
   }
   if (message.type === 'rating-updated') {
+    if (onlineMode && !onlineSpectating && message.playerProfiles) {
+      const opponentColor = playerColor === 'w' ? 'b' : 'w';
+      renderOnlineOpponentProfile(message.playerProfiles[opponentColor], opponentColor);
+    }
     updateOnlineStatus('Game result saved. Your online Elo estimate and profile record are updated.');
     if (!profilesPage.hidden) loadPlayerProfile();
     return;
@@ -4897,27 +4910,77 @@ function updateColorLabels() {
   document.querySelector('#opponent-color-tag').textContent = playerColor === 'w' ? 'BLACK' : 'WHITE';
   document.querySelector('.human-row .player-details strong').textContent = 'You';
   document.querySelector('.human-row .avatar').textContent = 'Y';
-  document.querySelector('#opponent-description').hidden = false;
+  const isHumanOpponent = onlineMode;
+  document.querySelector('#opponent-description').hidden = isHumanOpponent;
   document.querySelector('#opponent-strength').hidden = false;
 }
 
-function renderSpectatorPlayers(players, playerCountries = {}) {
+function createOnlinePlayerName(profile) {
+  const label = document.createElement('span');
+  label.className = 'country-player-name';
+  const flag = createCountryFlag(profile.countryCode);
+  if (flag) {
+    label.append(flag);
+  } else {
+    const globe = document.createElement('span');
+    globe.className = 'country-player-globe';
+    globe.setAttribute('role', 'img');
+    globe.setAttribute('aria-label', 'Country not set');
+    globe.textContent = '🌐';
+    label.append(globe);
+  }
+  const name = document.createElement('span');
+  name.textContent = `@${profile.username}`;
+  label.append(name);
+  return label;
+}
+
+function renderOnlineOpponentProfile(profile, color) {
+  const nameElement = document.querySelector('#opponent-name');
+  const description = document.querySelector('#opponent-description');
+  const strength = document.querySelector('#opponent-strength');
+  description.hidden = true;
+  strength.hidden = false;
+  if (!profile || typeof profile.username !== 'string' || !profile.username
+    || (profile.id && profile.id === authSession?.user?.id)) {
+    nameElement.textContent = 'Opponent profile unavailable';
+    strength.textContent = 'Unrated';
+    document.querySelector('.opponent-row .avatar').textContent = '?';
+    document.querySelector('.opponent-row').dataset.playerId = '';
+    return;
+  }
+  nameElement.replaceChildren(createOnlinePlayerName(profile));
+  document.querySelector('.opponent-row .avatar').textContent = [...profile.username][0].toUpperCase();
+  document.querySelector('.opponent-row').dataset.playerId = profile.id || '';
+  strength.textContent = Number.isInteger(profile.onlineElo)
+    ? `ELO: ${profile.onlineElo.toLocaleString()}`
+    : 'Unrated';
+  document.querySelector('#opponent-color-tag').textContent = color === 'w' ? 'WHITE' : 'BLACK';
+}
+
+function renderSpectatorPlayers(players, playerCountries = {}, playerProfiles = {}) {
   playerCountries = playerCountries || {};
+  playerProfiles = playerProfiles || {};
   const rows = [
-    { row: document.querySelector('.opponent-row'), name: players?.b, countryCode: playerCountries.b, color: 'Black' },
-    { row: document.querySelector('.human-row'), name: players?.w, countryCode: playerCountries.w, color: 'White' },
+    { row: document.querySelector('.opponent-row'), profile: playerProfiles.b, name: players?.b, countryCode: playerCountries.b, color: 'Black' },
+    { row: document.querySelector('.human-row'), profile: playerProfiles.w, name: players?.w, countryCode: playerCountries.w, color: 'White' },
   ];
-  for (const { row, name, countryCode, color } of rows) {
+  for (const { row, profile, name, countryCode, color } of rows) {
     const playerName = row.querySelector('.player-details strong');
-    playerName.replaceChildren(name
-      ? createCountryPlayerName(name, countryCode)
+    const playerProfile = profile || (name ? {
+      username: name,
+      countryCode,
+    } : null);
+    playerName.replaceChildren(playerProfile
+      ? createOnlinePlayerName(playerProfile)
       : document.createTextNode(color));
+    row.dataset.playerId = playerProfile?.id || '';
     const avatar = row.querySelector('.avatar');
     avatar.textContent = name ? [...name][0].toUpperCase() : color[0];
     avatar.setAttribute('aria-label', `${color} player`);
   }
   document.querySelector('#opponent-description').hidden = true;
-  document.querySelector('#opponent-strength').hidden = true;
+  document.querySelector('#opponent-strength').hidden = false;
   document.querySelector('#human-color-label').textContent = 'White';
   document.querySelector('#opponent-color-tag').textContent = 'BLACK';
   document.querySelector('#human-color-tag').textContent = 'WHITE';

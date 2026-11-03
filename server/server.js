@@ -279,6 +279,24 @@ function roomPosition(room) {
   };
 }
 
+function roomPlayerProfiles(room) {
+  const profiles = {};
+  for (const color of ['w', 'b']) {
+    const player = room.players[color];
+    if (!player.accountId) continue;
+    profiles[color] = {
+      id: player.accountId,
+      username: player.name,
+      countryCode: player.countryCode || null,
+      onlineElo: Number.isInteger(player.onlineGames) && player.onlineGames > 0
+        && Number.isInteger(player.onlineElo)
+        ? player.onlineElo
+        : null,
+    };
+  }
+  return profiles;
+}
+
 function isAllowedOrigin(origin) {
   if (!origin || !allowedOrigins.length) return true;
   return allowedOrigins.some((allowedOrigin) => {
@@ -506,23 +524,31 @@ async function authenticateAccessToken(accessToken) {
 
   const profileUrl = new URL(`${supabaseUrl}/rest/v1/profiles`);
   profileUrl.searchParams.set('id', `eq.${user.id}`);
-  profileUrl.searchParams.set('select', 'username,country_code');
-  let { rows, missingColumns } = await requestProfileRows(
-    profileUrl,
-    headers,
-    'Could not load your reserved username.',
-  );
-  if (missingColumns) {
-    profileUrl.searchParams.set('select', 'username');
-    ({ rows } = await requestProfileRows(
+  let profile = null;
+  for (const fields of [
+    'username,country_code,online_elo,online_games',
+    'username,country_code',
+    'username',
+  ]) {
+    profileUrl.searchParams.set('select', fields);
+    const result = await requestProfileRows(
       profileUrl,
       headers,
       'Could not load your reserved username.',
-    ));
+    );
+    if (!result.missingColumns) {
+      [profile] = result.rows;
+      break;
+    }
   }
-  const [profile] = rows;
   if (!profile?.username) throw new Error('Your account does not have a reserved username. Create a new account or contact the site owner.');
-  return { id: user.id, username: profile.username, countryCode: profile.country_code || null };
+  return {
+    id: user.id,
+    username: profile.username,
+    countryCode: profile.country_code || null,
+    onlineElo: Number.isInteger(profile.online_elo) ? profile.online_elo : null,
+    onlineGames: Number.isInteger(profile.online_games) ? profile.online_games : null,
+  };
 }
 
 function countryCodeForRequest(request) {
@@ -668,6 +694,8 @@ function makeAuthorizationHeader(accessToken) {
 async function recordOnlineResult(room, whiteScore, termination) {
   if (room.ratingSettlementStarted) return;
   room.ratingSettlementStarted = true;
+  const whiteId = room.players.w.accountId;
+  const blackId = room.players.b.accountId;
   const historyTermination = ['checkmate', 'resignation'].includes(termination) ? termination : 'draw';
   try {
     if (!supabaseUrl || !supabaseServiceRoleKey) {
@@ -681,8 +709,8 @@ async function recordOnlineResult(room, whiteScore, termination) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        p_white_id: room.players.w.accountId,
-        p_black_id: room.players.b.accountId,
+        p_white_id: whiteId,
+        p_black_id: blackId,
         p_white_score: whiteScore,
         p_game_id: room.gameId,
         p_room_code: room.code,
@@ -692,7 +720,14 @@ async function recordOnlineResult(room, whiteScore, termination) {
       signal: AbortSignal.timeout(5000),
     });
     if (!response.ok) throw new Error('The account service could not save the online rating result.');
-    broadcast(room, { type: 'rating-updated' });
+    const ratings = await response.json();
+    for (const [id, result] of [[whiteId, ratings?.white], [blackId, ratings?.black]]) {
+      const currentSlot = ['w', 'b'].find((color) => room.players[color].accountId === id);
+      if (!currentSlot) continue;
+      if (Number.isInteger(result?.online_elo)) room.players[currentSlot].onlineElo = result.online_elo;
+      if (Number.isInteger(result?.online_games)) room.players[currentSlot].onlineGames = result.online_games;
+    }
+    broadcast(room, { type: 'rating-updated', playerProfiles: roomPlayerProfiles(room) });
   } catch (error) {
     console.error('Could not record online game ratings:', error.message);
     broadcast(room, { type: 'rating-update-failed' });
@@ -950,8 +985,10 @@ async function handleMessage(socket, player, rawMessage) {
           name: player.identity.username,
           countryCode: player.identity.countryCode,
           accountId: player.identity.id,
+          onlineElo: player.identity.onlineElo,
+          onlineGames: player.identity.onlineGames,
         },
-        b: { socket: null, name: 'Black', accountId: null },
+        b: { socket: null, name: 'Black', accountId: null, onlineElo: null, onlineGames: null },
       },
       spectators: new Set(),
       playerChat: [],
@@ -976,6 +1013,7 @@ async function handleMessage(socket, player, rawMessage) {
       color: 'w',
       name: room.players.b.name,
       countryCode: player.identity.countryCode || null,
+      playerProfiles: roomPlayerProfiles(room),
       isPublic: room.isPublic,
       lobbyName: room.lobbyName,
       locked: Boolean(room.passwordHash),
@@ -1040,6 +1078,8 @@ async function handleMessage(socket, player, rawMessage) {
     room.players[color].name = player.identity.username;
     room.players[color].countryCode = player.identity.countryCode;
     room.players[color].accountId = player.identity.id;
+    room.players[color].onlineElo = player.identity.onlineElo;
+    room.players[color].onlineGames = player.identity.onlineGames;
     room.expiresAt = Date.now() + roomLifetimeMs;
     player.room = room;
     player.color = color;
@@ -1053,6 +1093,7 @@ async function handleMessage(socket, player, rawMessage) {
       type: 'game-start',
       code: room.code,
       players,
+      playerProfiles: roomPlayerProfiles(room),
       playerCountries,
       ...roomPosition(room),
       spectators: room.spectators.size,
@@ -1063,6 +1104,7 @@ async function handleMessage(socket, player, rawMessage) {
       type: 'spectator-start',
       code: room.code,
       players,
+      playerProfiles: roomPlayerProfiles(room),
       playerCountries,
       ...roomPosition(room),
       waiting: false,
@@ -1107,6 +1149,7 @@ async function handleMessage(socket, player, rawMessage) {
         w: room.players.w.name,
         b: room.players.b.name,
       },
+      playerProfiles: roomPlayerProfiles(room),
       playerCountries: {
         w: room.players.w.countryCode || null,
         b: room.players.b.countryCode || null,
@@ -1321,6 +1364,7 @@ async function handleMessage(socket, player, rawMessage) {
       type: 'spectator-start',
       code: room.code,
       players,
+      playerProfiles: roomPlayerProfiles(room),
       playerCountries,
       ...roomPosition(room),
       waiting: false,
@@ -1331,6 +1375,7 @@ async function handleMessage(socket, player, rawMessage) {
         type: 'game-start',
         code: room.code,
         players,
+        playerProfiles: roomPlayerProfiles(room),
         playerCountries,
         ...roomPosition(room),
         spectators: room.spectators.size,
