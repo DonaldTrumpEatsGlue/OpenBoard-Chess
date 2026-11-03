@@ -255,7 +255,16 @@
           <button class="primary-button" type="submit">Search</button>
         </form>
         </section>
-        <p class="studio-status" id="profile-status" role="status">Sign in to view your own profile, or search for a username.</p>
+      </main>
+
+      <main class="player-profile-page" id="player-profile-page" aria-labelledby="player-profile-page-title" hidden>
+        <button class="secondary-button profiles-back" id="profile-back-to-community" type="button">← Back to community</button>
+        <header class="profiles-page-header">
+          <p class="eyebrow">OPENBOARD PLAYER PROFILE</p>
+          <h1 id="player-profile-page-title">Player profile</h1>
+          <p id="player-profile-page-description">A player’s public chess identity and results.</p>
+        </header>
+        <p class="studio-status" id="profile-status" role="status" aria-live="polite">Loading player profile…</p>
         <article class="profile-card" id="profile-card" hidden>
           <div class="profile-card-heading"><span class="profile-avatar" id="profile-avatar"><span id="profile-avatar-letter">?</span><img id="profile-avatar-image" alt="" hidden /></span><div><span class="eyebrow">OPENBOARD PLAYER</span><h2 id="profile-username"></h2><p class="profile-country" id="profile-country"></p></div></div>
           <p class="profile-bio" id="profile-bio" hidden></p>
@@ -814,6 +823,6 @@
     <script defer src="./src/learning-content.js?v=49"></script>
     <script defer src="./src/academy-content.js?v=1"></script>
     <script defer src="./src/profile-utils.js?v=1"></script>
-    <script defer src="./src/main.js?v=69"></script>
+    <script defer src="./src/main.js?v=70"></script>
   </body>
 </html>

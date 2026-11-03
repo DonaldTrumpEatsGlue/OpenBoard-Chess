@@ -549,8 +549,8 @@ body[data-interface-theme="light"] .history-replay-move:hover, body[data-interfa
 .directory-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
 .directory-header .eyebrow { margin-bottom: 5px; }
 .directory-close { width: 34px; height: 34px; border: 1px solid #ffffff1a; border-radius: 8px; color: #eaf0e8; background: #ffffff08; font-size: 22px; cursor: pointer; }
-.profiles-page { width: min(820px, calc(100% - 48px)); min-height: calc(100vh - 150px); margin: 54px auto 36px; color: var(--text); }
-.profiles-page[hidden], .layout[hidden] { display: none; }
+.profiles-page, .player-profile-page { width: min(820px, calc(100% - 48px)); min-height: calc(100vh - 150px); margin: 54px auto 36px; color: var(--text); }
+.profiles-page[hidden], .player-profile-page[hidden], .layout[hidden] { display: none; }
 .profiles-back { min-height: 36px; margin-bottom: 32px; padding: 0 12px; border-radius: 7px; cursor: pointer; }
 .profiles-page-header { margin-bottom: 24px; }
 .profiles-page-header .eyebrow { margin-bottom: 7px; }
@@ -668,7 +668,7 @@ body[data-interface-theme="light"] #custom-rules-dialog { color: #27382d; backgr
 .online-dialog .studio-status { margin-top: 14px; }
 body[data-interface-theme="light"] .online-dialog { color: #27382d; background: #fafbf5; }
 body[data-interface-theme="light"] .online-dialog .studio-field input { color: #27382d; border-color: #243d2a24; background: #fff; }
-body[data-interface-theme="light"] .profiles-page { color: #27382d; }
+body[data-interface-theme="light"] .profiles-page, body[data-interface-theme="light"] .player-profile-page { color: #27382d; }
 body[data-interface-theme="light"] .profile-search input { color: #27382d; border-color: #243d2a24; background: #fff; }
 body[data-interface-theme="light"] .community-members, body[data-interface-theme="light"] .profile-lookup { border-color: #243d2a20; background: #fff; }
 body[data-interface-theme="light"] .community-member-filters > input, body[data-interface-theme="light"] .community-member-filters > select { color: #27382d; border-color: #243d2a24; background: #fff; }

@@ -21,6 +21,7 @@ const practiceSetupDialog = document.querySelector('#practice-setup-dialog');
 const practiceCoachElement = document.querySelector('#practice-coach');
 const practiceCoachHome = practiceCoachElement.parentElement;
 const profilesPage = document.querySelector('#profiles-page');
+const playerProfilePage = document.querySelector('#player-profile-page');
 const gamePage = document.querySelector('#game-page');
 const socialPanel = document.querySelector('#social-panel');
 const onlineLeaveDialog = document.querySelector('#online-leave-dialog');
@@ -1939,6 +1940,9 @@ function renderPlayerProfile(profile, isOwnProfile = false) {
   avatarImage.removeAttribute('src');
   if (profile.avatarData) avatarImage.src = profile.avatarData;
   document.querySelector('#profile-username').replaceChildren(createCountryPlayerName(profile.username, profile.countryCode));
+  document.querySelector('#player-profile-page-title').textContent = `@${profile.username}`;
+  document.querySelector('#player-profile-page-description').textContent =
+    isOwnProfile ? 'Your public Openboard player profile.' : `Public chess profile for @${profile.username}.`;
   document.querySelector('#profile-country').textContent = countryLabel(profile.countryCode) || 'Country not available';
   const bio = document.querySelector('#profile-bio');
   bio.textContent = profile.bio || '';
@@ -2964,12 +2968,19 @@ function closeSidebar() {
 function renderAppPage() {
   const params = new URLSearchParams(location.search);
   const isProfilesPage = params.get('page') === 'profiles';
-  gamePage.hidden = isProfilesPage;
+  const isPlayerProfilePage = params.get('page') === 'profile';
+  gamePage.hidden = isProfilesPage || isPlayerProfilePage;
   profilesPage.hidden = !isProfilesPage;
-  if (!isProfilesPage) return;
-  loadCommunityMembers();
+  playerProfilePage.hidden = !isPlayerProfilePage;
+  if (!isProfilesPage && !isPlayerProfilePage) return;
+  if (isProfilesPage) loadCommunityMembers();
   const username = params.get('username');
-  document.querySelector('#profile-search-input').value = username || '';
+  if (isProfilesPage) {
+    document.querySelector('#profile-search-input').value = '';
+    document.querySelector('#profile-card').hidden = true;
+    document.querySelector('#profile-status').textContent = '';
+    return;
+  }
   if (username && /^[A-Za-z0-9_]{3,20}$/.test(username)) {
     loadPlayerProfile(username);
   } else if (authSession?.access_token) {
@@ -2977,7 +2988,7 @@ function renderAppPage() {
   } else {
     document.querySelector('#profile-card').hidden = true;
     document.querySelector('#profile-status').textContent =
-      'Search public player profiles by username.';
+      'Sign in to view your player profile, or visit a profile from the Members directory.';
   }
 }
 
@@ -2993,10 +3004,16 @@ function navigateToAppPage(page = '', username = '', replace = false) {
 }
 
 function openProfilesPage() {
-  navigateToAppPage('profiles');
-  if (!authSession?.access_token) {
+  if (authUsername) {
+    navigateToAppPage('profile', authUsername);
+  } else {
+    navigateToAppPage('profiles');
     document.querySelector('#profile-search-input').focus();
   }
+}
+
+function openPlayerProfile(username) {
+  navigateToAppPage('profile', username);
 }
 
 function openCommunityMembers() {
@@ -3048,7 +3065,7 @@ async function loadCommunityMembers() {
       link.type = 'button';
       link.className = 'community-member-profile';
       link.append(createCountryPlayerName(member.username, member.countryCode));
-      link.addEventListener('click', () => navigateToAppPage('profiles', member.username));
+      link.addEventListener('click', () => openPlayerProfile(member.username));
       const rating = document.createElement('small');
       rating.textContent = member.onlineElo == null
         ? 'Unrated'
@@ -3060,7 +3077,7 @@ async function loadCommunityMembers() {
       viewButton.type = 'button';
       viewButton.className = 'secondary-button';
       viewButton.textContent = 'View profile';
-      viewButton.addEventListener('click', () => navigateToAppPage('profiles', member.username));
+      viewButton.addEventListener('click', () => openPlayerProfile(member.username));
       const friendButton = document.createElement('button');
       friendButton.type = 'button';
       friendButton.className = 'secondary-button';
@@ -3269,7 +3286,7 @@ function createSocialUserCopy(username, countryCode, detail = '') {
   name.append(createCountryPlayerName(username, countryCode));
   name.addEventListener('click', () => {
     closeSocialPanel();
-    navigateToAppPage('profiles', username);
+    openPlayerProfile(username);
   });
   copy.append(name);
   if (detail) {
@@ -4540,7 +4557,9 @@ function handleOnlineMessage(socket, message) {
       renderOnlineOpponentProfile(message.playerProfiles[opponentColor], opponentColor);
     }
     updateOnlineStatus('Game result saved. Your online Elo estimate and profile record are updated.');
-    if (!profilesPage.hidden) loadPlayerProfile();
+    if (!playerProfilePage.hidden) loadPlayerProfile(
+      new URLSearchParams(location.search).get('username') || '',
+    );
     return;
   }
   if (message.type === 'rating-update-failed') {
@@ -5535,6 +5554,7 @@ document.querySelector('#online-go-account').addEventListener('click', () => {
   openAccountDialog('signin');
 });
 document.querySelector('#profiles-back').addEventListener('click', () => navigateToAppPage());
+document.querySelector('#profile-back-to-community').addEventListener('click', () => navigateToAppPage('profiles'));
 document.querySelector('#community-member-search').addEventListener('submit', (event) => {
   event.preventDefault();
   loadCommunityMembers();
@@ -5548,11 +5568,7 @@ document.querySelector('#profile-search-form').addEventListener('submit', (event
     document.querySelector('#profile-status').textContent = 'Usernames must be 3–20 letters, numbers, or underscores.';
     return;
   }
-  const url = new URL(location.href);
-  url.searchParams.set('page', 'profiles');
-  url.searchParams.set('username', username);
-  history.replaceState({ page: 'profiles' }, '', url);
-  loadPlayerProfile(username);
+  openPlayerProfile(username);
 });
 populateCountryOptions();
 document.querySelector('#profile-country-form').addEventListener('submit', async (event) => {
