@@ -591,6 +591,9 @@ test('database schema reserves usernames and keeps social data behind server-onl
   assert.match(schema, /new\.raw_user_meta_data\s*->>\s*'username'/i);
   assert.match(schema, /new\.raw_user_meta_data\s*->>\s*'country_code'/i);
   assert.match(schema, /lower\(requested_username\)/i);
+  assert.match(schema, /v_user_low uuid/i);
+  assert.match(schema, /friendship\.user_low = v_user_low/i);
+  assert.match(schema, /update public\.profiles as profile[\s\S]*profile\.country_code is null[\s\S]*raw_user_meta_data[\s\S]*country_code/i);
   assert.match(schema, /raise exception 'username_taken'/i);
   assert.doesNotMatch(schema, /new\.email_confirmed_at is null/i);
   assert.match(schema, /from auth\.users as users[\s\S]*on conflict do nothing/i);
@@ -699,7 +702,7 @@ test('signup derives and stores an approximate country code from the request IP'
     email: 'geo@example.test',
     password: 'secure-password-123',
     countryCode: 'ZZ',
-  }, 'https://sample-user.github.io', { 'x-forwarded-for': '8.8.8.8' });
+  }, 'https://sample-user.github.io', { 'x-forwarded-for': '8.8.8.8, 1.1.1.1' });
   assert.equal(result.status, 200);
   assert.equal(signupRequests.at(-1).username, 'GeoProfile');
   assert.equal(signupRequests.at(-1).countryCode, 'US');

@@ -274,7 +274,7 @@ async function authenticateAccessToken(accessToken) {
 function countryCodeForRequest(request) {
   const forwardedFor = request.headers['x-forwarded-for'];
   const forwardedAddress = typeof forwardedFor === 'string'
-    ? forwardedFor.split(',').map((address) => address.trim()).filter(Boolean).at(-1)
+    ? forwardedFor.split(',').map((address) => address.trim()).find(Boolean)
     : '';
   const address = (forwardedAddress || request.socket.remoteAddress || '')
     .replace(/^::ffff:/, '')

@@ -149,8 +149,8 @@ as $$
 declare
   recipient public.profiles%rowtype;
   existing_request public.friend_requests%rowtype;
-  user_low uuid;
-  user_high uuid;
+  v_user_low uuid;
+  v_user_high uuid;
 begin
   select * into recipient from public.profiles where username_key = lower(p_username_key);
   if recipient.id is null then
@@ -159,11 +159,16 @@ begin
   if recipient.id = p_sender_id then
     raise exception 'You cannot send a friend request to yourself.';
   end if;
-  user_low := least(p_sender_id, recipient.id);
-  user_high := greatest(p_sender_id, recipient.id);
-  perform pg_advisory_xact_lock(hashtextextended(user_low::text || ':' || user_high::text, 0));
+  v_user_low := least(p_sender_id, recipient.id);
+  v_user_high := greatest(p_sender_id, recipient.id);
+  perform pg_advisory_xact_lock(hashtextextended(v_user_low::text || ':' || v_user_high::text, 0));
 
-  if exists (select 1 from public.friendships where friendships.user_low = user_low and friendships.user_high = user_high) then
+  if exists (
+    select 1
+    from public.friendships as friendship
+    where friendship.user_low = v_user_low
+      and friendship.user_high = v_user_high
+  ) then
     return jsonb_build_object('status', 'already_friends');
   end if;
   select * into existing_request
@@ -415,7 +420,7 @@ begin
     new.id,
     requested_username,
     lower(requested_username),
-    case when requested_country_code ~ '^[A-Z]{2}$' then requested_country_code else null end
+    case when requested_country_code ~ '^[A-Za-z]{2}$' then upper(requested_country_code) else null end
   );
 
   return new;
@@ -438,8 +443,8 @@ select
   users.raw_user_meta_data ->> 'username',
   lower(users.raw_user_meta_data ->> 'username'),
   case
-    when users.raw_user_meta_data ->> 'country_code' ~ '^[A-Z]{2}$'
-      then users.raw_user_meta_data ->> 'country_code'
+    when users.raw_user_meta_data ->> 'country_code' ~ '^[A-Za-z]{2}$'
+      then upper(users.raw_user_meta_data ->> 'country_code')
     else null
   end
 from auth.users as users
@@ -449,3 +454,10 @@ where users.raw_user_meta_data ->> 'username' ~ '^[A-Za-z0-9_]{3,20}$'
   )
 order by users.created_at, users.id
 on conflict do nothing;
+
+update public.profiles as profile
+set country_code = upper(users.raw_user_meta_data ->> 'country_code')
+from auth.users as users
+where profile.id = users.id
+  and profile.country_code is null
+  and users.raw_user_meta_data ->> 'country_code' ~ '^[A-Za-z]{2}$';
