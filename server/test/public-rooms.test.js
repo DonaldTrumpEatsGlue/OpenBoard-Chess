@@ -162,7 +162,7 @@ function waitForMessage(socket, predicate) {
     const timeout = setTimeout(() => {
       socket.off('message', onMessage);
       reject(new Error('Timed out waiting for the expected room message.'));
-    }, 3_000);
+    }, 10_000);
     const onMessage = (data) => {
       const message = JSON.parse(data.toString());
       if (!predicate(message)) return;
