@@ -11,6 +11,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "test:custom-chess": "node scripts/test-custom-chess.mjs",
+    "test:variant-engine": "node --test scripts/test-variant-engine-worker.test.mjs",
     "test:large-board": "node scripts/test-large-board-chess.mjs",
     "test:game-insights": "node --test scripts/test-game-insights.mjs",
     "test:sidebar-navigation": "node --test scripts/test-sidebar-navigation.test.mjs",

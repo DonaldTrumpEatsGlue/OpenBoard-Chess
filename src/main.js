@@ -317,6 +317,7 @@ let customMovementBySquare = new Map();
 let customPieceBySquare = new Map();
 let customIdentityHistory = [];
 let editingCustomPieces = [];
+const legalMoveCache = new Map();
 
 function isGameOver() {
   return isCheckmate() || isStalemate() || isDraw();
@@ -516,6 +517,7 @@ function undoGameMove() {
 }
 
 function configureStartingPosition() {
+  legalMoveCache.clear();
   customMovementBySquare = new Map();
   customPieceBySquare = new Map();
   game.clearCustomMovements();
@@ -653,6 +655,15 @@ function attacksSquare(from, to, color, pattern) {
 }
 
 function getLegalMoves(options = {}) {
+  const cacheKey = `${game.fen()}|${JSON.stringify(customRules)}|${JSON.stringify([...customMovementBySquare])}|${JSON.stringify([...customPieceBySquare])}`;
+  if (!options.square) {
+    const cachedMoves = legalMoveCache.get(cacheKey);
+    if (cachedMoves) return [...cachedMoves];
+  } else {
+    const cachedMoves = legalMoveCache.get(cacheKey);
+    if (cachedMoves) return cachedMoves.filter((move) => move.from === options.square);
+  }
+
   const squares = options.square
     ? [options.square]
     : game.board().flatMap((rank, row) => rank.map((piece, col) => piece?.color === game.turn() ? squareAt(row, col) : null).filter(Boolean));
@@ -721,6 +732,10 @@ function getLegalMoves(options = {}) {
         game.put(before, square);
       }
     }
+  }
+  if (!options.square) {
+    legalMoveCache.set(cacheKey, legal);
+    if (legalMoveCache.size > 64) legalMoveCache.delete(legalMoveCache.keys().next().value);
   }
   return legal;
 }
@@ -1434,13 +1449,13 @@ function playMove(from, to, promotion = 'q') {
   updateGameState();
   if (practiceMode && practiceCoachAuto && practiceMoveNeedsExplanation(appliedMove)) updatePracticeCoach('human');
   else if (practiceMode && practiceCoachAuto && practiceCoachFrequency === 'every') updatePracticeCoach('human');
-  if (!isGameOver() && !gameResult && !analysisMode && !onlineMode) {
+  if (!gameResult && !analysisMode && !onlineMode) {
     aiThinking = true;
     gameMessage.textContent = 'The engine is thinking…';
     renderBoard();
     const token = gameToken;
     window.setTimeout(() => {
-      if (token !== gameToken || isGameOver() || gameResult) return;
+      if (token !== gameToken || gameResult) return;
       requestBotMove(bots[difficultySelect.value], token);
     }, 250 + Math.random() * 450);
   } else {
@@ -1686,9 +1701,93 @@ function requestBotMove(bot, token) {
 }
 
 function applyFallbackMove(bot, token) {
-  if (token !== gameToken || isGameOver() || gameResult) return;
+  if (token !== gameToken || gameResult) return;
   const maxDepth = activeBoardSize >= 16 ? 1 : activeBoardSize >= 12 ? 2 : 3;
   const fallbackDepth = Math.max(1, Math.min(bot.depth, maxDepth));
+  if (activeBoardSize === 8) {
+    let worker;
+    try {
+      worker = new Worker(new URL('./src/variant-engine-worker.js', document.baseURI));
+      activeWorker = worker;
+    } catch (error) {
+      console.error('The custom-variant engine could not start:', error);
+      aiThinking = false;
+      gameMessage.textContent = 'The custom-variant engine could not start. Reload the page and try again.';
+      renderBoard();
+      return;
+    }
+
+    const stopWorker = () => {
+      if (activeWorker === worker) {
+        worker.terminate();
+        activeWorker = null;
+      }
+    };
+    const failWorker = (error) => {
+      stopWorker();
+      if (token !== gameToken || gameResult) return;
+      console.error('The custom-variant engine could not complete its move:', error);
+      aiThinking = false;
+      gameMessage.textContent = 'The custom-variant engine could not complete its move. Try another bot or reload the page.';
+      renderBoard();
+    };
+
+    worker.onmessage = ({ data }) => {
+      if (token !== gameToken || gameResult) {
+        stopWorker();
+        return;
+      }
+      if (data.type === 'info') {
+        gameMessage.textContent = `Custom-variant search · depth ${data.depth} · ${Number(data.totalNodes).toLocaleString()} nodes`;
+        return;
+      }
+      if (data.type === 'error') {
+        failWorker(new Error(data.error));
+        return;
+      }
+      if (data.type !== 'bestmove' || !data.move) {
+        failWorker(new Error('The custom-variant engine returned no move.'));
+        return;
+      }
+      stopWorker();
+      const move = {
+        from: data.move.slice(0, 2),
+        to: data.move.slice(2, 4),
+        ...(data.move.length > 4 ? { promotion: data.move[4] } : {}),
+      };
+      try {
+        const quality = analyzeMoveQuality(move);
+        const appliedMove = makeGameMove(move);
+        recordMoveInsight(appliedMove, quality);
+        playMoveSound(appliedMove, 'opponent');
+      } catch (error) {
+        failWorker(error);
+        return;
+      }
+      registerClockMove();
+      finishBotTurn();
+    };
+    worker.onerror = (error) => failWorker(error);
+    try {
+      worker.postMessage({
+        command: 'search',
+        id: token,
+        fen: game.fen(),
+        customRules,
+        customMovementBySquare: [...customMovementBySquare],
+        customPieceBySquare: [...customPieceBySquare],
+        bot: {
+          depth: fallbackDepth,
+          thinkMs: Math.min(bot.thinkMs || 450, 2500),
+          maxNodes: 30000,
+        },
+      });
+    } catch (error) {
+      failWorker(error);
+    }
+    return;
+  }
+
   const move = findBestMove({ ...bot, depth: fallbackDepth });
   if (move) {
     const quality = analyzeMoveQuality(move);
