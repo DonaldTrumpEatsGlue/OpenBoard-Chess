@@ -75,22 +75,22 @@
               <h1>Choose your opponent.</h1>
             </div>
             <label class="difficulty-control">
-                <span>Computer opponent · engine skill</span>
+                <span>Computer opponent · estimated Elo</span>
               <select id="difficulty" aria-label="AI difficulty">
-                <option value="pip">Pip · Beginner</option>
-                <option value="juniper">Juniper · Beginner</option>
-                <option value="scout">Scout · Casual</option>
-                <option value="moss">Moss · Casual</option>
-                <option value="sage" selected>Sage · Intermediate</option>
-                <option value="ember">Ember · Intermediate</option>
-                <option value="rook">Rook · Advanced</option>
-                <option value="lyra">Lyra · Advanced</option>
-                <option value="vale">Vale · Expert</option>
-                <option value="atlas">Atlas · Expert</option>
-                <option value="nyx">Nyx · Master</option>
-                <option value="sol">Sol · Master</option>
-                <option value="quartz">Quartz · Elite</option>
-                <option value="max">MAX ENGINE · Unrestricted</option>
+                <option value="pip">Pip · Beginner · ≈250 Elo</option>
+                <option value="juniper">Juniper · Beginner · ≈400 Elo</option>
+                <option value="scout">Scout · Casual · ≈600 Elo</option>
+                <option value="moss">Moss · Casual · ≈800 Elo</option>
+                <option value="sage" selected>Sage · Intermediate · ≈1,000 Elo</option>
+                <option value="ember">Ember · Intermediate · ≈1,200 Elo</option>
+                <option value="rook">Rook · Advanced · ≈1,400 Elo</option>
+                <option value="lyra">Lyra · Advanced · ≈1,600 Elo</option>
+                <option value="vale">Vale · Expert · ≈1,800 Elo</option>
+                <option value="atlas">Atlas · Expert · ≈2,000 Elo</option>
+                <option value="nyx">Nyx · Master · ≈2,200 Elo</option>
+                <option value="sol">Sol · Master · ≈2,400 Elo</option>
+                <option value="quartz">Quartz · Elite · ≈2,600 Elo</option>
+                <option value="max">MAX ENGINE · Unrestricted · ≈3,200+ Elo</option>
               </select>
             </label>
           </div>
@@ -98,6 +98,7 @@
           <div class="match-settings" aria-label="Game settings">
             <label><span>Play as</span><select id="play-color" aria-label="Choose your color"><option value="w">White</option><option value="b">Black</option></select></label>
             <label><span>Clock</span><select id="time-control" aria-label="Choose a time control"><option value="0">No clock</option><option value="60">1 min</option><option value="180">3 min</option><option value="300" selected>5 min</option><option value="600">10 min</option></select></label>
+            <label id="max-engine-time-setting" hidden><span>MAX search per move</span><select id="max-engine-time" aria-label="Maximum Stockfish search time per move"><option value="30000">30 seconds</option><option value="60000">1 minute</option><option value="120000">2 minutes</option><option value="300000">5 minutes</option></select></label>
             <label><span>Board</span><select id="board-theme" aria-label="Choose a board theme"><option value="classic">Meadow</option><option value="blue">Glacier</option><option value="walnut">Walnut</option></select></label>
             <label><span>Interface</span><select id="interface-theme" aria-label="Choose interface theme"><option value="dark">Night</option><option value="light">Day</option></select></label>
           </div>
@@ -108,7 +109,7 @@
 
           <div class="player-row opponent-row">
             <div class="avatar computer-avatar" aria-hidden="true">✦</div>
-            <div class="player-details"><strong id="opponent-name">Sage</strong><span id="opponent-description">A measured player who develops carefully and prefers sound trades.</span><span id="opponent-strength">Stockfish skill 6/20 · uncalibrated</span><span class="captured-pieces" id="opponent-captured-pieces" aria-label="Pieces captured by your opponent" hidden></span></div>
+            <div class="player-details"><strong id="opponent-name">Sage</strong><span id="opponent-description">A measured player who develops carefully and prefers sound trades.</span><span id="opponent-strength">≈1,000 estimated Openboard Elo</span><span class="captured-pieces" id="opponent-captured-pieces" aria-label="Pieces captured by your opponent" hidden></span></div>
             <div class="player-tag" id="opponent-color-tag">BLACK</div>
             <time class="clock" id="opponent-clock" hidden>05:00</time>
           </div>
@@ -168,7 +169,7 @@
             <div class="opponent-card-top"><span class="bot-avatar" id="bot-avatar">S</span><span class="bot-difficulty" id="bot-difficulty">INTERMEDIATE</span></div>
             <h3 id="bot-profile-name">Sage</h3>
             <p id="bot-profile-description">A measured player who develops carefully and prefers sound trades.</p>
-            <div class="bot-rating"><span>ENGINE SETTING · NOT A RATING</span><strong id="bot-profile-rating">Stockfish skill 6/20 · uncalibrated</strong></div>
+            <div class="bot-rating"><span>ESTIMATED OPENBOARD ELO</span><strong id="bot-profile-rating">≈1,000 estimated Openboard Elo</strong></div>
           </div>
 
           <section class="moves-section">
@@ -837,6 +838,6 @@
     <script defer src="./src/learning-content.js?v=49"></script>
     <script defer src="./src/academy-content.js?v=1"></script>
     <script defer src="./src/profile-utils.js?v=1"></script>
-    <script defer src="./src/main.js?v=76"></script>
+    <script defer src="./src/main.js?v=77"></script>
   </body>
 </html>

@@ -14,6 +14,8 @@ The installed root and server `node_modules` folders are included in this reposi
 
 Gameplay, saved settings, custom pieces, and the computer opponent run in each visitor's browser. GitHub Pages is static hosting, so friend-online rooms also need the separately hosted WebSocket service described below.
 
+Computer opponents use the bundled Stockfish 19 engine for standard chess. Each bot displays an estimated Openboard Elo so you can choose a challenge level; these are approximate bot-strength labels, not official or tournament-calibrated human ratings. MAX is shown as approximately 3,200+ and varies with search time and device. MAX uses Stockfish without its skill-level weakening and searches for up to 30 seconds per move by default; choose a longer MAX search limit in the game settings to allow up to five minutes per move. Longer searches use more of the player's clock in timed games. The custom local search is used for unsupported chess variants.
+
 For a standalone Windows x64 desktop installer, double-click `build-openboard-desktop.bat`. The installer is written to `release/Openboard Chess Setup 1.0.0.exe`; the installed game does not require Node.js. The first installer is about 350 MB because it includes Electron and the full Stockfish engine. It is not code-signed, so Windows may show its standard unknown-publisher warning. Building it requires internet access to download packaging tools.
 
 Run `npm run test:custom-chess` to check custom move generation, captures, attacks, mirroring, undo, and promotion. Run `npm run test:large-board` to check the expanded board rules.

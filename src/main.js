@@ -7,6 +7,8 @@ const difficultySelect = document.querySelector('#difficulty');
 const promotionDialog = document.querySelector('#promotion-dialog');
 const playColorSelect = document.querySelector('#play-color');
 const timeControlSelect = document.querySelector('#time-control');
+const maxEngineTimeSelect = document.querySelector('#max-engine-time');
+const maxEngineTimeSetting = document.querySelector('#max-engine-time-setting');
 const boardThemeSelect = document.querySelector('#board-theme');
 const interfaceThemeSelect = document.querySelector('#interface-theme');
 const soundToggle = document.querySelector('#sound-toggle');
@@ -54,11 +56,12 @@ const bots = {
   quartz: { name: 'Quartz', elo: 2600, depth: 6, variety: 1, thinkMs: 1200, difficulty: 'ELITE', style: 'positional', description: 'The strongest regular profile: disciplined, calculating, and hard to dislodge.' },
   max: {
     name: 'MAX ENGINE',
+    elo: 3200,
     depth: 20,
     thinkMs: 30000,
     difficulty: 'UNRESTRICTED',
     unrestricted: true,
-    description: 'Full Stockfish 19 strength with no skill or Elo restriction. Search depth and time depend on your device.',
+    description: 'Full Stockfish 19 strength with no skill restriction. Its effective strength varies with search time and device.',
   },
 };
 const advancedBotNames = [
@@ -70,8 +73,8 @@ const advancedBotNames = [
 ];
 const advancedStyles = ['positional', 'tactical', 'attacking', 'defensive'];
 advancedBotNames.forEach((name, index) => {
-  const elo = Math.round(2700 + (index * 17300) / (advancedBotNames.length - 1));
-  const difficulty = elo >= 12000 ? 'MYTHIC' : elo >= 6000 ? 'LEGEND' : 'GRANDMASTER';
+  const elo = Math.round(2700 + (index * 500) / (advancedBotNames.length - 1));
+  const difficulty = elo >= 3100 ? 'MYTHIC' : elo >= 2900 ? 'LEGEND' : 'GRANDMASTER';
   const style = advancedStyles[index % advancedStyles.length];
   const id = `challenge-${index + 1}`;
   bots[id] = {
@@ -82,25 +85,25 @@ advancedBotNames.forEach((name, index) => {
     variety: index > 35 ? 1 : index > 18 ? 2 : 3,
     difficulty,
     style,
-    description: `${difficulty[0]}${difficulty.slice(1).toLowerCase()} challenge profile with a ${style} label. Its strength is not an Elo rating.`,
+    description: `${difficulty[0]}${difficulty.slice(1).toLowerCase()} challenge profile with an estimated ${elo} Openboard Elo and a ${style} style.`,
   };
 });
 for (const [id, bot] of Object.entries(bots)) {
   if ([...difficultySelect.options].some((option) => option.value === id)) continue;
   const option = document.createElement('option');
   option.value = id;
-  option.textContent = `${bot.name} · ${bot.difficulty}`;
+  option.textContent = `${bot.name} · ${bot.difficulty} · ${botEloLabel(bot)}`;
   difficultySelect.append(option);
 }
 const practiceBotOptions = [
-  { id: 'pip', label: 'Gentle · Pip (very forgiving)' },
-  { id: 'juniper', label: 'Easy · Juniper' },
-  { id: 'scout', label: 'Casual · Scout' },
-  { id: 'sage', label: 'Intermediate · Sage' },
-  { id: 'rook', label: 'Advanced · Rook' },
-  { id: 'vale', label: 'Expert · Vale' },
-  { id: 'quartz', label: 'Elite · Quartz' },
-  { id: 'max', label: 'Maximum · MAX ENGINE (very difficult)' },
+  { id: 'pip', label: 'Gentle · Pip · ≈250 Elo' },
+  { id: 'juniper', label: 'Easy · Juniper · ≈400 Elo' },
+  { id: 'scout', label: 'Casual · Scout · ≈600 Elo' },
+  { id: 'sage', label: 'Intermediate · Sage · ≈1,000 Elo' },
+  { id: 'rook', label: 'Advanced · Rook · ≈1,400 Elo' },
+  { id: 'vale', label: 'Expert · Vale · ≈1,800 Elo' },
+  { id: 'quartz', label: 'Elite · Quartz · ≈2,600 Elo' },
+  { id: 'max', label: 'Maximum · MAX ENGINE · ≈3,200+ Elo' },
 ];
 const practiceBotSelect = document.querySelector('#practice-bot');
 for (const option of practiceBotOptions) {
@@ -124,10 +127,15 @@ const stockfishSkillByDifficulty = {
 function stockfishSkillLevel(bot) {
   return stockfishSkillByDifficulty[bot.difficulty] ?? 10;
 }
+function botEloLabel(bot) {
+  return bot.unrestricted
+    ? '≈3,200+ estimated Openboard Elo'
+    : `≈${bot.elo.toLocaleString('en-US')} estimated Openboard Elo`;
+}
 function botStrengthLabel(bot) {
   return bot.unrestricted
-    ? 'Unrestricted Stockfish 19 · not Elo'
-    : `Stockfish skill ${stockfishSkillLevel(bot)}/20 · uncalibrated`;
+    ? `${botEloLabel(bot)} · varies by device/search time`
+    : botEloLabel(bot);
 }
 for (const level of ['GRANDMASTER', 'LEGEND', 'MYTHIC', 'UNRESTRICTED']) {
   const option = document.createElement('option');
@@ -1647,7 +1655,7 @@ function requestBotMove(bot, token) {
         searchStarted = true;
         worker.postMessage(`position fen ${game.fen()}`);
         worker.postMessage(bot.unrestricted
-          ? 'go depth 99 movetime 30000'
+          ? `go depth 99 movetime ${maxEngineTimeSelect.value}`
           : `go movetime ${Math.max(300, bot.thinkMs || 450)}`);
         return;
       }
@@ -5604,6 +5612,7 @@ document.querySelector('#flip').addEventListener('click', () => {
 difficultySelect.addEventListener('change', () => {
   if (!practiceMode) practiceGame = false;
   const bot = bots[difficultySelect.value];
+  maxEngineTimeSetting.hidden = !bot.unrestricted;
   document.querySelector('#opponent-name').textContent = bot.name;
   document.querySelector('#opponent-description').textContent = bot.description;
   document.querySelector('#opponent-strength').textContent = botStrengthLabel(bot);
@@ -5623,6 +5632,7 @@ function savePreferences() {
       bot: difficultySelect.value,
       color: playerColor,
       clock: timeControlSelect.value,
+      maxEngineTime: maxEngineTimeSelect.value,
       theme: boardThemeSelect.value,
       interfaceTheme: interfaceThemeSelect.value,
       sound: soundToggle.checked,
@@ -5672,6 +5682,7 @@ function renderSoundSettings() {
 }
 
 difficultySelect.addEventListener('change', savePreferences);
+maxEngineTimeSelect.addEventListener('change', savePreferences);
 playColorSelect.addEventListener('change', () => {
   practiceGame = false;
   playerColor = playColorSelect.value;
@@ -6358,6 +6369,10 @@ function loadPreferences() {
     console.error('Could not load saved preferences:', error);
   }
   if (bots[saved.bot]) difficultySelect.value = saved.bot;
+  maxEngineTimeSetting.hidden = !bots[difficultySelect.value]?.unrestricted;
+  if (['30000', '60000', '120000', '300000'].includes(String(saved.maxEngineTime))) {
+    maxEngineTimeSelect.value = String(saved.maxEngineTime);
+  }
   if (saved.color === 'b' || saved.color === 'w') playerColor = saved.color;
   if (['0', '60', '180', '300', '600'].includes(String(saved.clock))) timeControlSelect.value = String(saved.clock);
   if (['classic', 'blue', 'walnut'].includes(saved.theme)) boardThemeSelect.value = saved.theme;
