@@ -312,6 +312,7 @@ dialog p { color: var(--muted); font-size: 12px; }
 .sidebar-submenu-item:hover { color: #fff; background: #ffffff0c; }
 .sidebar-bottom { display: grid; flex: 0 0 auto; gap: 7px; margin-top: auto; padding: 8px 0 1px; }
 .sidebar-action { min-height: 34px; font-size: 10px; }
+.sidebar-action-link { text-decoration: none; }
 .sidebar-action.muted, .sidebar-language { color: #a4aaa2; }
 .sidebar-signup, .sidebar-login { min-height: 36px; justify-content: center; font-size: 10px; }
 .sidebar-signup[hidden], .sidebar-login[hidden] { display: none; }
