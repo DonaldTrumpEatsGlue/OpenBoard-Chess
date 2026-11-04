@@ -18,7 +18,7 @@ Computer opponents use the bundled Stockfish 19 engine for standard chess. Each 
 
 For a standalone Windows x64 desktop installer, double-click `build-openboard-desktop.bat`. The installer is written to `release/Openboard Chess Setup 1.0.0.exe`; the installed game does not require Node.js. The first installer is about 350 MB because it includes Electron and the full Stockfish engine. It is not code-signed, so Windows may show its standard unknown-publisher warning. Building it requires internet access to download packaging tools.
 
-Run `npm run test:custom-chess` to check custom move generation, captures, attacks, mirroring, undo, and promotion. Run `npm run test:large-board` to check the expanded board rules.
+Run `npm run test:custom-chess` to check custom move generation, captures, attacks, mirroring, undo, and promotion. Run `npm run test:premove-moves` to check that replacement and studio-piece premoves use their configured movements. Run `npm run test:large-board` to check the expanded board rules.
 
 The page also opens directly from `index.html`, but browser security can prevent Web Workers from running on `file://`; use the local server or desktop build for the worker-based opponent. Player profile search is a dedicated page, and account country badges use an approximate signup-time GeoIP lookup performed locally by the online server; the address is not sent to a third party or stored. VPNs, proxies, and unknown addresses can produce a missing or inaccurate country, and accounts created before this feature may have no country badge.
 

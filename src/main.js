@@ -1371,23 +1371,17 @@ function getPremoveMoves(square) {
   const piece = game.get(square);
   if (!piece || piece.color !== playerColor || !canQueuePremove()) return [];
   try {
-    const fen = game.fen().split(' ');
-    fen[1] = playerColor;
-    fen[3] = '-';
-    const premoveGame = new Chess(fen.join(' '));
-    const moves = premoveGame.moves({ square, verbose: true, legal: false });
-    if (piece.type === 'p') {
-      const file = square.charCodeAt(0) - 97;
-      const rank = Number(square.slice(square.match(/[0-9]/).index));
-      const direction = piece.color === 'w' ? 1 : -1;
-      for (const targetFile of [file - 1, file + 1]) {
-        if (targetFile < 0 || targetFile > 7) continue;
-        const target = `${String.fromCharCode(97 + targetFile)}${rank + direction}`;
-        if (game.get(target)?.color === playerColor) continue;
-        moves.push({ from: square, to: target, piece: 'p' });
-      }
-    }
-    return moves;
+    const customDefinition = customRules.customPieces.find(
+      (definition) => definition.id === customPieceBySquare.get(square),
+    );
+    return window.OpenboardPremoveMoves({
+      Chess,
+      game,
+      square,
+      color: playerColor,
+      movementPatterns: movementPatternsFor(square, piece),
+      customMovement: customDefinition?.studio ?? null,
+    });
   } catch (error) {
     console.error('Could not generate premove targets:', error);
     gameMessage.textContent = 'Could not prepare premove targets for this position.';
