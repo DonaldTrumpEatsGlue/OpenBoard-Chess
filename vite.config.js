@@ -84,6 +84,7 @@ function stockfishFiles() {
         mkdir(outputScripts, { recursive: true }),
         mkdir(outputVendor, { recursive: true }),
         mkdir(outputFlags, { recursive: true }),
+        mkdir(resolve('dist/pieces'), { recursive: true }),
       ]);
       await Promise.all([
         ...['main.js', 'variant-engine-worker.js', 'large-board-chess.js', 'piece-theme.js', 'piece-studio.js', 'sound-manifest.js', 'game-insights.js', 'learning-content.js', 'academy-content.js', 'profile-utils.js'].map((fileName) => copyFile(
@@ -91,6 +92,7 @@ function stockfishFiles() {
           resolve(outputScripts, fileName),
         )),
         cp(resolve('node_modules/flag-icons/flags/4x3'), outputFlags, { recursive: true }),
+        cp(resolve('pieces'), resolve('dist/pieces'), { recursive: true }),
         copyFile(resolve('node_modules/flag-icons/LICENSE'), resolve('dist/flags/LICENSE')),
         readFile(resolve('node_modules/chess.js/chess.js'), 'utf8')
           .then((source) => writeFile(resolve(outputVendor, 'chess.js'), patchChessSource(source))),

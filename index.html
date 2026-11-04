@@ -9,7 +9,7 @@
     <meta name="theme-color" content="#17231f" />
     <meta name="description" content="A free, original chess game with a built-in local AI opponent." />
     <title>Openboard — Play Chess</title>
-    <link rel="stylesheet" href="./src/style.css?v=59" />
+    <link rel="stylesheet" href="./src/style.css?v=60" />
   </head>
   <body>
     <div id="app">
@@ -100,6 +100,7 @@
             <label><span>Clock</span><select id="time-control" aria-label="Choose a time control"><option value="0">No clock</option><option value="60">1 min</option><option value="180">3 min</option><option value="300" selected>5 min</option><option value="600">10 min</option></select></label>
             <label id="max-engine-time-setting" hidden><span>MAX search per move</span><select id="max-engine-time" aria-label="Maximum Stockfish search time per move"><option value="30000">30 seconds</option><option value="60000">1 minute</option><option value="120000">2 minutes</option><option value="300000">5 minutes</option></select></label>
             <label><span>Board</span><select id="board-theme" aria-label="Choose a board theme"><option value="classic">Meadow</option><option value="blue">Glacier</option><option value="walnut">Walnut</option></select></label>
+            <label><span>Pieces</span><select id="piece-set" aria-label="Choose a chess piece design"><option value="classic">Classic symbols</option><option value="supplied">Openboard pieces</option></select></label>
             <label><span>Interface</span><select id="interface-theme" aria-label="Choose interface theme"><option value="dark">Night</option><option value="light">Day</option></select></label>
           </div>
           <button class="browse-bots-button" id="browse-bots" type="button"><span>Browse all opponents</span><span>63 original bots · beginner to mythic ↗</span></button>
@@ -348,6 +349,7 @@
 
         <section class="social-panel-view social-settings-view" data-social-view="settings" hidden>
           <label><span>Board colors</span><select id="dock-board-theme"><option value="classic">Meadow</option><option value="blue">Glacier</option><option value="walnut">Walnut</option></select></label>
+          <label><span>Piece design</span><select id="dock-piece-set"><option value="classic">Classic symbols</option><option value="supplied">Openboard pieces</option></select></label>
           <label><span>Interface theme</span><select id="dock-interface-theme"><option value="dark">Night</option><option value="light">Day</option></select></label>
           <label><span>Profile country and flag</span><select id="dock-country-select"><option value="">Choose a country or region</option></select></label>
           <button class="secondary-button" id="dock-country-save" type="button">Save country</button>
@@ -838,6 +840,6 @@
     <script defer src="./src/learning-content.js?v=49"></script>
     <script defer src="./src/academy-content.js?v=1"></script>
     <script defer src="./src/profile-utils.js?v=1"></script>
-    <script defer src="./src/main.js?v=78"></script>
+    <script defer src="./src/main.js?v=79"></script>
   </body>
 </html>

@@ -10,6 +10,7 @@ const timeControlSelect = document.querySelector('#time-control');
 const maxEngineTimeSelect = document.querySelector('#max-engine-time');
 const maxEngineTimeSetting = document.querySelector('#max-engine-time-setting');
 const boardThemeSelect = document.querySelector('#board-theme');
+const pieceSetSelect = document.querySelector('#piece-set');
 const interfaceThemeSelect = document.querySelector('#interface-theme');
 const soundToggle = document.querySelector('#sound-toggle');
 const messageDialog = document.querySelector('#message-dialog');
@@ -33,6 +34,7 @@ const resignConfirmDialog = document.querySelector('#resign-confirm-dialog');
 const gameOverDialog = document.querySelector('#game-over-dialog');
 const rematchOfferDialog = document.querySelector('#rematch-offer-dialog');
 const pieceTheme = window.OpenboardPieceThemes.classic;
+const pieceAssetNames = window.OpenboardPieceThemes.suppliedAssets;
 const soundManifest = window.OpenboardSoundManifest;
 const defaultAudioSettings = {
   muted: false,
@@ -554,7 +556,7 @@ function customPieceAt(square) {
   const customId = customPieceBySquare.get(square);
   if (customId) {
     const definition = customRules.customPieces.find((candidate) => candidate.id === customId);
-    if (definition) return { name: definition.name, symbol: definition.symbol };
+    if (definition) return { id: definition.id, name: definition.name, symbol: definition.symbol };
   }
   const movement = customMovementBySquare.get(square);
   if (movement) {
@@ -569,6 +571,55 @@ function customPieceAt(square) {
 
 function pieceMovementName(type) {
   return ({ q: 'Queen', r: 'Rook', b: 'Bishop', n: 'Knight', p: 'Pawn' })[type];
+}
+
+function pieceAssetFor(piece, customIdentity) {
+  if (pieceSetSelect.value !== 'supplied') return null;
+  const identity = `${customIdentity?.name ?? ''} ${customIdentity?.id ?? ''}`.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const aliases = {
+    archbis: ['archbis', 'archbishop'],
+    bpawn: ['bpawn', 'bpawn1', 'berolinapawn'],
+    bpawn2: ['bpawn2', 'berolinapawn2'],
+    chancel: ['chancel', 'chancellor'],
+    commonr: ['commonr', 'commoner'],
+    grassh: ['grassh', 'grasshopper'],
+    nightrd: ['nightrd', 'nightrider'],
+    nrking: ['nrking', 'nonroyalking'],
+    rknight: ['rknight', 'royalknight'],
+    rqueen: ['rqueen', 'royalqueen'],
+  };
+  const customAsset = pieceAssetNames
+    .filter((name) => !['king', 'queen', 'rook', 'bishop', 'knight', 'pawn'].includes(name))
+    .find((name) => (aliases[name] ?? [name]).some((alias) => identity.includes(alias)));
+  if (customAsset) return customAsset;
+  return ({ k: 'king', q: 'queen', r: 'rook', b: 'bishop', n: 'knight', p: 'pawn' })[piece.type] ?? null;
+}
+
+function createPieceElement(piece, customIdentity = null, className = 'piece') {
+  const colorName = piece.color === 'w' ? 'white-piece' : 'black-piece';
+  const asset = pieceAssetFor(piece, customIdentity);
+  if (asset) {
+    const image = document.createElement('img');
+    image.className = `${className} ${colorName} piece-image`;
+    image.src = new URL(`./pieces/${piece.color === 'w' ? 'white' : 'black'}-${asset}.png`, document.baseURI).href;
+    image.alt = '';
+    image.draggable = false;
+    image.setAttribute('aria-hidden', 'true');
+    return image;
+  }
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('class', `${className} ${colorName}`);
+  svg.setAttribute('viewBox', '0 0 100 100');
+  svg.setAttribute('focusable', 'false');
+  svg.setAttribute('aria-hidden', 'true');
+  const symbol = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+  symbol.setAttribute('x', '50');
+  symbol.setAttribute('y', '82');
+  symbol.setAttribute('text-anchor', 'middle');
+  symbol.setAttribute('font-family', pieceTheme.fontFamily);
+  symbol.textContent = customIdentity?.symbol ?? pieceTheme.symbols[piece.color][piece.type];
+  svg.append(symbol);
+  return svg;
 }
 
 function movementPatternsFor(square, piece = game.get(square)) {
@@ -1065,19 +1116,7 @@ function renderBoard() {
         button.append(target);
       }
       if (piece) {
-        const pieceElement = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-        pieceElement.setAttribute('class', `piece ${piece.color === 'w' ? 'white-piece' : 'black-piece'}`);
-        pieceElement.setAttribute('viewBox', '0 0 100 100');
-        pieceElement.setAttribute('focusable', 'false');
-        const symbol = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-        symbol.setAttribute('x', '50');
-        symbol.setAttribute('y', '82');
-        symbol.setAttribute('text-anchor', 'middle');
-        symbol.setAttribute('font-family', pieceTheme.fontFamily);
-        symbol.textContent = customIdentity?.symbol ?? pieceTheme.symbols[piece.color][piece.type];
-        pieceElement.append(symbol);
-        pieceElement.setAttribute('aria-hidden', 'true');
-        button.append(pieceElement);
+        button.append(createPieceElement(piece, customIdentity));
       }
       if (isTutorialDestination) {
         const destination = document.createElement('span');
@@ -1143,11 +1182,7 @@ function renderCapturedPieces() {
     if (!captured.length) continue;
     tray.setAttribute('aria-label', `${captured.length} ${captured.length === 1 ? 'piece' : 'pieces'} captured by ${label}`);
     for (const piece of captured) {
-      const icon = document.createElement('span');
-      icon.className = `captured-piece ${piece.color === 'w' ? 'white-piece' : 'black-piece'}`;
-      icon.textContent = pieceTheme.symbols[piece.color][piece.type];
-      icon.setAttribute('aria-hidden', 'true');
-      tray.append(icon);
+      tray.append(createPieceElement(piece, null, 'piece captured-piece'));
     }
   }
 }
@@ -3825,19 +3860,7 @@ function renderHistoryReplayBoard() {
         cell.append(fileLabel);
       }
       if (piece) {
-        const pieceElement = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-        pieceElement.setAttribute('class', `piece ${piece.color === 'w' ? 'white-piece' : 'black-piece'}`);
-        pieceElement.setAttribute('viewBox', '0 0 100 100');
-        pieceElement.setAttribute('focusable', 'false');
-        pieceElement.setAttribute('aria-hidden', 'true');
-        const symbol = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-        symbol.setAttribute('x', '50');
-        symbol.setAttribute('y', '82');
-        symbol.setAttribute('text-anchor', 'middle');
-        symbol.setAttribute('font-family', pieceTheme.fontFamily);
-        symbol.textContent = pieceTheme.symbols[piece.color][piece.type];
-        pieceElement.append(symbol);
-        cell.append(pieceElement);
+        cell.append(createPieceElement(piece));
       }
       board.append(cell);
     });
@@ -4049,6 +4072,7 @@ function openSocialPanel(panelName) {
   });
   if (panelName === 'settings') {
     document.querySelector('#dock-board-theme').value = boardThemeSelect.value;
+    document.querySelector('#dock-piece-set').value = pieceSetSelect.value;
     document.querySelector('#dock-interface-theme').value = interfaceThemeSelect.value;
     document.querySelector('#dock-sound-toggle').checked = soundToggle.checked;
     document.querySelector('#dock-country-save').disabled = !authSession?.access_token;
@@ -5733,6 +5757,7 @@ function savePreferences() {
       clock: timeControlSelect.value,
       maxEngineTime: maxEngineTimeSelect.value,
       theme: boardThemeSelect.value,
+      pieceSet: pieceSetSelect.value,
       interfaceTheme: interfaceThemeSelect.value,
       sound: soundToggle.checked,
       audioSettings,
@@ -5801,6 +5826,11 @@ boardThemeSelect.addEventListener('change', () => {
 interfaceThemeSelect.addEventListener('change', () => {
   document.body.dataset.interfaceTheme = interfaceThemeSelect.value;
   savePreferences();
+});
+pieceSetSelect.addEventListener('change', () => {
+  document.body.dataset.pieceSet = pieceSetSelect.value;
+  savePreferences();
+  renderBoard();
 });
 soundToggle.addEventListener('change', () => {
   if (!soundToggle.checked) stopActiveSound();
@@ -6143,6 +6173,10 @@ document.querySelector('#dock-board-theme').addEventListener('change', (event) =
   boardThemeSelect.value = event.target.value;
   boardThemeSelect.dispatchEvent(new Event('change', { bubbles: true }));
 });
+document.querySelector('#dock-piece-set').addEventListener('change', (event) => {
+  pieceSetSelect.value = event.target.value;
+  pieceSetSelect.dispatchEvent(new Event('change', { bubbles: true }));
+});
 document.querySelector('#dock-interface-theme').addEventListener('change', (event) => {
   interfaceThemeSelect.value = event.target.value;
   interfaceThemeSelect.dispatchEvent(new Event('change', { bubbles: true }));
@@ -6475,6 +6509,7 @@ function loadPreferences() {
   if (saved.color === 'b' || saved.color === 'w') playerColor = saved.color;
   if (['0', '60', '180', '300', '600'].includes(String(saved.clock))) timeControlSelect.value = String(saved.clock);
   if (['classic', 'blue', 'walnut'].includes(saved.theme)) boardThemeSelect.value = saved.theme;
+  if (['classic', 'supplied'].includes(saved.pieceSet)) pieceSetSelect.value = saved.pieceSet;
   if (['dark', 'light'].includes(saved.interfaceTheme)) interfaceThemeSelect.value = saved.interfaceTheme;
   if (typeof saved.sound === 'boolean') soundToggle.checked = saved.sound;
   const savedAudio = saved.audioSettings ?? {};
@@ -6561,6 +6596,7 @@ function loadPreferences() {
   playColorSelect.value = playerColor;
   flipped = playerColor === 'b';
   document.body.dataset.boardTheme = boardThemeSelect.value;
+  document.body.dataset.pieceSet = pieceSetSelect.value;
   document.body.dataset.interfaceTheme = interfaceThemeSelect.value;
   populateCustomRulesForm();
   updateCustomRulesSummary();
@@ -7101,18 +7137,7 @@ function renderAcademyStudyBoard(study, lastMove) {
         cell.append(coordinate);
       }
       if (piece) {
-        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-        svg.setAttribute('class', `piece ${piece.color === 'w' ? 'white-piece' : 'black-piece'}`);
-        svg.setAttribute('viewBox', '0 0 100 100');
-        svg.setAttribute('aria-hidden', 'true');
-        const symbol = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-        symbol.setAttribute('x', '50');
-        symbol.setAttribute('y', '82');
-        symbol.setAttribute('text-anchor', 'middle');
-        symbol.setAttribute('font-family', pieceTheme.fontFamily);
-        symbol.textContent = pieceTheme.symbols[piece.color][piece.type];
-        svg.append(symbol);
-        cell.append(svg);
+        cell.append(createPieceElement(piece));
       }
       board.append(cell);
     }
@@ -7447,18 +7472,7 @@ function renderAcademyPuzzleBoard(boardElement) {
         cell.append(target);
       }
       if (piece) {
-        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-        svg.setAttribute('class', `piece ${piece.color === 'w' ? 'white-piece' : 'black-piece'}`);
-        svg.setAttribute('viewBox', '0 0 100 100');
-        svg.setAttribute('aria-hidden', 'true');
-        const symbol = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-        symbol.setAttribute('x', '50');
-        symbol.setAttribute('y', '82');
-        symbol.setAttribute('text-anchor', 'middle');
-        symbol.setAttribute('font-family', pieceTheme.fontFamily);
-        symbol.textContent = pieceTheme.symbols[piece.color][piece.type];
-        svg.append(symbol);
-        cell.append(svg);
+        cell.append(createPieceElement(piece));
       }
       cell.addEventListener('click', () => {
         const puzzleStatus = document.querySelector('#academy-puzzle-status');
@@ -7529,18 +7543,7 @@ function renderAcademyExerciseBoard(boardElement, game, selectedSquare, onSquare
         cell.append(coordinate);
       }
       if (piece) {
-        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-        svg.setAttribute('class', `piece ${piece.color === 'w' ? 'white-piece' : 'black-piece'}`);
-        svg.setAttribute('viewBox', '0 0 100 100');
-        svg.setAttribute('aria-hidden', 'true');
-        const symbol = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-        symbol.setAttribute('x', '50');
-        symbol.setAttribute('y', '82');
-        symbol.setAttribute('text-anchor', 'middle');
-        symbol.setAttribute('font-family', pieceTheme.fontFamily);
-        symbol.textContent = pieceTheme.symbols[piece.color][piece.type];
-        svg.append(symbol);
-        cell.append(svg);
+        cell.append(createPieceElement(piece));
       }
       cell.addEventListener('click', () => onSquare(square, game.get(square), legalTargets.has(square)));
       boardElement.append(cell);
