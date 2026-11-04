@@ -54,6 +54,14 @@ try {
   assert.equal(attackGame.is_attacked('g7', 'w'), true);
   assert.equal(attackGame.in_check(), true, 'custom movement must participate in check detection');
 
+  const replacementAttackGame = new Chess();
+  assert.equal(replacementAttackGame.load('8/8/8/8/3R4/8/8/4k2K b - - 0 1'), true);
+  replacementAttackGame.setCustomMovement('d4', custom([{ dx: 1, dy: 2 }], { movementType: 'leap', jump: true }));
+  assert.equal(replacementAttackGame.is_attacked('e4', 'w'), false,
+    'a custom piece must not retain its carrier rook attacks');
+  assert.equal(replacementAttackGame.is_attacked('e6', 'w'), true,
+    'a custom piece must attack using its Studio movement');
+
   const attackOnlyGame = new Chess();
   assert.equal(attackOnlyGame.load('8/6k1/5R2/8/8/8/8/7K w - - 0 1'), true);
   attackOnlyGame.setCustomMovement('f6', custom([{ dx: 1, dy: 1, mode: 'attack' }]));

@@ -529,6 +529,47 @@ body[data-interface-theme="light"] .history-replay-move:hover, body[data-interfa
 .promotion-choices button:hover { color: var(--lime); background: #ffffff12; }
 #bot-directory { width: min(780px, calc(100% - 28px)); max-height: min(85vh, 760px); padding: 24px; }
 #custom-rules-dialog { width: min(570px, calc(100% - 28px)); max-height: min(90vh, 780px); overflow: auto; }
+#position-editor-dialog { width: min(1080px, calc(100% - 24px)); max-width: 1080px; max-height: min(94vh, 900px); padding: 0; overflow: auto; }
+.position-editor { padding: clamp(14px, 2.4vw, 25px); }
+.position-editor .directory-header { margin-bottom: 12px; }
+.position-editor-layout { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(290px, .85fr); gap: 20px; align-items: start; }
+.position-editor-board-column { position: sticky; top: 0; }
+.position-editor-board { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); aspect-ratio: 1; overflow: hidden; border-radius: 9px; box-shadow: 0 16px 38px #0005; }
+.position-editor-square { display: grid; min-width: 0; aspect-ratio: 1; place-items: center; padding: 0; border: 0; color: #17231f; background: var(--light-square); font-size: clamp(24px, 5vw, 55px); line-height: 1; cursor: pointer; }
+.position-editor-square.dark { background: var(--dark-square); }
+.position-editor-square.selected { box-shadow: inset 0 0 0 4px var(--lime); }
+.position-editor-square.drag-over { box-shadow: inset 0 0 0 4px #f4d35e; }
+.position-editor-square .white-piece { color: #fffef4; -webkit-text-stroke: 1px #343a32; text-shadow: 0 2px 3px #0007; }
+.position-editor-square .black-piece { color: #242a25; -webkit-text-stroke: 1px #111; text-shadow: 0 2px 2px #fff3; }
+.position-editor-preview { display: grid; gap: 5px; padding: 10px 2px 0; color: var(--muted); font-size: 10px; }
+.position-editor-preview strong { color: #eaf0e8; font-size: 11px; }
+.position-editor-tools { display: grid; gap: 10px; max-height: min(75vh, 760px); overflow: auto; padding: 1px 5px 5px 0; }
+.position-tool-section { display: grid; gap: 8px; padding: 11px; border: 1px solid #ffffff16; border-radius: 9px; background: #ffffff05; }
+.position-tool-section h3, .position-tool-section summary { margin: 0; color: #eaf0e8; font-size: 11px; font-weight: 700; }
+.position-tool-section summary { cursor: pointer; }
+.position-piece-palette { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 5px; }
+.position-custom-piece-section, .position-studio-piece-section { display: grid; gap: 6px; }
+.position-custom-piece-section h4 { margin: 0; color: var(--muted); font-size: 9px; }
+.position-custom-piece-option { font-size: clamp(16px, 2.4vw, 25px); }
+.position-piece-option { display: grid; min-width: 0; aspect-ratio: 1; place-items: center; border: 1px solid #ffffff18; border-radius: 7px; color: #eaf0e8; background: #ffffff08; font-size: clamp(22px, 3vw, 31px); cursor: pointer; }
+.position-piece-option[aria-pressed="true"] { border-color: var(--lime); background: #c8e36a1c; box-shadow: 0 0 0 1px var(--lime); }
+.position-tool-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.position-tool-grid button, .position-tool-section > button { min-height: 33px; padding: 5px 8px; border-radius: 6px; font-size: 9px; cursor: pointer; }
+.position-tool-section .rule-field input, .position-tool-section .rule-field select, #position-fen { width: 100%; }
+.position-tool-section textarea { resize: vertical; border: 1px solid #ffffff1b; border-radius: 7px; color: #eaf0e8; background: #101914; font: 10px/1.5 monospace; }
+.position-save-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
+.position-save-row input { min-width: 0; height: 33px; padding: 0 8px; border: 1px solid #ffffff1b; border-radius: 6px; color: #eaf0e8; background: #101914; font-size: 10px; }
+.position-save-row button { min-height: 33px; padding: 0 10px; border-radius: 6px; font-size: 9px; cursor: pointer; }
+.position-castling { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; color: var(--muted); font-size: 9px; }
+.position-castling > span { grid-column: 1 / -1; color: #eaf0e8; font-weight: 700; }
+.position-castling label { display: flex; align-items: center; gap: 5px; }
+.position-castling input { accent-color: var(--lime); }
+.position-editor-status { min-height: 16px; margin: 12px 0 5px; color: #c8e36a; font-size: 10px; line-height: 1.5; }
+.position-editor-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.position-editor-actions button { min-height: 38px; padding: 0 12px; border-radius: 7px; font-size: 10px; cursor: pointer; }
+body[data-interface-theme="light"] #position-editor-dialog { color: #27382d; background: #fafbf5; }
+body[data-interface-theme="light"] .position-tool-section h3, body[data-interface-theme="light"] .position-tool-section summary,
+body[data-interface-theme="light"] .position-editor-preview strong { color: #27382d; }
 .custom-rules-form { display: grid; gap: 13px; }
 .custom-rules-form > p { margin: -8px 0 2px; color: var(--muted); font-size: 11px; line-height: 1.6; }
 .rule-toggle { display: flex; align-items: flex-start; gap: 10px; padding: 12px; border: 1px solid #ffffff16; border-radius: 9px; background: #ffffff05; cursor: pointer; }
@@ -1229,4 +1270,20 @@ body[data-interface-theme="light"] .academy-move-note { color: #344539 !importan
   .studio-piece-list {
     max-height: 220px;
   }
+}
+
+@media (max-width: 760px) {
+  #position-editor-dialog { width: min(620px, calc(100% - 16px)); max-height: 96vh; }
+  .position-editor-layout { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .position-editor-board-column { position: static; }
+  .position-editor-board { width: min(100%, 560px); margin: 0 auto; }
+  .position-editor-tools { grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: none; overflow: visible; }
+  .position-tool-section { align-content: start; }
+}
+
+@media (max-width: 480px) {
+  .position-editor { padding: 11px; }
+  .position-editor-tools { grid-template-columns: 1fr; }
+  .position-editor-square { font-size: clamp(20px, 9vw, 40px); }
+  .position-piece-option { font-size: 24px; }
 }

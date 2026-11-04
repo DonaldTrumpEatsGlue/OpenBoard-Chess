@@ -17,6 +17,7 @@ const messageDialog = document.querySelector('#message-dialog');
 const botDirectory = document.querySelector('#bot-directory');
 const botDirectoryGrid = document.querySelector('#bot-directory-grid');
 const customRulesDialog = document.querySelector('#custom-rules-dialog');
+const positionEditorDialog = document.querySelector('#position-editor-dialog');
 const soundSettingsDialog = document.querySelector('#sound-settings-dialog');
 const onlineDialog = document.querySelector('#online-dialog');
 const accountDialog = document.querySelector('#account-dialog');
@@ -157,6 +158,7 @@ let flipped = false;
 let aiThinking = false;
 let gameToken = 0;
 let activeWorker = null;
+let activeWorkerWatchdog = null;
 let playerColor = 'w';
 let gameResult = false;
 let analysisMode = false;
@@ -251,6 +253,8 @@ let activeHistoryType = 'offline';
 let historyReplayGame = null;
 let historyReplayInitialFen = '';
 let historyReplayMoves = [];
+let historyReplayPositionSnapshots = [];
+let historyReplayVariant = null;
 let historyReplayIndex = 0;
 let historyReplayTimer = null;
 let historyReplayFlipped = false;
@@ -314,10 +318,33 @@ const defaultCustomRules = {
   customPieces: [],
 };
 let customRules = JSON.parse(JSON.stringify(defaultCustomRules));
+const standardStartingFen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+const savedPositionsStorageKey = 'openboard-saved-positions-v1';
+let selectedStartingFen = '';
+let selectedStartingPieceIds = {};
+let lobbyStartingFen = null;
+let lobbyStartingPieceIds = null;
+let activeInitialFen = '';
+let activeInitialPieceIds = null;
+let positionEditorContext = 'game';
+let positionEditorBoard = window.OpenboardPositionSetup.standardBoard();
+let positionEditorPieceIds = {};
+let positionEditorTurn = 'w';
+let positionEditorCastling = 'KQkq';
+let positionEditorEnPassant = '';
+let positionEditorHalfmove = 0;
+let positionEditorFullmove = 1;
+let positionEditorFlipped = false;
+let positionEditorTool = null;
+let positionEditorSource = null;
+let positionEditorUndo = [];
+let positionEditorRedo = [];
+let positionEditorLastValidation = null;
 let editingPieceMovements = JSON.parse(JSON.stringify(defaultCustomRules.pieceMovements));
 let customMovementBySquare = new Map();
 let customPieceBySquare = new Map();
 let customIdentityHistory = [];
+let gamePositionSnapshots = [];
 let editingCustomPieces = [];
 const legalMoveCache = new Map();
 
@@ -328,7 +355,15 @@ function isCheck() { return variantIsInCheck(game.turn()); }
 function isCheckmate() { return isCheck() && getLegalMoves().length === 0; }
 function isStalemate() { return !isCheck() && getLegalMoves().length === 0; }
 function isThreefoldRepetition() { return !customRules.noDraws && game.in_threefold_repetition(); }
-function isInsufficientMaterial() { return !customRules.noDraws && game.insufficient_material(); }
+function hasCustomMaterial() { return customMovementBySquare.size > 0 || customPieceBySquare.size > 0; }
+function isInsufficientMaterial() {
+  return !customRules.noDraws && !hasCustomMaterial() && game.insufficient_material();
+}
+function clearActiveWorkerWatchdog() {
+  if (activeWorkerWatchdog === null) return;
+  window.clearTimeout(activeWorkerWatchdog);
+  activeWorkerWatchdog = null;
+}
 function isDraw() {
   return !customRules.noDraws && (Number(game.fen().split(' ')[4]) >= 100
     || isInsufficientMaterial()
@@ -387,6 +422,13 @@ function offlineGameHistoryStorageKey() {
   return `${offlineGameHistoryStoragePrefix}-${offlineRatingKey()}`;
 }
 
+function encodePgnMetadata(value) {
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
 function recordOfflineMatch(score, termination) {
   if (onlineMode || onlineSpectating || analysisMode || puzzleMode || practiceGame
     || (!game.history().length && termination !== 'resignation')) return;
@@ -404,7 +446,17 @@ function recordOfflineMatch(score, termination) {
       result,
       termination,
       pgn: game.pgn(),
+      initialFen: activeInitialFen || standardStartingFen,
+      initialPieceIds: structuredClone(activeInitialPieceIds ?? {}),
       variant: structuredClone(customRules),
+      moves: game.history({ verbose: true }).map((move) => ({
+        color: move.color,
+        from: move.from,
+        to: move.to,
+        promotion: move.promotion,
+        san: move.san,
+      })),
+      positionSnapshots: structuredClone(gamePositionSnapshots),
     });
     localStorage.setItem(storageKey, JSON.stringify(matches.slice(0, 100)));
   } catch (error) {
@@ -508,12 +560,19 @@ function makeGameMove(move, prevalidated = false) {
     moveIdentity(customPieceBySquare, rookFrom, rookTo);
   }
   snapshotCustomIdentity();
+  gamePositionSnapshots.push({
+    fen: game.fen(),
+    pieceIds: Object.fromEntries(customPieceBySquare),
+  });
   return result;
 }
 
 function undoGameMove() {
   const result = game.undo();
-  if (result) customIdentityHistory.pop();
+  if (result) {
+    customIdentityHistory.pop();
+    gamePositionSnapshots.pop();
+  }
   restoreCustomIdentity();
   return result;
 }
@@ -529,7 +588,13 @@ function configureStartingPosition() {
       const square = `${String.fromCharCode(97 + file)}${rank}`;
       const piece = game.get(square);
       if (!piece || piece.type === 'k') continue;
-      const customDefinition = customRules.customPieces.find((candidate) => candidate.replaces === piece.type
+      const explicitDefinition = customRules.customPieces.find((candidate) => (
+        candidate.id === activeInitialPieceIds?.[square]
+        && (candidate.color === 'both' || candidate.color === piece.color)
+        && (candidate.studio || candidate.replaces === piece.type)
+      ));
+      const customDefinition = explicitDefinition ?? customRules.customPieces.find((candidate) => !candidate.directOnly
+        && candidate.replaces === piece.type
         && (!candidate.color || candidate.color === 'both' || candidate.color === piece.color));
       if (customDefinition?.studio) {
         customPieceBySquare.set(square, customDefinition.id);
@@ -550,6 +615,18 @@ function configureStartingPosition() {
   }
   customIdentityHistory = [];
   snapshotCustomIdentity();
+  gamePositionSnapshots = [{
+    fen: game.fen(),
+    pieceIds: Object.fromEntries(customPieceBySquare),
+  }];
+  const customVariant = customRules.customPieces.length
+    || customRules.noDraws
+    || customRules.boardSize !== 8
+    || JSON.stringify(customRules.pieceMovements) !== JSON.stringify(defaultCustomRules.pieceMovements);
+  if (customVariant || Object.keys(activeInitialPieceIds ?? {}).length) {
+    game.header('OpenboardVariant', encodePgnMetadata(customRules));
+    game.header('OpenboardPieceIds', encodePgnMetadata(activeInitialPieceIds ?? {}));
+  }
 }
 
 function customPieceAt(square) {
@@ -574,7 +651,7 @@ function pieceMovementName(type) {
 }
 
 function pieceAssetFor(piece, customIdentity) {
-  if (pieceSetSelect.value !== 'supplied') return null;
+  if (customIdentity?.symbol || pieceSetSelect.value !== 'supplied') return null;
   const identity = `${customIdentity?.name ?? ''} ${customIdentity?.id ?? ''}`.toLowerCase().replace(/[^a-z0-9]/g, '');
   const aliases = {
     archbis: ['archbis', 'archbishop'],
@@ -647,15 +724,26 @@ function isPawnIdentity(square) {
 }
 
 function variantIsInCheck(color) {
+  const kingSquares = [];
   const board = game.board();
-  let kingSquare = null;
   for (let row = 0; row < board.length; row += 1) {
     for (let col = 0; col < board[row].length; col += 1) {
-      if (board[row][col]?.type === 'k' && board[row][col].color === color) kingSquare = squareAt(row, col);
+      if (board[row][col]?.type === 'k' && board[row][col].color === color) kingSquares.push(squareAt(row, col));
     }
   }
-  if (!kingSquare) return true;
-  return variantSquareAttacked(kingSquare, color === 'w' ? 'b' : 'w');
+  if (!kingSquares.length) return true;
+  const attackerColor = color === 'w' ? 'b' : 'w';
+  return kingSquares.some((kingSquare) => variantSquareAttacked(kingSquare, attackerColor));
+}
+
+function variantKingSquaresInCheck(color) {
+  const board = game.board();
+  const attackerColor = color === 'w' ? 'b' : 'w';
+  return board.flatMap((rank, row) => rank.flatMap((piece, col) => {
+    if (piece?.type !== 'k' || piece.color !== color) return [];
+    const square = squareAt(row, col);
+    return variantSquareAttacked(square, attackerColor) ? [square] : [];
+  }));
 }
 
 function variantSquareAttacked(square, attackerColor) {
@@ -666,6 +754,9 @@ function variantSquareAttacked(square, attackerColor) {
       const piece = board[row][col];
       if (!piece || piece.color !== attackerColor) continue;
       const from = squareAt(row, col);
+      if (customRules.customPieces.some((definition) => (
+        definition.id === customPieceBySquare.get(from) && definition.studio
+      ))) continue;
       if (movementPatternsFor(from, piece).some((pattern) => attacksSquare(from, square, piece.color, pattern))) return true;
     }
   }
@@ -731,6 +822,7 @@ function getLegalMoves(options = {}) {
       }
       const candidates = game.moves({ square, verbose: true });
       for (const candidate of candidates) {
+        if (game.get(candidate.to)?.type === 'k') continue;
         if (candidate.flags.includes('k') || candidate.flags.includes('q')) {
           if (variantIsInCheck(candidate.color)) continue;
           const rank = candidate.color === 'w' ? '1' : String(game.board().length);
@@ -903,6 +995,9 @@ function renderCustomPieceEditor() {
     row.dataset.customSymbol = piece.symbol;
     row.dataset.customMovements = JSON.stringify(piece.movements);
     row.dataset.customStudio = piece.studio ? JSON.stringify(piece.studio) : '';
+    row.dataset.customReplaces = piece.replaces;
+    row.dataset.customColor = piece.color ?? 'both';
+    row.dataset.customDirectOnly = String(piece.directOnly === true);
     const identity = document.createElement('div');
     identity.className = 'custom-piece-identity';
     const symbol = document.createElement('span');
@@ -911,10 +1006,12 @@ function renderCustomPieceEditor() {
     const name = document.createElement('strong');
     name.textContent = piece.name;
     const source = document.createElement('small');
-    source.textContent = 'Designed in Custom Piece Studio';
+    source.textContent = piece.directOnly
+      ? 'Place directly from the Studio palette; no replacement required'
+      : 'Designed in Custom Piece Studio';
     identity.append(symbol, name, source);
     row.append(identity);
-    const selects = [
+    const selects = piece.directOnly ? [] : [
       { title: 'Replaces', key: 'replaces', value: piece.replaces, options: [['p', 'Pawns'], ['n', 'Knights'], ['b', 'Bishops'], ['r', 'Rooks'], ['q', 'Queens']] },
       { title: 'Applies to', key: 'color', value: piece.color ?? 'both', options: [['both', 'Both sides'], ['w', 'White'], ['b', 'Black']] },
     ];
@@ -1012,15 +1109,16 @@ function readCustomPieceRows() {
     name: row.dataset.customName,
     symbol: row.dataset.customSymbol,
     movements: JSON.parse(row.dataset.customMovements),
-    replaces: row.querySelector('[data-custom-replaces]').value,
-    color: row.querySelector('[data-custom-color]').value,
+    replaces: row.querySelector('[data-custom-replaces]')?.value ?? row.dataset.customReplaces,
+    color: row.querySelector('[data-custom-color]')?.value ?? row.dataset.customColor,
+    ...(row.dataset.customDirectOnly === 'true' ? { directOnly: true } : {}),
     ...(row.dataset.customStudio ? { studio: JSON.parse(row.dataset.customStudio) } : {}),
   }));
 }
 
 function readCustomRulesForm() {
   const customPieces = readCustomPieceRows();
-  const replacementKeys = customPieces.flatMap((piece) => piece.color === 'both'
+  const replacementKeys = customPieces.filter((piece) => !piece.directOnly).flatMap((piece) => piece.color === 'both'
     ? [`${piece.replaces}:w`, `${piece.replaces}:b`]
     : [`${piece.replaces}:${piece.color}`]);
   if (new Set(replacementKeys).size !== replacementKeys.length) {
@@ -1063,6 +1161,7 @@ function renderBoard() {
   boardElement.replaceChildren();
   const gameOver = tutorialDemoGame ? displayGame.game_over() : isGameOver();
   const currentCheck = tutorialDemoGame ? displayGame.in_check() : isCheck();
+  const checkedKingSquares = tutorialDemoGame ? [] : variantKingSquaresInCheck(displayGame.turn());
   const lastMoveTo = displayGame.history({ verbose: true }).at(-1)?.to;
   const selectedMoves = selectedSquare && !tutorialDemoGame
     ? (premoveWindow ? getPremoveMoves(selectedSquare) : getLegalMoves({ square: selectedSquare }))
@@ -1109,7 +1208,7 @@ function renderBoard() {
       if (selectedSquare === square) button.classList.add('selected');
       if (pendingPremove?.from === square) button.classList.add('premove-from');
       if (pendingPremove?.to === square) button.classList.add('premove-to');
-      if (currentCheck && piece?.type === 'k' && piece.color === displayGame.turn()) button.classList.add('in-check');
+      if (currentCheck && checkedKingSquares.includes(square)) button.classList.add('in-check');
       if (isLegalDestination) {
         const target = document.createElement('span');
         target.className = piece || isCaptureDestination ? 'move-target capture-target' : 'move-target';
@@ -1530,7 +1629,7 @@ function search(depth, alpha, beta) {
     if (isCheck() || customRules.noDraws) return game.turn() === 'w' ? -100000 : 100000;
     return 0;
   }
-  if (!customRules.noDraws && (Number(game.fen().split(' ')[4]) >= 100 || game.insufficient_material())) return 0;
+  if (!customRules.noDraws && (Number(game.fen().split(' ')[4]) >= 100 || isInsufficientMaterial())) return 0;
   if (depth === 0) return evaluateMaterialPosition();
   moves.sort((a, b) => moveOrderScore(b) - moveOrderScore(a));
   const maximizing = game.turn() === 'w';
@@ -1636,7 +1735,7 @@ function requestBotMove(bot, token) {
       practiceOpeningOnBook = false;
     }
   }
-  const needsVariantSearch = activeBoardSize > 8 || customRules.customPieces.length > 0
+  const needsVariantSearch = activeBoardSize > 8 || hasMultipleKings() || customRules.customPieces.length > 0
     || Object.entries(customRules.pieceMovements).some(([piece, sides]) => ['w', 'b'].some((color) => {
       const movements = Array.isArray(sides) ? sides : sides?.[color] ?? [piece];
       return movements.length !== 1 || movements[0] !== piece;
@@ -1645,12 +1744,17 @@ function requestBotMove(bot, token) {
     applyFallbackMove(bot, token);
     return;
   }
+  let worker;
   try {
-    const worker = new Worker(new URL('./stockfish/stockfish-19-single.js', document.baseURI));
+    worker = new Worker(new URL('./stockfish/stockfish-19-single.js', document.baseURI));
     activeWorker = worker;
     let configured = false;
     let searchStarted = false;
+    const requestedSearchMs = bot.unrestricted
+      ? Number(maxEngineTimeSelect.value) || 30000
+      : Math.max(300, bot.thinkMs || 450);
     const finishSearch = (uciMove) => {
+      clearActiveWorkerWatchdog();
       if (activeWorker === worker) {
         worker.terminate();
         activeWorker = null;
@@ -1680,6 +1784,7 @@ function requestBotMove(bot, token) {
     };
     worker.onmessage = ({ data }) => {
       if (token !== gameToken || isGameOver() || gameResult) {
+        clearActiveWorkerWatchdog();
         if (activeWorker === worker) {
           worker.terminate();
           activeWorker = null;
@@ -1716,6 +1821,7 @@ function requestBotMove(bot, token) {
       if (bestMove) finishSearch(bestMove[1]);
     };
     worker.onerror = (error) => {
+      clearActiveWorkerWatchdog();
       if (activeWorker === worker) {
         worker.terminate();
         activeWorker = null;
@@ -1723,8 +1829,30 @@ function requestBotMove(bot, token) {
       if (token !== gameToken || isGameOver() || gameResult) return;
       reportStockfishFailure(error, bot, token);
     };
+    activeWorkerWatchdog = window.setTimeout(() => {
+      if (token !== gameToken || activeWorker !== worker || gameResult) {
+        clearActiveWorkerWatchdog();
+        return;
+      }
+      clearActiveWorkerWatchdog();
+      worker.terminate();
+      activeWorker = null;
+      gameMessage.textContent = 'Stockfish is taking longer than expected; switching to the local engine…';
+      renderBoard();
+      applyFallbackMove({
+        ...bot,
+        depth: Math.min(bot.depth || 2, 3),
+        thinkMs: 2500,
+        maxNodes: 30000,
+      }, token);
+    }, Math.max(15000, requestedSearchMs + 10000));
     worker.postMessage('uci');
   } catch (error) {
+    clearActiveWorkerWatchdog();
+    if (worker && activeWorker === worker) {
+      worker.terminate();
+      activeWorker = null;
+    }
     reportStockfishFailure(error, bot, token);
   }
 }
@@ -1739,14 +1867,15 @@ function applyFallbackMove(bot, token) {
       worker = new Worker(new URL('./src/variant-engine-worker.js', document.baseURI));
       activeWorker = worker;
     } catch (error) {
-      console.error('The custom-variant engine could not start:', error);
+      console.error('The local engine could not start:', error);
       aiThinking = false;
-      gameMessage.textContent = 'The custom-variant engine could not start. Reload the page and try again.';
+      gameMessage.textContent = 'The local engine could not start. Reload the page and try again.';
       renderBoard();
       return;
     }
 
     const stopWorker = () => {
+      clearActiveWorkerWatchdog();
       if (activeWorker === worker) {
         worker.terminate();
         activeWorker = null;
@@ -1755,9 +1884,35 @@ function applyFallbackMove(bot, token) {
     const failWorker = (error) => {
       stopWorker();
       if (token !== gameToken || gameResult) return;
-      console.error('The custom-variant engine could not complete its move:', error);
+      console.error('The local engine could not complete its move:', error);
+      const reason = String(error?.message || error || 'Unknown worker error').slice(0, 160);
+      const legalMoves = getLegalMoves().sort((left, right) => moveOrderScore(right) - moveOrderScore(left));
+      let appliedMove = null;
+      for (const move of legalMoves) {
+        try {
+          appliedMove = makeGameMove(move, true);
+          break;
+        } catch (fallbackError) {
+          console.error('A legal fallback move could not be applied:', fallbackError);
+        }
+      }
+      if (appliedMove) {
+        try {
+          recordMoveInsight(appliedMove, analyzeMoveQuality(appliedMove));
+        } catch (insightError) {
+          console.error('Could not record the fallback move insight:', insightError);
+        }
+        playMoveSound(appliedMove, 'opponent');
+        registerClockMove();
+        finishBotTurn();
+        gameMessage.textContent = `The local engine failed (${reason}); legal fallback move ${appliedMove.san} was played.`;
+        renderBoard();
+        return;
+      }
       aiThinking = false;
-      gameMessage.textContent = 'The custom-variant engine could not complete its move. Try another bot or reload the page.';
+      gameMessage.textContent = legalMoves.length
+        ? `The engine stopped and a fallback move could not be applied (${reason}).`
+        : `The engine stopped and no legal move is available (${reason}).`;
       renderBoard();
     };
 
@@ -1767,15 +1922,15 @@ function applyFallbackMove(bot, token) {
         return;
       }
       if (data.type === 'info') {
-        gameMessage.textContent = `Custom-variant search · depth ${data.depth} · ${Number(data.totalNodes).toLocaleString()} nodes`;
+        gameMessage.textContent = `Local engine search · depth ${data.depth} · ${Number(data.totalNodes).toLocaleString()} nodes`;
         return;
       }
       if (data.type === 'error') {
-        failWorker(new Error(data.error));
+        failWorker(new Error(data.error || 'The worker reported an unspecified error.'));
         return;
       }
       if (data.type !== 'bestmove' || !data.move) {
-        failWorker(new Error('The custom-variant engine returned no move.'));
+        failWorker(new Error('The local engine returned no move.'));
         return;
       }
       stopWorker();
@@ -1798,6 +1953,13 @@ function applyFallbackMove(bot, token) {
     };
     worker.onerror = (error) => failWorker(error);
     try {
+      activeWorkerWatchdog = window.setTimeout(() => {
+        if (token !== gameToken || activeWorker !== worker) {
+          clearActiveWorkerWatchdog();
+          return;
+        }
+        failWorker(new Error('The local engine worker timed out.'));
+      }, 10000);
       worker.postMessage({
         command: 'search',
         id: token,
@@ -3813,6 +3975,8 @@ function closeHistoryReplay() {
   historyReplayGame = null;
   historyReplayInitialFen = '';
   historyReplayMoves = [];
+  historyReplayPositionSnapshots = [];
+  historyReplayVariant = null;
   historyReplayIndex = 0;
   historyReplayFlipped = false;
 }
@@ -3833,13 +3997,17 @@ function renderHistoryReplayBoard() {
     cols.forEach((file, colIndex) => {
       const square = `${String.fromCharCode(97 + file)}${size - rank}`;
       const piece = historyReplayGame.get(square);
+      const customPieceId = historyReplayPositionSnapshots[historyReplayIndex]?.pieceIds?.[square];
+      const customPiece = historyReplayVariant?.customPieces?.find((candidate) => candidate.id === customPieceId);
       const cell = document.createElement('button');
       cell.type = 'button';
       cell.className = `square ${(rank + file) % 2 === 0 ? 'light' : 'dark'}`;
       cell.dataset.square = square;
       cell.disabled = true;
       cell.setAttribute('role', 'gridcell');
-      cell.setAttribute('aria-label', `${square}${piece ? `, ${piece.color === 'w' ? 'white' : 'black'} ${piece.type}` : ''}`);
+      cell.setAttribute('aria-label', `${square}${piece
+        ? `, ${piece.color === 'w' ? 'white' : 'black'} ${customPiece?.name ?? piece.type}`
+        : ''}`);
       if (lastMove?.from === square || lastMove?.to === square) cell.classList.add('last-move');
       if (colIndex === 0) {
         const rankLabel = document.createElement('span');
@@ -3854,7 +4022,7 @@ function renderHistoryReplayBoard() {
         cell.append(fileLabel);
       }
       if (piece) {
-        cell.append(createPieceElement(piece));
+        cell.append(createPieceElement(piece, customPiece));
       }
       board.append(cell);
     });
@@ -3915,6 +4083,12 @@ function setHistoryReplayPosition(index) {
   stopHistoryReplay();
   historyReplayIndex = Math.max(0, Math.min(historyReplayMoves.length, index));
   document.querySelector('#history-replay-error').textContent = '';
+  if (historyReplayPositionSnapshots.length === historyReplayMoves.length + 1) {
+    const snapshot = historyReplayPositionSnapshots[historyReplayIndex];
+    historyReplayGame = new Chess(snapshot.fen);
+    renderHistoryReplay();
+    return;
+  }
   const fullGame = new Chess(historyReplayInitialFen);
   for (let moveIndex = 0; moveIndex < historyReplayIndex; moveIndex += 1) {
     const move = historyReplayMoves[moveIndex];
@@ -3931,9 +4105,44 @@ function openHistoryReplay(match, label) {
   historyReplayMoves = [];
   historyReplayGame = null;
   historyReplayInitialFen = '';
+  historyReplayPositionSnapshots = [];
+  historyReplayVariant = null;
   historyReplayIndex = 0;
   document.querySelector('#history-replay-title').textContent = label;
   document.querySelector('#history-replay-error').textContent = '';
+  historyReplayVariant = match.variant && typeof match.variant === 'object'
+    && Array.isArray(match.variant.customPieces)
+    ? structuredClone(match.variant)
+    : null;
+  if (Array.isArray(match.positionSnapshots)
+    && Array.isArray(match.moves)
+    && match.positionSnapshots.length === match.moves.length + 1
+    && match.positionSnapshots.every((snapshot) => typeof snapshot?.fen === 'string'
+      && snapshot.pieceIds && typeof snapshot.pieceIds === 'object')
+    && match.moves.every((move) => typeof move?.from === 'string'
+      && typeof move.to === 'string'
+      && typeof move.san === 'string'
+      && (move.color === 'w' || move.color === 'b'))) {
+    try {
+      match.positionSnapshots.forEach((snapshot) => new Chess(snapshot.fen));
+    } catch (error) {
+      document.querySelector('#history-replay-error').textContent =
+        `This saved game's position history is invalid: ${error.message}`;
+      document.querySelector('#history-replay').hidden = false;
+      document.querySelector('#history-list').hidden = true;
+      return;
+    }
+    historyReplayMoves = match.moves;
+    historyReplayPositionSnapshots = match.positionSnapshots;
+    historyReplayIndex = 0;
+    historyReplayGame = new Chess(historyReplayPositionSnapshots[0].fen);
+    historyReplayInitialFen = historyReplayPositionSnapshots[0].fen;
+    historyReplayFlipped = false;
+    document.querySelector('#history-replay').hidden = false;
+    document.querySelector('#history-list').hidden = true;
+    renderHistoryReplay();
+    return;
+  }
   const replayGame = new Chess();
   if (!replayGame.load_pgn(match.pgn)) {
     const error = document.querySelector('#history-replay-error');
@@ -3966,6 +4175,13 @@ function playHistoryReplay() {
   historyReplayTimer = setInterval(() => {
     if (historyReplayIndex >= historyReplayMoves.length) {
       stopHistoryReplay();
+      renderHistoryReplay();
+      return;
+    }
+    if (historyReplayPositionSnapshots.length === historyReplayMoves.length + 1) {
+      historyReplayIndex += 1;
+      historyReplayGame = new Chess(historyReplayPositionSnapshots[historyReplayIndex].fen);
+      if (historyReplayIndex === historyReplayMoves.length) stopHistoryReplay();
       renderHistoryReplay();
       return;
     }
@@ -4300,11 +4516,20 @@ document.addEventListener('keydown', (event) => {
 });
 
 function isCustomVariantActive() {
-  return customRules.boardSize !== 8 || customRules.noDraws || customRules.customPieces.length > 0
+  return hasMultipleKings()
+    || customRules.boardSize !== 8 || customRules.noDraws || customRules.customPieces.length > 0
     || Object.entries(customRules.pieceMovements).some(([piece, sides]) => ['w', 'b'].some((color) => {
       const movements = Array.isArray(sides) ? sides : sides?.[color] ?? [piece];
       return movements.length !== 1 || movements[0] !== piece;
     }));
+}
+
+function hasMultipleKings() {
+  const kingCounts = { w: 0, b: 0 };
+  game.board().flat().forEach((piece) => {
+    if (piece?.type === 'k') kingCounts[piece.color] += 1;
+  });
+  return kingCounts.w > 1 || kingCounts.b > 1;
 }
 
 function configureOnlineControls(active, spectating = false) {
@@ -4338,6 +4563,8 @@ function configureOnlineControls(active, spectating = false) {
   document.querySelector('#undo').disabled = active;
   document.querySelector('#redo').disabled = active;
   document.querySelector('#custom-rules-open').disabled = active;
+  document.querySelector('#position-editor-open').disabled = active;
+  document.querySelector('#online-position-editor-open').disabled = active && (onlineReady || spectating);
   document.querySelector('#suggest-move').hidden = active && spectating;
   updateOnlineSuggestionAvailability();
   document.querySelector('#opponent-card').hidden = active;
@@ -4423,6 +4650,7 @@ function setOnlineGameState(active, spectating = false, preserveVariant = false)
     onlinePreviousColor = playerColor;
   }
   onlineMode = active;
+  if (!active) activeInitialFen = '';
   onlineSpectating = active && spectating;
   gamePage.classList.toggle('is-online-game', onlineMode);
   gamePage.classList.toggle('is-spectating', onlineSpectating);
@@ -4531,11 +4759,14 @@ function normalizeOnlineVariant(value) {
       || typeof piece.name !== 'string' || !piece.name || piece.name.length > 18
       || typeof piece.symbol !== 'string' || [...piece.symbol].length < 1 || [...piece.symbol].length > 4
       || !allowedTypes.includes(piece.replaces) || !['both', 'w', 'b'].includes(piece.color)) return null;
+    if (piece.directOnly !== undefined && typeof piece.directOnly !== 'boolean') return null;
     ids.add(piece.id);
-    for (const color of piece.color === 'both' ? ['w', 'b'] : [piece.color]) {
-      const key = `${piece.replaces}:${color}`;
-      if (replacementKeys.has(key)) return null;
-      replacementKeys.add(key);
+    if (!piece.directOnly) {
+      for (const color of piece.color === 'both' ? ['w', 'b'] : [piece.color]) {
+        const key = `${piece.replaces}:${color}`;
+        if (replacementKeys.has(key)) return null;
+        replacementKeys.add(key);
+      }
     }
     if (piece.studio !== undefined) {
       const studio = studioMovementPatterns(piece.studio);
@@ -4547,10 +4778,12 @@ function normalizeOnlineVariant(value) {
         replaces: piece.replaces,
         color: piece.color,
         movements: [piece.replaces],
+        ...(piece.directOnly ? { directOnly: true } : {}),
         studio,
       });
       continue;
     }
+    if (piece.directOnly) return null;
     if (!Array.isArray(piece.movements) || piece.movements.length < 1 || piece.movements.length > allowedTypes.length
       || piece.movements.some((movement) => !allowedTypes.includes(movement))
       || new Set(piece.movements).size !== piece.movements.length) return null;
@@ -4578,6 +4811,11 @@ function applyOnlineVariant(value) {
 function restoreOnlinePosition(message) {
   try {
     applyOnlineVariant(message.variant);
+    activeInitialFen = typeof message.initialFen === 'string' ? message.initialFen : standardStartingFen;
+    activeInitialPieceIds = message.initialPieceIds && typeof message.initialPieceIds === 'object'
+      ? structuredClone(message.initialPieceIds)
+      : {};
+    lobbyStartingPieceIds = structuredClone(activeInitialPieceIds);
     startNewGame();
     if (Array.isArray(message.moves)) {
       for (const move of message.moves) {
@@ -4636,6 +4874,9 @@ function handleOnlineMessage(socket, message) {
       setGameOverStatus(message.message || 'The rematch action could not be completed.');
     }
     if (onlineMode) gameMessage.textContent = message.message || 'The room server rejected that action.';
+    if (positionEditorDialog.open) {
+      document.querySelector('#position-editor-status').textContent = message.message || 'The lobby position update was rejected.';
+    }
     if (!onlineIdentityVerified) {
       onlinePendingRequest = null;
       updateOnlineStatus(message.message || 'Sign in to your Openboard account before using online play.');
@@ -4684,6 +4925,11 @@ function handleOnlineMessage(socket, message) {
       return;
     }
     onlineRoomCode = message.code;
+    activeInitialFen = typeof message.initialFen === 'string' ? message.initialFen : standardStartingFen;
+    activeInitialPieceIds = message.initialPieceIds && typeof message.initialPieceIds === 'object'
+      ? structuredClone(message.initialPieceIds)
+      : {};
+    lobbyStartingPieceIds = structuredClone(activeInitialPieceIds);
     currentOnlineGameId = message.gameId || null;
     if (message.playerProfiles?.w?.id) {
       document.querySelector('.human-row').dataset.playerId = message.playerProfiles.w.id;
@@ -4718,6 +4964,18 @@ function handleOnlineMessage(socket, message) {
     renderBoard();
     void sendProfileChallengeInvite(onlineRoomCode);
     onlineDialog.close();
+    return;
+  }
+  if (message.type === 'room-position-updated') {
+    activeInitialFen = message.initialFen;
+    lobbyStartingFen = message.initialFen;
+    activeInitialPieceIds = message.initialPieceIds && typeof message.initialPieceIds === 'object'
+      ? structuredClone(message.initialPieceIds)
+      : {};
+    lobbyStartingPieceIds = structuredClone(activeInitialPieceIds);
+    startNewGame();
+    positionEditorDialog.close();
+    updateOnlineStatus('Lobby starting position updated. The next player will receive this exact board.');
     return;
   }
   if (message.type === 'left-room') {
@@ -5104,6 +5362,8 @@ async function connectToOnlineRoom(action, roomCode = null, roomPassword = '') {
       type: action === 'create-public' ? 'create-public-room' : 'create-room',
       lobbyName,
       variant: customRules,
+      initialFen: (lobbyStartingFen ?? selectedStartingFen) || standardStartingFen,
+      initialPieceIds: lobbyStartingPieceIds ?? selectedStartingPieceIds,
       password: document.querySelector('#online-password-enabled').checked
         ? document.querySelector('#online-lobby-password').value
         : '',
@@ -5348,12 +5608,27 @@ function startNewGame() {
   resetRematchUi();
   resignationPending = false;
   const requestedSize = Number(customRules.boardSize) || 8;
+  const configuredStartingFen = requestedSize === 8
+    ? onlineMode
+      ? activeInitialFen || lobbyStartingFen || selectedStartingFen || standardStartingFen
+      : selectedStartingFen || standardStartingFen
+    : standardStartingFen;
+  const configuredStartingPieceIds = requestedSize === 8
+    ? onlineMode
+      ? activeInitialPieceIds || lobbyStartingPieceIds || selectedStartingPieceIds
+      : selectedStartingPieceIds
+    : {};
   if (requestedSize !== activeBoardSize) {
     game = requestedSize === 8 ? new Chess() : new window.OpenboardLargeChess(requestedSize);
     activeBoardSize = requestedSize;
   }
   if (onlineMode && !onlineReady && onlineSocket) {
     game.reset();
+    activeInitialFen = configuredStartingFen;
+    activeInitialPieceIds = structuredClone(configuredStartingPieceIds);
+    if (activeInitialFen !== standardStartingFen && !game.load(activeInitialFen)) {
+      throw new Error('The selected custom starting position could not be loaded.');
+    }
     offlineRatingRecorded = false;
     configureStartingPosition();
     gameResult = false;
@@ -5370,11 +5645,17 @@ function startNewGame() {
   }
   stopActiveSound();
   gameToken += 1;
+  clearActiveWorkerWatchdog();
   if (activeWorker) {
     activeWorker.terminate();
     activeWorker = null;
   }
   game.reset();
+  activeInitialFen = configuredStartingFen;
+  activeInitialPieceIds = structuredClone(configuredStartingPieceIds);
+  if (activeInitialFen !== standardStartingFen && !game.load(activeInitialFen)) {
+    throw new Error('The selected custom starting position could not be loaded.');
+  }
   offlineRatingRecorded = false;
   configureStartingPosition();
   gameResult = false;
@@ -5396,7 +5677,7 @@ function startNewGame() {
   if (clockInterval) window.clearInterval(clockInterval);
   clockInterval = window.setInterval(tickClock, 250);
   playSound('game-start');
-  if (playerColor === 'b' && !onlineMode) beginBotTurn();
+  if (game.turn() !== playerColor && !onlineMode) beginBotTurn();
 }
 
 function updateColorLabels() {
@@ -5756,6 +6037,8 @@ function savePreferences() {
       sound: soundToggle.checked,
       audioSettings,
       customRules,
+      selectedStartingFen,
+      selectedStartingPieceIds,
     }));
   } catch (error) {
     console.error('Could not save preferences:', error);
@@ -6488,6 +6771,551 @@ document.querySelector('#export-pgn').addEventListener('click', async () => {
   }
 });
 
+function positionEditorSnapshot() {
+  return {
+    board: structuredClone(positionEditorBoard),
+    pieceIds: structuredClone(positionEditorPieceIds),
+    turn: positionEditorTurn,
+    castling: positionEditorCastling,
+    enPassant: positionEditorEnPassant,
+    halfmove: positionEditorHalfmove,
+    fullmove: positionEditorFullmove,
+  };
+}
+
+function savePositionEditorUndo() {
+  positionEditorUndo.push(positionEditorSnapshot());
+  if (positionEditorUndo.length > 100) positionEditorUndo.shift();
+  positionEditorRedo = [];
+}
+
+function restorePositionEditorSnapshot(snapshot) {
+  positionEditorBoard = structuredClone(snapshot.board);
+  positionEditorPieceIds = structuredClone(snapshot.pieceIds ?? {});
+  positionEditorTurn = snapshot.turn;
+  positionEditorCastling = snapshot.castling;
+  positionEditorEnPassant = snapshot.enPassant;
+  positionEditorHalfmove = snapshot.halfmove;
+  positionEditorFullmove = snapshot.fullmove;
+  positionEditorSource = null;
+  positionEditorLastValidation = null;
+  renderPositionEditor();
+}
+
+function positionEditorFen() {
+  const parsedHalfmove = Number(document.querySelector('#position-halfmove').value);
+  const parsedFullmove = Number(document.querySelector('#position-fullmove').value);
+  if (!Number.isInteger(parsedHalfmove) || parsedHalfmove < 0 || parsedHalfmove > 999
+    || !Number.isInteger(parsedFullmove) || parsedFullmove < 1 || parsedFullmove > 9999) {
+    throw new Error('Halfmove clock must be 0–999 and fullmove number must be 1–9999.');
+  }
+  positionEditorHalfmove = parsedHalfmove;
+  positionEditorFullmove = parsedFullmove;
+  positionEditorTurn = document.querySelector('#position-turn').value;
+  positionEditorCastling = [...document.querySelectorAll('.position-castling input:checked')]
+    .map((input) => input.value).join('');
+  positionEditorEnPassant = document.querySelector('#position-en-passant').value.trim().toLowerCase();
+  if (positionEditorEnPassant && !/^[a-h][36]$/.test(positionEditorEnPassant)) {
+    throw new Error('En passant must be an empty square on rank 3 or 6, or left blank.');
+  }
+  return window.OpenboardPositionSetup.createFen(
+    positionEditorBoard,
+    positionEditorTurn,
+    positionEditorCastling,
+    positionEditorEnPassant,
+    positionEditorHalfmove,
+    positionEditorFullmove,
+  );
+}
+
+function setPositionEditorFen(fen, pieceIds = {}) {
+  const decoded = window.OpenboardPositionSetup.decodeFen(fen);
+  positionEditorBoard = decoded.board;
+  positionEditorPieceIds = pieceIds && typeof pieceIds === 'object' && !Array.isArray(pieceIds)
+    ? structuredClone(pieceIds)
+    : {};
+  positionEditorTurn = decoded.turn;
+  positionEditorCastling = decoded.castling;
+  positionEditorEnPassant = decoded.enPassant;
+  positionEditorHalfmove = decoded.halfmove;
+  positionEditorFullmove = decoded.fullmove;
+  positionEditorSource = null;
+  positionEditorLastValidation = null;
+  renderPositionEditor();
+}
+
+function positionEditorIndices(square) {
+  const match = /^([a-h])([1-8])$/.exec(square);
+  if (!match) return null;
+  return { row: 8 - Number(match[2]), file: match[1].charCodeAt(0) - 97 };
+}
+
+function positionEditorSquare(row, file) {
+  return `${String.fromCharCode(97 + file)}${8 - row}`;
+}
+
+function positionEditorCustomPieceAt(square, piece) {
+  const isMatchingReplacement = (definition) => definition?.replaces === piece.type
+    && (definition.color === 'both' || definition.color === piece.color);
+  const explicitId = positionEditorPieceIds[square] ?? piece.customId;
+  const explicitDefinition = customRules.customPieces.find((definition) => definition.id === explicitId);
+  if (explicitDefinition && (explicitDefinition.studio
+    ? explicitDefinition.color === 'both' || explicitDefinition.color === piece.color
+    : isMatchingReplacement(explicitDefinition))) return explicitDefinition;
+  return customRules.customPieces.find((definition) => !definition.directOnly && isMatchingReplacement(definition));
+}
+
+function positionEditorCastlingSupports(right) {
+  const required = {
+    K: [['e1', 'k', 'w'], ['h1', 'r', 'w']],
+    Q: [['e1', 'k', 'w'], ['a1', 'r', 'w']],
+    k: [['e8', 'k', 'b'], ['h8', 'r', 'b']],
+    q: [['e8', 'k', 'b'], ['a8', 'r', 'b']],
+  }[right];
+  return required?.every(([square, type, color]) => {
+    const indices = positionEditorIndices(square);
+    const piece = positionEditorBoard[indices.row][indices.file];
+    return piece?.type === type && piece.color === color;
+  }) ?? false;
+}
+
+function renderPositionEditor() {
+  const boardElement = document.querySelector('#position-editor-board');
+  const symbols = window.OpenboardPositionSetup.symbols();
+  const displayRows = [...Array(8).keys()];
+  const displayFiles = [...Array(8).keys()];
+  if (positionEditorFlipped) {
+    displayRows.reverse();
+    displayFiles.reverse();
+  }
+  boardElement.replaceChildren();
+  for (const displayRow of displayRows) {
+    for (const displayFile of displayFiles) {
+      const row = positionEditorFlipped ? 7 - displayRow : displayRow;
+      const file = positionEditorFlipped ? 7 - displayFile : displayFile;
+      const square = positionEditorSquare(row, file);
+      const piece = positionEditorBoard[row][file];
+      const customDefinition = piece ? positionEditorCustomPieceAt(square, piece) : null;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = `position-editor-square${(row + file) % 2 ? ' dark' : ''}`;
+      button.dataset.square = square;
+      button.setAttribute('role', 'gridcell');
+      button.setAttribute('aria-label', `${square}${piece ? ` ${piece.color === 'w' ? 'White' : 'Black'} ${customDefinition?.name ?? piece.type}` : ' empty'}`);
+      button.classList.toggle('selected', positionEditorSource === square);
+      button.draggable = Boolean(piece);
+      if (piece) {
+        const symbol = document.createElement('span');
+        symbol.className = piece.color === 'w' ? 'white-piece' : 'black-piece';
+        symbol.style.fontFamily = pieceTheme.fontFamily;
+        symbol.textContent = customDefinition?.symbol ?? symbols[piece.color][piece.type];
+        button.append(symbol);
+      }
+      button.addEventListener('click', () => handlePositionEditorSquare(square));
+      button.addEventListener('dragstart', (event) => {
+        if (!piece) return;
+        positionEditorSource = square;
+        event.dataTransfer.setData('text/plain', square);
+        event.dataTransfer.effectAllowed = 'move';
+      });
+      button.addEventListener('dragover', (event) => {
+        event.preventDefault();
+        button.classList.add('drag-over');
+      });
+      button.addEventListener('dragleave', () => button.classList.remove('drag-over'));
+      button.addEventListener('drop', (event) => {
+        event.preventDefault();
+        button.classList.remove('drag-over');
+        const from = event.dataTransfer.getData('text/plain');
+        if (from && from !== square) movePositionEditorPiece(from, square);
+      });
+      boardElement.append(button);
+    }
+  }
+  const whiteCount = positionEditorBoard.flat().filter((piece) => piece?.color === 'w').length;
+  const blackCount = positionEditorBoard.flat().filter((piece) => piece?.color === 'b').length;
+  document.querySelector('#position-editor-counts').textContent =
+    `White ${whiteCount} · Black ${blackCount} · Total ${whiteCount + blackCount} · ${positionEditorTurn === 'w' ? 'White' : 'Black'} to move`;
+  document.querySelector('#position-fen').value = window.OpenboardPositionSetup.createFen(
+    positionEditorBoard, positionEditorTurn, positionEditorCastling,
+    positionEditorEnPassant, positionEditorHalfmove, positionEditorFullmove,
+  );
+  document.querySelector('#position-turn').value = positionEditorTurn;
+  document.querySelector('#position-en-passant').value = positionEditorEnPassant;
+  document.querySelector('#position-halfmove').value = String(positionEditorHalfmove);
+  document.querySelector('#position-fullmove').value = String(positionEditorFullmove);
+  for (const input of document.querySelectorAll('.position-castling input')) {
+    input.checked = positionEditorCastling.includes(input.value);
+    input.disabled = !positionEditorCastlingSupports(input.value);
+  }
+  const validation = document.querySelector('#position-editor-validity');
+  validation.textContent = positionEditorLastValidation === null
+    ? 'Not validated yet. Preview or start to check this position.'
+    : positionEditorLastValidation.length
+      ? positionEditorLastValidation.join(' ')
+      : 'Position is valid and ready to play.';
+  document.querySelector('#position-undo').disabled = positionEditorUndo.length === 0;
+  document.querySelector('#position-redo').disabled = positionEditorRedo.length === 0;
+  document.querySelector('#position-editor-title').textContent = positionEditorContext === 'online'
+    ? 'Customize Lobby Board'
+    : 'Customize Board';
+  document.querySelector('#position-apply').textContent = positionEditorContext === 'online'
+    ? 'Use position for lobby'
+    : 'Use position & start game';
+  document.querySelector('#position-use-lobby').hidden = positionEditorContext === 'online';
+}
+
+function handlePositionEditorSquare(square) {
+  const indices = positionEditorIndices(square);
+  if (positionEditorTool === 'remove') {
+    savePositionEditorUndo();
+    positionEditorBoard[indices.row][indices.file] = null;
+    delete positionEditorPieceIds[square];
+    positionEditorSource = null;
+  } else if (positionEditorTool) {
+    savePositionEditorUndo();
+    positionEditorBoard[indices.row][indices.file] = { ...positionEditorTool };
+    if (positionEditorTool.customId) positionEditorPieceIds[square] = positionEditorTool.customId;
+    else delete positionEditorPieceIds[square];
+    positionEditorSource = null;
+  } else if (positionEditorSource) {
+    if (positionEditorSource === square) {
+      positionEditorSource = null;
+      renderPositionEditor();
+      return;
+    }
+    movePositionEditorPiece(positionEditorSource, square);
+    return;
+  } else if (positionEditorBoard[indices.row][indices.file]) {
+    positionEditorSource = square;
+  }
+  positionEditorLastValidation = null;
+  renderPositionEditor();
+}
+
+function movePositionEditorPiece(from, to) {
+  const source = positionEditorIndices(from);
+  const destination = positionEditorIndices(to);
+  if (!source || !destination) return;
+  const piece = positionEditorBoard[source.row][source.file];
+  if (!piece) return;
+  savePositionEditorUndo();
+  positionEditorBoard[destination.row][destination.file] = piece;
+  positionEditorBoard[source.row][source.file] = null;
+  if (positionEditorPieceIds[from]) positionEditorPieceIds[to] = positionEditorPieceIds[from];
+  else delete positionEditorPieceIds[to];
+  delete positionEditorPieceIds[from];
+  positionEditorSource = null;
+  positionEditorLastValidation = null;
+  renderPositionEditor();
+}
+
+function renderPositionEditorPalette() {
+  const palette = document.querySelector('#position-piece-palette');
+  const symbols = window.OpenboardPositionSetup.symbols();
+  palette.replaceChildren();
+  for (const color of ['w', 'b']) {
+    for (const type of window.OpenboardPositionSetup.types) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'position-piece-option';
+      button.textContent = symbols[color][type];
+      button.title = `${color === 'w' ? 'White' : 'Black'} ${type}`;
+      button.setAttribute('aria-label', button.title);
+      button.setAttribute('aria-pressed', String(!positionEditorTool?.customId
+        && positionEditorTool?.type === type && positionEditorTool?.color === color));
+      button.addEventListener('click', () => {
+        positionEditorTool = positionEditorTool?.type === type && positionEditorTool?.color === color
+          && !positionEditorTool?.customId
+          ? null
+          : { type, color };
+        positionEditorSource = null;
+        renderPositionEditorPalette();
+      });
+      palette.append(button);
+    }
+  }
+  const customPalette = document.querySelector('#position-custom-piece-palette');
+  customPalette.replaceChildren();
+  for (const definition of customRules.customPieces.filter((candidate) => !candidate.directOnly)) {
+    const colors = definition.color === 'both' ? ['w', 'b'] : [definition.color];
+    for (const color of colors) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'position-piece-option position-custom-piece-option';
+      button.textContent = definition.symbol;
+      button.style.fontFamily = pieceTheme.fontFamily;
+      button.title = `${color === 'w' ? 'White' : 'Black'} ${definition.name}`;
+      button.setAttribute('aria-label', button.title);
+      button.setAttribute('aria-pressed', String(positionEditorTool?.customId === definition.id
+        && positionEditorTool?.color === color));
+      button.addEventListener('click', () => {
+        positionEditorTool = positionEditorTool?.customId === definition.id
+          && positionEditorTool?.color === color
+          ? null
+          : { type: definition.replaces, color, customId: definition.id };
+        positionEditorSource = null;
+        renderPositionEditorPalette();
+      });
+      customPalette.append(button);
+    }
+  }
+  document.querySelector('#position-custom-piece-empty').hidden = customPalette.childElementCount > 0;
+  document.querySelector('#position-custom-rules-open').hidden = onlineMode;
+
+  const studioPalette = document.querySelector('#position-studio-piece-palette');
+  studioPalette.replaceChildren();
+  for (const piece of getSavedStudioPieces()) {
+    const studio = studioMovementPatterns(piece);
+    if (!studio) continue;
+    for (const color of ['w', 'b']) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'position-piece-option position-custom-piece-option';
+      button.textContent = [...piece.symbol.trim()][0] || '✦';
+      button.style.fontFamily = pieceTheme.fontFamily;
+      button.title = `${color === 'w' ? 'White' : 'Black'} ${piece.name}`;
+      button.setAttribute('aria-label', button.title);
+      const selectedId = positionEditorTool?.customId;
+      const selectedDefinition = customRules.customPieces.find((definition) => definition.id === selectedId);
+      button.setAttribute('aria-pressed', String(selectedDefinition?.studio
+        && selectedDefinition.name === piece.name
+        && positionEditorTool?.color === color
+        && JSON.stringify(selectedDefinition.studio) === JSON.stringify(studio)));
+      button.addEventListener('click', () => {
+        const id = positionStudioPieceRuleId(piece.id);
+        let definition = customRules.customPieces.find((candidate) => candidate.id === id);
+        const currentDefinition = {
+          id,
+          name: piece.name.trim().slice(0, 18) || 'Custom piece',
+          symbol: [...piece.symbol.trim()][0] || '✦',
+          replaces: 'n',
+          color: 'both',
+          movements: ['n'],
+          directOnly: true,
+          studio,
+        };
+        if (!definition) {
+          if (customRules.customPieces.length >= 10) {
+            document.querySelector('#position-editor-status').textContent =
+              'This ruleset already has the maximum of 10 custom pieces. Remove one in Custom rules before adding another.';
+            return;
+          }
+          definition = currentDefinition;
+          customRules.customPieces.push(definition);
+          updateCustomRulesSummary();
+          savePreferences();
+        } else if (JSON.stringify(definition) !== JSON.stringify(currentDefinition)) {
+          Object.assign(definition, currentDefinition);
+          updateCustomRulesSummary();
+          savePreferences();
+        }
+        positionEditorTool = positionEditorTool?.customId === definition.id
+          ? null
+          : { type: 'n', color, customId: definition.id };
+        positionEditorSource = null;
+        document.querySelector('#position-editor-status').textContent = '';
+        renderPositionEditorPalette();
+      });
+      studioPalette.append(button);
+    }
+  }
+  document.querySelector('#position-studio-piece-empty').hidden = studioPalette.childElementCount > 0;
+}
+
+function positionStudioPieceRuleId(pieceId) {
+  let hash = 2166136261;
+  for (const character of pieceId) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `studio-${(hash >>> 0).toString(36)}`;
+}
+
+function getSavedPositions() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(savedPositionsStorageKey) || '[]');
+    return Array.isArray(saved) ? saved.filter((entry) => entry && typeof entry.name === 'string'
+      && typeof entry.fen === 'string') : [];
+  } catch (error) {
+    console.error('Could not load saved board positions:', error);
+    return [];
+  }
+}
+
+function renderSavedPositions() {
+  const select = document.querySelector('#position-saved-list');
+  const saved = getSavedPositions();
+  select.replaceChildren(new Option('Choose a saved position', ''));
+  saved.forEach((entry, index) => select.add(new Option(entry.name, String(index))));
+}
+
+function validPositionPieceIds(fen, pieceIds, variant = customRules) {
+  if (!pieceIds || typeof pieceIds !== 'object' || Array.isArray(pieceIds)
+    || Object.keys(pieceIds).length > 64) return false;
+  let board;
+  try {
+    board = window.OpenboardPositionSetup.decodeFen(fen).board;
+  } catch {
+    return false;
+  }
+  return Object.entries(pieceIds).every(([square, id]) => {
+    if (!/^[a-h][1-8]$/.test(square) || typeof id !== 'string') return false;
+    const indices = positionEditorIndices(square);
+    const piece = board[indices.row][indices.file];
+    const definition = variant.customPieces.find((candidate) => candidate.id === id);
+    return Boolean(piece && definition
+      && (definition.color === 'both' || definition.color === piece.color)
+      && (definition.studio || definition.replaces === piece.type));
+  });
+}
+
+function normalizePositionVariant(value) {
+  if (!value || typeof value !== 'object' || value.boardSize !== 8
+    || typeof value.noDraws !== 'boolean' || !value.pieceMovements
+    || typeof value.pieceMovements !== 'object' || !Array.isArray(value.customPieces)
+    || value.customPieces.length > 10) return null;
+  const pieceMovements = {};
+  for (const type of Object.keys(defaultCustomRules.pieceMovements)) {
+    const sides = value.pieceMovements[type];
+    if (!sides || typeof sides !== 'object') return null;
+    pieceMovements[type] = {};
+    for (const color of ['w', 'b']) {
+      const movements = sides[color];
+      if (!Array.isArray(movements) || movements.length < 1 || movements.length > 5
+        || movements.some((movement) => !['p', 'n', 'b', 'r', 'q'].includes(movement))
+        || new Set(movements).size !== movements.length) return null;
+      pieceMovements[type][color] = [...movements];
+    }
+  }
+  const customPieces = [];
+  const replacementKeys = new Set();
+  const ids = new Set();
+  for (const piece of value.customPieces) {
+    if (!piece || typeof piece.id !== 'string' || !piece.id || piece.id.length > 80
+      || ids.has(piece.id) || typeof piece.name !== 'string' || !piece.name.trim() || piece.name.length > 18
+      || typeof piece.symbol !== 'string' || ![...piece.symbol].length || [...piece.symbol].length > 4
+      || !['p', 'n', 'b', 'r', 'q'].includes(piece.replaces)
+      || !['both', 'w', 'b'].includes(piece.color)) return null;
+    if (piece.directOnly !== undefined && typeof piece.directOnly !== 'boolean') return null;
+    ids.add(piece.id);
+    if (!piece.directOnly) {
+      for (const color of piece.color === 'both' ? ['w', 'b'] : [piece.color]) {
+        const key = `${piece.replaces}:${color}`;
+        if (replacementKeys.has(key)) return null;
+        replacementKeys.add(key);
+      }
+    }
+    if (piece.studio !== undefined) {
+      const studio = studioMovementPatterns(piece.studio);
+      if (!studio) return null;
+      customPieces.push({
+        id: piece.id,
+        name: piece.name.trim(),
+        symbol: [...piece.symbol][0],
+        replaces: piece.replaces,
+        color: piece.color,
+        movements: [piece.replaces],
+        ...(piece.directOnly ? { directOnly: true } : {}),
+        studio,
+      });
+    } else {
+      if (piece.directOnly) return null;
+      if (!Array.isArray(piece.movements) || !piece.movements.length || piece.movements.length > 5
+        || piece.movements.some((movement) => !['p', 'n', 'b', 'r', 'q'].includes(movement))
+        || new Set(piece.movements).size !== piece.movements.length) return null;
+      customPieces.push({
+        id: piece.id,
+        name: piece.name.trim(),
+        symbol: [...piece.symbol][0],
+        replaces: piece.replaces,
+        color: piece.color,
+        movements: [...piece.movements],
+      });
+    }
+  }
+  return { boardSize: 8, noDraws: value.noDraws, pieceMovements, customPieces };
+}
+
+function openPositionEditor(context = 'game') {
+  if (onlineMode && (context !== 'online' || onlineReady || onlineSpectating)) {
+    showMessage('Board setup unavailable', 'A board cannot be changed after an online match has started. A lobby host can update its setup before another player joins.');
+    return;
+  }
+  if (Number(customRules.boardSize) !== 8) {
+    showMessage('Board setup uses 8×8', 'Select the standard 8×8 board in Custom rules before creating a custom starting position.');
+    return;
+  }
+  positionEditorContext = context;
+  positionEditorFlipped = false;
+  positionEditorTool = null;
+  positionEditorSource = null;
+  positionEditorUndo = [];
+  positionEditorRedo = [];
+  positionEditorLastValidation = null;
+  const selectedFen = context === 'online'
+    ? lobbyStartingFen ?? selectedStartingFen ?? standardStartingFen
+    : selectedStartingFen || standardStartingFen;
+  const selectedPieceIds = context === 'online'
+    ? lobbyStartingPieceIds ?? selectedStartingPieceIds
+    : selectedStartingPieceIds;
+  setPositionEditorFen(selectedFen, selectedPieceIds);
+  document.querySelector('#position-editor-status').textContent = '';
+  renderPositionEditorPalette();
+  renderSavedPositions();
+  positionEditorDialog.showModal();
+}
+
+function validatePositionEditor() {
+  try {
+    const fen = positionEditorFen();
+    positionEditorLastValidation = window.OpenboardPositionSetup.validateFen(Chess, fen);
+    if (!positionEditorLastValidation.length && !validPositionPieceIds(fen, positionEditorPieceIds)) {
+      positionEditorLastValidation.push('A custom piece identity no longer matches its square, color, or active custom-piece rules.');
+    }
+    document.querySelector('#position-editor-status').textContent = positionEditorLastValidation.length
+      ? positionEditorLastValidation.join(' ')
+      : 'Position is valid.';
+    renderPositionEditor();
+    return { fen, errors: positionEditorLastValidation };
+  } catch (error) {
+    positionEditorLastValidation = [error.message];
+    document.querySelector('#position-editor-status').textContent = error.message;
+    renderPositionEditor();
+    return { fen: null, errors: positionEditorLastValidation };
+  }
+}
+
+function applyPositionEditor() {
+  const { fen, errors } = validatePositionEditor();
+  if (errors.length || !fen) return;
+  if (positionEditorContext === 'online') {
+    if (onlineMode) {
+      if (!onlineSocket || onlineSocket.readyState !== WebSocket.OPEN || !onlineRoomCode) {
+        document.querySelector('#position-editor-status').textContent = 'The lobby server is not connected; reconnect before changing its position.';
+        return;
+      }
+      onlineSocket.send(JSON.stringify({
+        type: 'update-room-position',
+        initialFen: fen,
+        initialPieceIds: positionEditorPieceIds,
+      }));
+      document.querySelector('#position-editor-status').textContent = 'Updating the lobby setup…';
+      return;
+    }
+    lobbyStartingFen = fen;
+    lobbyStartingPieceIds = structuredClone(positionEditorPieceIds);
+    document.querySelector('#online-position-summary').textContent =
+      fen === standardStartingFen ? 'Standard starting position ↗' : 'Custom starting position ready ↗';
+  } else {
+    selectedStartingFen = fen === standardStartingFen ? '' : fen;
+    selectedStartingPieceIds = structuredClone(positionEditorPieceIds);
+    savePreferences();
+    startNewGame();
+  }
+  positionEditorDialog.close();
+}
+
 function loadPreferences() {
   let saved = {};
   try {
@@ -6505,6 +7333,10 @@ function loadPreferences() {
   if (['classic', 'blue', 'walnut'].includes(saved.theme)) boardThemeSelect.value = saved.theme;
   if (['classic', 'supplied'].includes(saved.pieceSet)) pieceSetSelect.value = saved.pieceSet;
   if (['dark', 'light'].includes(saved.interfaceTheme)) interfaceThemeSelect.value = saved.interfaceTheme;
+  if (typeof saved.selectedStartingFen === 'string' && saved.selectedStartingFen.length <= 256) {
+    const errors = window.OpenboardPositionSetup.validateFen(Chess, saved.selectedStartingFen);
+    if (!errors.length) selectedStartingFen = saved.selectedStartingFen;
+  }
   if (typeof saved.sound === 'boolean') soundToggle.checked = saved.sound;
   const savedAudio = saved.audioSettings ?? {};
   const savedEventSettings = savedAudio.events ?? {};
@@ -6558,11 +7390,16 @@ function loadPreferences() {
           movements,
           replaces,
           color: ['w', 'b', 'both'].includes(piece.color) ? piece.color : 'both',
+          ...(piece.directOnly === true || /^studio-[a-z0-9]+$/.test(piece.id ?? '')
+            ? { directOnly: true }
+            : {}),
           ...(studio ? { studio } : {}),
         };
       })
       .filter((piece, index, pieces) => !pieces.slice(0, index).some((other) =>
-        other.replaces === piece.replaces && (other.color === 'both' || piece.color === 'both' || other.color === piece.color)));
+        !other.directOnly && !piece.directOnly
+        && other.replaces === piece.replaces
+        && (other.color === 'both' || piece.color === 'both' || other.color === piece.color)));
     customRules = {
       boardSize: playableBoardSizes.includes(Number(saved.customRules.boardSize))
         ? Number(saved.customRules.boardSize)
@@ -6571,6 +7408,10 @@ function loadPreferences() {
       pieceMovements,
       customPieces,
     };
+  }
+  if (saved.selectedStartingPieceIds && typeof saved.selectedStartingPieceIds === 'object'
+    && validPositionPieceIds(saved.selectedStartingFen || standardStartingFen, saved.selectedStartingPieceIds, customRules)) {
+    selectedStartingPieceIds = structuredClone(saved.selectedStartingPieceIds);
   }
   try {
     const savedPuzzleSolved = Number(localStorage.getItem('openboard-puzzles-solved') || 0);
@@ -6602,6 +7443,265 @@ document.querySelector('#custom-rules-open').addEventListener('click', () => {
   populateCustomRulesForm();
   customRulesDialog.showModal();
 });
+document.querySelector('#position-editor-open').addEventListener('click', () => openPositionEditor('game'));
+document.querySelector('#online-position-editor-open').addEventListener('click', () => openPositionEditor('online'));
+document.querySelector('#position-custom-rules-open').addEventListener('click', () => {
+  customRulesDialogContext = positionEditorContext === 'online'
+    ? 'position-editor-online'
+    : 'position-editor';
+  populateCustomRulesForm();
+  customRulesDialog.showModal();
+});
+document.querySelector('#position-editor-close').addEventListener('click', () => positionEditorDialog.close());
+document.querySelector('#position-cancel').addEventListener('click', () => positionEditorDialog.close());
+document.querySelector('#position-apply').addEventListener('click', applyPositionEditor);
+document.querySelector('#position-use-lobby').addEventListener('click', () => {
+  const { fen, errors } = validatePositionEditor();
+  if (errors.length || !fen) return;
+  lobbyStartingFen = fen;
+  lobbyStartingPieceIds = structuredClone(positionEditorPieceIds);
+  document.querySelector('#online-position-summary').textContent =
+    fen === standardStartingFen ? 'Standard starting position ↗' : 'Custom starting position ready ↗';
+  positionEditorDialog.close();
+  openOnlineDialog('friends');
+});
+document.querySelector('#position-remove-tool').addEventListener('click', () => {
+  positionEditorTool = positionEditorTool === 'remove' ? null : 'remove';
+  positionEditorSource = null;
+  document.querySelector('#position-remove-tool').setAttribute('aria-pressed', String(positionEditorTool === 'remove'));
+});
+document.querySelector('#position-clear').addEventListener('click', () => {
+  savePositionEditorUndo();
+  positionEditorBoard = Array.from({ length: 8 }, () => Array(8).fill(null));
+  positionEditorPieceIds = {};
+  positionEditorCastling = '';
+  positionEditorEnPassant = '';
+  positionEditorSource = null;
+  positionEditorLastValidation = null;
+  renderPositionEditor();
+});
+document.querySelector('#position-reset').addEventListener('click', () => {
+  savePositionEditorUndo();
+  setPositionEditorFen(standardStartingFen);
+  renderPositionEditor();
+});
+document.querySelector('#position-undo').addEventListener('click', () => {
+  if (!positionEditorUndo.length) return;
+  positionEditorRedo.push(positionEditorSnapshot());
+  restorePositionEditorSnapshot(positionEditorUndo.pop());
+});
+document.querySelector('#position-redo').addEventListener('click', () => {
+  if (!positionEditorRedo.length) return;
+  positionEditorUndo.push(positionEditorSnapshot());
+  restorePositionEditorSnapshot(positionEditorRedo.pop());
+});
+document.querySelector('#position-mirror-horizontal').addEventListener('click', () => {
+  savePositionEditorUndo();
+  positionEditorBoard = positionEditorBoard.map((row) => row.slice().reverse());
+  positionEditorPieceIds = Object.fromEntries(Object.entries(positionEditorPieceIds)
+    .map(([square, id]) => {
+      const { row, file } = positionEditorIndices(square);
+      return [positionEditorSquare(row, 7 - file), id];
+    }));
+  positionEditorCastling = '';
+  positionEditorEnPassant = '';
+  positionEditorLastValidation = null;
+  renderPositionEditor();
+});
+document.querySelector('#position-mirror-vertical').addEventListener('click', () => {
+  savePositionEditorUndo();
+  positionEditorBoard.reverse();
+  positionEditorPieceIds = Object.fromEntries(Object.entries(positionEditorPieceIds)
+    .map(([square, id]) => {
+      const { row, file } = positionEditorIndices(square);
+      return [positionEditorSquare(7 - row, file), id];
+    }));
+  positionEditorCastling = '';
+  positionEditorEnPassant = '';
+  positionEditorLastValidation = null;
+  renderPositionEditor();
+});
+document.querySelector('#position-swap-colors').addEventListener('click', () => {
+  savePositionEditorUndo();
+  positionEditorBoard = positionEditorBoard.map((row) => row.map((piece) => (
+    piece ? { ...piece, color: piece.color === 'w' ? 'b' : 'w' } : null
+  )));
+  positionEditorPieceIds = Object.fromEntries(Object.entries(positionEditorPieceIds).filter(([square, id]) => {
+    const piece = positionEditorBoard[positionEditorIndices(square).row][positionEditorIndices(square).file];
+    const definition = customRules.customPieces.find((candidate) => candidate.id === id);
+    return definition && (definition.color === 'both' || definition.color === piece.color);
+  }));
+  positionEditorTurn = positionEditorTurn === 'w' ? 'b' : 'w';
+  positionEditorCastling = [...positionEditorCastling].map((right) => (
+    right === 'K' ? 'k' : right === 'Q' ? 'q' : right === 'k' ? 'K' : 'Q'
+  )).join('');
+  positionEditorEnPassant = '';
+  positionEditorLastValidation = null;
+  renderPositionEditor();
+});
+document.querySelector('#position-flip').addEventListener('click', () => {
+  positionEditorFlipped = !positionEditorFlipped;
+  renderPositionEditor();
+});
+document.querySelector('#position-turn').addEventListener('change', () => {
+  savePositionEditorUndo();
+  positionEditorTurn = document.querySelector('#position-turn').value;
+  positionEditorLastValidation = null;
+  renderPositionEditor();
+});
+document.querySelector('.position-castling').addEventListener('change', () => {
+  savePositionEditorUndo();
+  positionEditorCastling = [...document.querySelectorAll('.position-castling input:checked')]
+    .map((input) => input.value).join('');
+  positionEditorLastValidation = null;
+  renderPositionEditor();
+});
+for (const selector of ['#position-en-passant', '#position-halfmove', '#position-fullmove']) {
+  document.querySelector(selector).addEventListener('change', () => {
+    savePositionEditorUndo();
+    try {
+      positionEditorFen();
+      positionEditorLastValidation = null;
+      renderPositionEditor();
+    } catch (error) {
+      document.querySelector('#position-editor-status').textContent = error.message;
+    }
+  });
+}
+document.querySelector('#position-preset').addEventListener('change', (event) => {
+  const presets = {
+    standard: standardStartingFen,
+    'kq-endgame': '4k3/8/8/8/8/8/8/3QK3 w - - 0 1',
+    'kr-endgame': '4k3/8/8/8/8/8/8/4KR2 w - - 0 1',
+    'pawn-endgame': '4k3/pp6/8/8/8/8/PP6/4K3 w - - 0 1',
+    'rook-endgame': 'r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1',
+    tactical: '6k1/5ppp/8/8/8/8/5PPP/4R1K1 w - - 0 1',
+    kings: '4k3/8/8/8/8/8/8/4K3 w - - 0 1',
+  };
+  if (event.target.value === 'random') {
+    const backRank = Array(8).fill('');
+    const evenFiles = [0, 2, 4, 6];
+    const oddFiles = [1, 3, 5, 7];
+    backRank[evenFiles[Math.floor(Math.random() * evenFiles.length)]] = 'b';
+    backRank[oddFiles[Math.floor(Math.random() * oddFiles.length)]] = 'b';
+    let openFiles = backRank.map((piece, file) => piece ? null : file).filter((file) => file !== null);
+    const place = (type) => {
+      const fileIndex = Math.floor(Math.random() * openFiles.length);
+      backRank[openFiles.splice(fileIndex, 1)[0]] = type;
+    };
+    place('q');
+    place('n');
+    place('n');
+    const remaining = openFiles.sort((a, b) => a - b);
+    backRank[remaining[0]] = 'r';
+    backRank[remaining[1]] = 'k';
+    backRank[remaining[2]] = 'r';
+    const encodeRank = (rank, color) => rank.map((type) => (
+      color === 'w' ? type.toUpperCase() : type
+    )).join('');
+    const fen = `${encodeRank(backRank, 'b')}/pppppppp/8/8/8/8/PPPPPPPP/${encodeRank(backRank, 'w')} w - - 0 1`;
+    savePositionEditorUndo();
+    setPositionEditorFen(fen);
+  } else if (presets[event.target.value]) {
+    savePositionEditorUndo();
+    setPositionEditorFen(presets[event.target.value]);
+  }
+  renderPositionEditor();
+});
+document.querySelector('#position-save').addEventListener('click', () => {
+  const name = document.querySelector('#position-save-name').value.trim();
+  if (!name) {
+    document.querySelector('#position-editor-status').textContent = 'Enter a name before saving this position.';
+    return;
+  }
+  try {
+    const fen = positionEditorFen();
+    const saved = getSavedPositions();
+    const existing = saved.findIndex((entry) => entry.name.toLowerCase() === name.toLowerCase());
+    const entry = {
+      name,
+      fen,
+      pieceIds: structuredClone(positionEditorPieceIds),
+      variant: structuredClone(customRules),
+      updatedAt: new Date().toISOString(),
+    };
+    if (existing >= 0) saved[existing] = entry;
+    else saved.unshift(entry);
+    localStorage.setItem(savedPositionsStorageKey, JSON.stringify(saved.slice(0, 100)));
+    renderSavedPositions();
+    document.querySelector('#position-editor-status').textContent = `Saved "${name}".`;
+  } catch (error) {
+    console.error('Could not save board position:', error);
+    document.querySelector('#position-editor-status').textContent = error.message;
+  }
+});
+document.querySelector('#position-load-saved').addEventListener('click', () => {
+  const saved = getSavedPositions()[Number(document.querySelector('#position-saved-list').value)];
+  if (!saved) return;
+  try {
+    savePositionEditorUndo();
+    if (saved.variant) {
+      const variant = normalizePositionVariant(saved.variant);
+      if (!variant) throw new Error('This saved position contains custom rules this version cannot load.');
+      customRules = variant;
+      populateCustomRulesForm();
+      updateCustomRulesSummary();
+      savePreferences();
+    }
+    setPositionEditorFen(saved.fen, saved.pieceIds);
+    document.querySelector('#position-editor-status').textContent = `Loaded "${saved.name}".`;
+  } catch (error) {
+    document.querySelector('#position-editor-status').textContent = `Could not load saved position: ${error.message}`;
+  }
+});
+document.querySelector('#position-delete-saved').addEventListener('click', () => {
+  const select = document.querySelector('#position-saved-list');
+  const index = Number(select.value);
+  const saved = getSavedPositions();
+  if (!Number.isInteger(index) || !saved[index]) return;
+  const [removed] = saved.splice(index, 1);
+  try {
+    localStorage.setItem(savedPositionsStorageKey, JSON.stringify(saved));
+    renderSavedPositions();
+    document.querySelector('#position-editor-status').textContent = `Deleted "${removed.name}".`;
+  } catch (error) {
+    console.error('Could not delete saved board position:', error);
+    document.querySelector('#position-editor-status').textContent = 'Could not update saved positions on this device.';
+  }
+});
+document.querySelector('#position-import-fen').addEventListener('click', () => {
+  try {
+    setPositionEditorFen(document.querySelector('#position-fen').value);
+    document.querySelector('#position-editor-status').textContent = 'FEN loaded. Preview or start to validate its chess position.';
+  } catch (error) {
+    document.querySelector('#position-editor-status').textContent = error.message;
+  }
+});
+document.querySelector('#position-preview').addEventListener('click', validatePositionEditor);
+document.querySelector('#position-copy-fen').addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(positionEditorFen());
+    document.querySelector('#position-editor-status').textContent = 'FEN copied.';
+  } catch (error) {
+    console.error('Could not copy position FEN:', error);
+    document.querySelector('#position-fen').focus();
+    document.querySelector('#position-fen').select();
+    document.querySelector('#position-editor-status').textContent = 'Select and copy the FEN shown above.';
+  }
+});
+document.querySelector('#position-share').addEventListener('click', async () => {
+  try {
+    const url = new URL(location.href);
+    url.searchParams.set('position', positionEditorFen());
+    url.searchParams.set('positionPieces', JSON.stringify(positionEditorPieceIds));
+    url.searchParams.set('positionVariant', JSON.stringify(customRules));
+    await navigator.clipboard.writeText(url.href);
+    document.querySelector('#position-editor-status').textContent = 'Share link copied. It opens this position in Board Setup.';
+  } catch (error) {
+    console.error('Could not create or copy shared position link:', error);
+    document.querySelector('#position-editor-status').textContent = 'Could not copy the position link. Check that clipboard access is allowed.';
+  }
+});
 document.querySelector('#online-custom-rules-open').addEventListener('click', () => {
   customRulesDialogContext = 'online';
   populateCustomRulesForm();
@@ -6609,18 +7709,30 @@ document.querySelector('#online-custom-rules-open').addEventListener('click', ()
 });
 document.querySelector('#close-custom-rules').addEventListener('click', () => customRulesDialog.close());
 document.querySelector('#reset-custom-rules').addEventListener('click', () => {
+  const returnToPositionEditor = customRulesDialogContext.startsWith('position-editor');
   practiceGame = false;
   customRules = JSON.parse(JSON.stringify(defaultCustomRules));
   populateCustomRulesForm();
   updateCustomRulesSummary();
   savePreferences();
   customRulesDialog.close();
-  startNewGame();
+  if (returnToPositionEditor) {
+    positionEditorPieceIds = {};
+    renderPositionEditorPalette();
+    renderPositionEditor();
+    document.querySelector('#position-editor-status').textContent = 'Custom piece rules reset. The position editor is still open.';
+  } else {
+    startNewGame();
+  }
+  customRulesDialogContext = 'game';
 });
 document.querySelector('#apply-custom-rules').addEventListener('click', () => {
   const updatedRules = readCustomRulesForm();
   if (!updatedRules) return;
-  if (customRulesDialogContext === 'online' && updatedRules.boardSize !== 8) {
+  const returnToPositionEditor = customRulesDialogContext.startsWith('position-editor');
+  const onlineRulesContext = customRulesDialogContext === 'online'
+    || customRulesDialogContext === 'position-editor-online';
+  if (onlineRulesContext && updatedRules.boardSize !== 8) {
     showMessage('Online games use an 8×8 board', 'Custom movement rules and draw settings work online, but larger boards are currently available only for offline games.');
     return;
   }
@@ -6633,11 +7745,55 @@ document.querySelector('#apply-custom-rules').addEventListener('click', () => {
   updateCustomRulesSummary();
   savePreferences();
   customRulesDialog.close();
-  if (customRulesDialogContext !== 'online') startNewGame();
+  if (returnToPositionEditor) {
+    renderPositionEditorPalette();
+    renderPositionEditor();
+    document.querySelector('#position-editor-status').textContent =
+      'Custom piece rules updated. Select a custom piece and place it on the board.';
+  } else if (customRulesDialogContext !== 'online') {
+    startNewGame();
+  }
   customRulesDialogContext = 'game';
 });
 
 loadPreferences();
+const sharedPositionQuery = new URLSearchParams(location.search);
+const sharedPositionFen = sharedPositionQuery.get('position');
+if (sharedPositionFen) {
+  const sharedVariantText = sharedPositionQuery.get('positionVariant');
+  if (sharedVariantText && sharedVariantText.length <= 24000) {
+    try {
+      const variant = normalizePositionVariant(JSON.parse(sharedVariantText));
+      if (variant) {
+        customRules = variant;
+        populateCustomRulesForm();
+        updateCustomRulesSummary();
+      } else {
+        console.warn('Shared starting-position rules were rejected as invalid.');
+      }
+    } catch (error) {
+      console.warn('Shared starting-position rules could not be parsed:', error);
+    }
+  }
+  const errors = window.OpenboardPositionSetup.validateFen(Chess, sharedPositionFen);
+  if (!errors.length) {
+    const pieceIdsText = sharedPositionQuery.get('positionPieces') || '{}';
+    try {
+      const pieceIds = JSON.parse(pieceIdsText);
+      if (validPositionPieceIds(sharedPositionFen, pieceIds, customRules)) {
+        selectedStartingFen = sharedPositionFen;
+        selectedStartingPieceIds = pieceIds;
+        savePreferences();
+      } else {
+        console.warn('Shared custom-piece identities were rejected as invalid.');
+      }
+    } catch (error) {
+      console.warn('Shared custom-piece identities could not be parsed:', error);
+    }
+  } else {
+    console.warn('Shared starting position was rejected:', errors);
+  }
+}
 document.querySelector('#difficulty').dispatchEvent(new Event('change'));
 
 function updatePuzzleProgress() {
@@ -6662,6 +7818,7 @@ function startPuzzle(requestedIndex) {
   }
   const puzzle = puzzlePositions[index];
   gameToken += 1;
+  clearActiveWorkerWatchdog();
   if (activeWorker) {
     activeWorker.terminate();
     activeWorker = null;
@@ -8294,6 +9451,7 @@ academyDialog.addEventListener('close', () => {
 
 function openPositionAnalysis() {
   gameToken += 1;
+  clearActiveWorkerWatchdog();
   if (activeWorker) {
     activeWorker.terminate();
     activeWorker = null;

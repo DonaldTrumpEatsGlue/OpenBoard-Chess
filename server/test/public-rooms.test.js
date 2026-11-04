@@ -1224,8 +1224,14 @@ test('completed online games update both player ratings and records exactly once
       movements: ['q'],
     }],
   };
+  const initialPieceIds = { b1: 'star-piece' };
   try {
-    const room = await request(white, { type: 'create-room', lobbyName: 'Rated game', variant });
+    const room = await request(white, {
+      type: 'create-room',
+      lobbyName: 'Rated game',
+      variant,
+      initialPieceIds,
+    });
     const whiteStart = waitForMessage(white, (message) => message.type === 'game-start');
     const blackStart = request(black, { type: 'join-room', code: room.code });
     await Promise.all([whiteStart, blackStart]);
@@ -1263,6 +1269,9 @@ test('completed online games update both player ratings and records exactly once
     const variantTag = ratedGameRequests[0].p_pgn.match(/^\[OpenboardVariant "([^"]+)"\]$/m);
     assert.ok(variantTag, 'rated game history should retain its custom variant definition');
     assert.deepEqual(JSON.parse(decodeURIComponent(variantTag[1])), variant);
+    const pieceIdsTag = ratedGameRequests[0].p_pgn.match(/^\[OpenboardPieceIds "([^"]+)"\]$/m);
+    assert.ok(pieceIdsTag, 'rated game history should retain custom piece placement identities');
+    assert.deepEqual(JSON.parse(decodeURIComponent(pieceIdsTag[1])), initialPieceIds);
     assert.equal(ratedGameRequests[0].p_termination, 'resignation');
     const whiteHistory = await getJson(socialUrl('/social/history/online'), whiteToken);
     assert.equal(whiteHistory.status, 200);
@@ -2212,6 +2221,7 @@ test('public room browser lists joinable games but not private invites or full g
       lobbyName: 'Public Lobby',
       variant: starVariant,
     });
+
     const privateRoom = await request(privateHost, { type: 'create-room', lobbyName: 'Private Lobby' });
     assert.equal(publicRoom.type, 'room-created');
     assert.equal(publicRoom.isPublic, true);
@@ -2273,6 +2283,295 @@ test('public room browser lists joinable games but not private invites or full g
     }]);
   } finally {
     for (const socket of [host, privateHost, browser, joiner]) socket.close();
+  }
+});
+
+test('custom starting positions are validated and synchronized to both online players', async () => {
+  const host = await connect(undefined, 'SetupHost');
+  const guest = await connect(undefined, 'SetupGuest');
+  const browser = await connect(undefined, 'SetupBrowser');
+  const initialFen = '4k3/8/8/8/8/8/8/4K2R b - - 0 1';
+  const updatedFen = '4k3/8/8/8/8/8/8/R3K3 b - - 0 1';
+  try {
+    const invalid = await request(host, {
+      type: 'create-room',
+      lobbyName: 'Invalid setup',
+      initialFen: '8/8/8/8/8/8/8/8 w - - 0 1',
+    });
+    assert.equal(invalid.type, 'error');
+    assert.match(invalid.message, /custom starting position is invalid/i);
+
+    const created = await request(host, {
+      type: 'create-public-room',
+      lobbyName: 'Custom setup',
+      initialFen,
+    });
+    assert.equal(created.type, 'room-created');
+    assert.equal(created.initialFen, initialFen);
+
+    const updated = await request(host, {
+      type: 'update-room-position',
+      initialFen: updatedFen,
+    });
+    assert.equal(updated.type, 'room-position-updated');
+    assert.equal(updated.initialFen, updatedFen);
+    assert.equal(updated.fen, updatedFen);
+
+    const listing = await request(browser, { type: 'list-public-rooms' });
+    assert.match(listing.rooms.find((room) => room.code === created.code).variantLabel, /custom starting position/i);
+
+    const hostStart = waitForMessage(host, (message) => message.type === 'game-start');
+    const guestStart = request(guest, { type: 'join-public-room', code: created.code });
+    const [hostGame, guestGame] = await Promise.all([hostStart, guestStart]);
+    assert.equal(hostGame.initialFen, updatedFen);
+    assert.equal(guestGame.initialFen, updatedFen);
+    assert.equal(hostGame.fen, updatedFen);
+    assert.equal(guestGame.fen, updatedFen);
+    assert.equal(guestGame.color, 'b');
+
+    const lockedPosition = await request(host, {
+      type: 'update-room-position',
+      initialFen,
+    });
+    assert.equal(lockedPosition.type, 'error');
+    assert.match(lockedPosition.message, /only be changed before another player joins/i);
+
+    const hostMove = waitForMessage(host, (message) => message.type === 'move');
+    const guestMove = request(guest, { type: 'move', from: 'e8', to: 'd8' });
+    const [hostUpdate, guestUpdate] = await Promise.all([hostMove, guestMove]);
+    assert.equal(hostUpdate.fen, guestUpdate.fen);
+    assert.match(hostUpdate.fen, /^3k4\//);
+  } finally {
+    host.close();
+    guest.close();
+    browser.close();
+  }
+});
+
+test('multiple kings and placed custom pieces keep their identities and royal safety online', async () => {
+  const host = await connect(undefined, 'MultiKingHost');
+  const guest = await connect(undefined, 'MultiKingGuest');
+  const customVariant = {
+    boardSize: 8,
+    noDraws: false,
+    pieceMovements: {
+      p: { w: ['p'], b: ['p'] },
+      n: { w: ['n'], b: ['n'] },
+      b: { w: ['b'], b: ['b'] },
+      r: { w: ['r'], b: ['r'] },
+      q: { w: ['q'], b: ['q'] },
+    },
+    customPieces: [{
+      id: 'editor-knight-rook',
+      name: 'Knight Rook',
+      symbol: '♘',
+      replaces: 'r',
+      color: 'both',
+      movements: ['n'],
+    }],
+  };
+  const initialFen = 'k7/8/8/8/8/8/8/1R2K2K w - - 0 1';
+  const initialPieceIds = { b1: 'editor-knight-rook' };
+  try {
+    const created = await request(host, {
+      type: 'create-room',
+      lobbyName: 'Multiple royal kings',
+      variant: customVariant,
+      initialFen,
+      initialPieceIds,
+    });
+    assert.equal(created.type, 'room-created');
+    assert.deepEqual(created.initialPieceIds, initialPieceIds);
+
+    const hostStart = waitForMessage(host, (message) => message.type === 'game-start');
+    const guestStart = request(guest, { type: 'join-room', code: created.code });
+    const [hostGame, guestGame] = await Promise.all([hostStart, guestStart]);
+    assert.equal(hostGame.initialFen, initialFen);
+    assert.deepEqual(hostGame.initialPieceIds, initialPieceIds);
+    assert.equal(guestGame.initialFen, initialFen);
+    assert.deepEqual(guestGame.initialPieceIds, initialPieceIds);
+
+    const hostMove = waitForMessage(host, (message) => message.type === 'move');
+    const customPieceMove = request(host, { type: 'move', from: 'b1', to: 'c3' });
+    const [hostUpdate, guestUpdate] = await Promise.all([hostMove, customPieceMove]);
+    assert.equal(hostUpdate.fen, guestUpdate.fen);
+    assert.match(hostUpdate.fen, /^k7\/8\/8\/8\/8\/2N5\/8\/4K2K b/);
+  } finally {
+    host.close();
+    guest.close();
+  }
+});
+
+test('custom Studio pieces do not trigger standard insufficient-material draws', async () => {
+  const host = await connect(undefined, 'StudioDrawHost');
+  const guest = await connect(undefined, 'StudioDrawGuest');
+  const customVariant = {
+    boardSize: 8,
+    noDraws: false,
+    pieceMovements: {
+      p: { w: ['p'], b: ['p'] },
+      n: { w: ['n'], b: ['n'] },
+      b: { w: ['b'], b: ['b'] },
+      r: { w: ['r'], b: ['r'] },
+      q: { w: ['q'], b: ['q'] },
+    },
+    customPieces: [{
+      id: 'star-piece',
+      name: 'Star',
+      symbol: 'S',
+      replaces: 'n',
+      color: 'w',
+      movements: ['b'],
+      directOnly: true,
+      studio: {
+        movementType: 'leap',
+        captureMode: 'both',
+        range: 1,
+        mirror: false,
+        jump: true,
+        promotion: false,
+        vectors: [{ dx: 1, dy: 2 }],
+      },
+    }],
+  };
+  const initialFen = '8/7k/8/8/3B4/8/8/K7 w - - 0 1';
+  try {
+    const room = await request(host, {
+      type: 'create-room',
+      lobbyName: 'Star material test',
+      variant: customVariant,
+      initialFen,
+      initialPieceIds: { d4: 'star-piece' },
+    });
+    const hostStart = waitForMessage(host, (message) => message.type === 'game-start');
+    const guestStart = request(guest, { type: 'join-room', code: room.code });
+    await Promise.all([hostStart, guestStart]);
+
+    const replacedMovement = await request(host, { type: 'move', from: 'd4', to: 'e5' });
+    assert.equal(replacedMovement.type, 'error');
+    assert.match(replacedMovement.message, /illegal move/i);
+
+    const guestMove = waitForMessage(guest, (message) => message.type === 'move');
+    const move = await request(host, { type: 'move', from: 'd4', to: 'e6' });
+    const mirroredMove = await guestMove;
+    assert.equal(move.type, 'move');
+    assert.equal(move.gameOver, false);
+    assert.equal(mirroredMove.gameOver, false);
+    assert.match(move.fen, /^8\/7k\/4B3\/8\/8\/8\/8\/K7 b/);
+  } finally {
+    host.close();
+    guest.close();
+  }
+});
+
+test('custom Studio attacks enforce check without inheriting the carrier piece attack', async () => {
+  const host = await connect(undefined, 'StudioCheckHost');
+  const guest = await connect(undefined, 'StudioCheckGuest');
+  const customVariant = {
+    boardSize: 8,
+    noDraws: false,
+    pieceMovements: {
+      p: { w: ['p'], b: ['p'] },
+      n: { w: ['n'], b: ['n'] },
+      b: { w: ['b'], b: ['b'] },
+      r: { w: ['r'], b: ['r'] },
+      q: { w: ['q'], b: ['q'] },
+    },
+    customPieces: [{
+      id: 'check-star',
+      name: 'Check Star',
+      symbol: 'S',
+      replaces: 'n',
+      color: 'w',
+      movements: ['n'],
+      directOnly: true,
+      studio: {
+        movementType: 'leap',
+        captureMode: 'both',
+        range: 1,
+        mirror: false,
+        jump: true,
+        promotion: false,
+        vectors: [{ dx: 1, dy: 2 }],
+      },
+    }],
+  };
+  try {
+    const room = await request(host, {
+      type: 'create-room',
+      lobbyName: 'Custom attack test',
+      variant: customVariant,
+      initialFen: '8/pp6/4k3/8/3B4/8/8/K7 b - - 0 1',
+      initialPieceIds: { d4: 'check-star' },
+    });
+    assert.equal(room.type, 'room-created');
+    const hostStart = waitForMessage(host, (message) => message.type === 'game-start');
+    const guestStart = request(guest, { type: 'join-room', code: room.code });
+    await Promise.all([hostStart, guestStart]);
+
+    const illegal = await request(guest, { type: 'move', from: 'a7', to: 'a6' });
+    assert.equal(illegal.type, 'error');
+    assert.match(illegal.message, /illegal move/i);
+
+    const safeMove = await request(guest, { type: 'move', from: 'e6', to: 'f6' });
+    assert.equal(safeMove.type, 'move');
+    assert.match(safeMove.fen, / w - - /);
+  } finally {
+    host.close();
+    guest.close();
+  }
+});
+
+test('standard insufficient material still ends online games as a draw', async () => {
+  const host = await connect(undefined, 'InsufficientHost');
+  const guest = await connect(undefined, 'InsufficientGuest');
+  try {
+    const room = await request(host, {
+      type: 'create-room',
+      lobbyName: 'Insufficient material test',
+      initialFen: '8/7k/8/8/3B4/8/8/K7 w - - 0 1',
+    });
+    const hostStart = waitForMessage(host, (message) => message.type === 'game-start');
+    const guestStart = request(guest, { type: 'join-room', code: room.code });
+    await Promise.all([hostStart, guestStart]);
+
+    const hostEnded = waitForMessage(host, (message) => message.type === 'game-ended');
+    const guestEnded = waitForMessage(guest, (message) => message.type === 'game-ended');
+    const move = await request(host, { type: 'move', from: 'd4', to: 'e5' });
+    const [hostResult, guestResult] = await Promise.all([hostEnded, guestEnded]);
+    assert.equal(move.gameOver, true);
+    assert.equal(hostResult.termination, 'insufficient');
+    assert.equal(guestResult.termination, 'insufficient');
+  } finally {
+    host.close();
+    guest.close();
+  }
+});
+
+test('a move must protect every royal king online', async () => {
+  const host = await connect(undefined, 'KingSafetyHost');
+  const guest = await connect(undefined, 'KingSafetyGuest');
+  const initialFen = 'k7/8/8/8/8/8/4r3/4K2K w - - 0 1';
+  try {
+    const created = await request(host, {
+      type: 'create-room',
+      lobbyName: 'Two king safety',
+      initialFen,
+    });
+    const hostStart = waitForMessage(host, (message) => message.type === 'game-start');
+    const guestStart = request(guest, { type: 'join-room', code: created.code });
+    await Promise.all([hostStart, guestStart]);
+
+    const illegal = await request(host, { type: 'move', from: 'h1', to: 'g1' });
+    assert.equal(illegal.type, 'error');
+    assert.match(illegal.message, /illegal move/i);
+
+    const legalMove = await request(host, { type: 'move', from: 'e1', to: 'e2' });
+    assert.equal(legalMove.type, 'move');
+    assert.match(legalMove.fen, /^k7\/8\/8\/8\/8\/8\/4K3\/7K b/);
+  } finally {
+    host.close();
+    guest.close();
   }
 });
 

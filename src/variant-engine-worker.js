@@ -76,6 +76,7 @@ function variantSquareAttacked(square, attackerColor) {
       const piece = board[row][col];
       if (!piece || piece.color !== attackerColor) continue;
       const from = squareAt(row, col);
+      if (customDefinitionAt(from)?.studio) continue;
       if (movementPatternsFor(from, piece).some((pattern) => attacksSquare(from, square, piece.color, pattern))) return true;
     }
   }
@@ -235,7 +236,9 @@ function search(depth, alpha, beta, ply) {
     return 0;
   }
   if (!customRules.noDraws
-    && (Number(game.fen().split(' ')[4]) >= 100 || game.insufficient_material())) return 0;
+    && (Number(game.fen().split(' ')[4]) >= 100
+      || (customMovementBySquare.size === 0 && customPieceBySquare.size === 0
+        && game.insufficient_material()))) return 0;
   if (depth <= 0) return evaluate(ply);
 
   moves.sort((a, b) => moveOrderScore(b) - moveOrderScore(a));

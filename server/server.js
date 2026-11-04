@@ -42,6 +42,7 @@ const standardPieceMovements = {
   r: { w: ['r'], b: ['r'] },
   q: { w: ['q'], b: ['q'] },
 };
+const standardStartingFen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 const movementTypes = new Set(['p', 'n', 'b', 'r', 'q']);
 const replacementTypes = new Set(['p', 'n', 'b', 'r', 'q']);
 const customMoveModes = new Set(['both', 'move', 'capture', 'attack']);
@@ -113,12 +114,15 @@ function normalizeOnlineVariant(value) {
       || ids.has(piece.id) || typeof piece.name !== 'string' || piece.name.length < 1 || piece.name.length > 18
       || typeof piece.symbol !== 'string' || [...piece.symbol].length < 1 || [...piece.symbol].length > 4
       || !replacementTypes.has(piece.replaces) || !['both', 'w', 'b'].includes(piece.color)) return null;
+    if (piece.directOnly !== undefined && typeof piece.directOnly !== 'boolean') return null;
     ids.add(piece.id);
-    const colors = piece.color === 'both' ? ['w', 'b'] : [piece.color];
-    for (const color of colors) {
-      const key = `${piece.replaces}:${color}`;
-      if (replacementKeys.has(key)) return null;
-      replacementKeys.add(key);
+    if (!piece.directOnly) {
+      const colors = piece.color === 'both' ? ['w', 'b'] : [piece.color];
+      for (const color of colors) {
+        const key = `${piece.replaces}:${color}`;
+        if (replacementKeys.has(key)) return null;
+        replacementKeys.add(key);
+      }
     }
     if (piece.studio !== undefined) {
       const studio = normalizeStudioMovement(piece.studio);
@@ -130,9 +134,11 @@ function normalizeOnlineVariant(value) {
         replaces: piece.replaces,
         color: piece.color,
         movements: Array.isArray(piece.movements) ? piece.movements.filter((item) => movementTypes.has(item)) : [piece.replaces],
+        ...(piece.directOnly ? { directOnly: true } : {}),
         studio,
       });
     } else {
+      if (piece.directOnly) return null;
       if (!Array.isArray(piece.movements) || piece.movements.length < 1 || piece.movements.length > 5
         || piece.movements.some((movement) => !movementTypes.has(movement))
         || new Set(piece.movements).size !== piece.movements.length) return null;
@@ -149,7 +155,83 @@ function normalizeOnlineVariant(value) {
   return { boardSize: 8, noDraws: value.noDraws, pieceMovements, customPieces };
 }
 
-function publicRoomVariantLabel(variant) {
+function normalizeStartingFen(value) {
+  if (value === undefined) return standardStartingFen;
+  if (typeof value !== 'string' || value.length > 256) return null;
+  let chess;
+  try {
+    chess = new Chess(value);
+  } catch {
+    return null;
+  }
+  const board = chess.board();
+  const kings = { w: [], b: [] };
+  for (let rank = 0; rank < board.length; rank += 1) {
+    for (let file = 0; file < board[rank].length; file += 1) {
+      const piece = board[rank][file];
+      if (!piece) continue;
+      if (piece.type === 'k') kings[piece.color].push({ file, rank });
+      if (piece.type === 'p' && (rank === 0 || rank === 7)) return null;
+    }
+  }
+  if (!kings.w.length || !kings.b.length) return null;
+  for (const whiteKing of kings.w) {
+    for (const blackKing of kings.b) {
+      if (Math.max(
+        Math.abs(whiteKing.file - blackKing.file),
+        Math.abs(whiteKing.rank - blackKing.rank),
+      ) <= 1) return null;
+    }
+  }
+  const fen = chess.fen();
+  const [, turn, castling, enPassant] = fen.split(' ');
+  const requiredPieces = {
+    K: ['e1', 'k', 'w'], Q: ['e1', 'k', 'w'], K_R: ['h1', 'r', 'w'], Q_R: ['a1', 'r', 'w'],
+    k: ['e8', 'k', 'b'], q: ['e8', 'k', 'b'], k_R: ['h8', 'r', 'b'], q_R: ['a8', 'r', 'b'],
+  };
+  for (const right of castling) {
+    if (right === '-') continue;
+    const rookRight = right === 'K' ? 'K_R' : right === 'Q' ? 'Q_R' : right === 'k' ? 'k_R' : 'q_R';
+    const keys = [right, rookRight];
+    for (const key of keys) {
+      const [square, type, color] = requiredPieces[key];
+      const piece = chess.get(square);
+      if (piece?.type !== type || piece.color !== color) return null;
+    }
+  }
+  if (enPassant !== '-') {
+    const expectedRank = turn === 'w' ? '6' : '3';
+    const file = enPassant[0];
+    const capturedPawn = chess.get(`${file}${turn === 'w' ? '5' : '4'}`);
+    if (enPassant[1] !== expectedRank || chess.get(enPassant)
+      || capturedPawn?.type !== 'p' || capturedPawn.color !== (turn === 'w' ? 'b' : 'w')) return null;
+  }
+  const previousSideKings = turn === 'w' ? kings.b : kings.w;
+  if (previousSideKings.some((king) => chess.is_attacked(
+    `${String.fromCharCode(97 + king.file)}${8 - king.rank}`,
+    turn,
+  ))) return null;
+  return fen;
+}
+
+function normalizeStartingPieceIds(value, initialFen, variant) {
+  if (value === undefined) return {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || Object.keys(value).length > 64) return null;
+  const chess = new Chess(initialFen);
+  const normalized = {};
+  for (const [square, id] of Object.entries(value)) {
+    if (!/^[a-h][1-8]$/.test(square) || typeof id !== 'string' || id.length > 80) return null;
+    const piece = chess.get(square);
+    const definition = variant.customPieces.find((candidate) => candidate.id === id);
+    if (!piece || !definition || (!definition.studio && definition.replaces !== piece.type)
+      || (definition.color !== 'both' && definition.color !== piece.color)) return null;
+    normalized[square] = id;
+  }
+  return normalized;
+}
+
+function publicRoomVariantLabel(variant, initialFen = standardStartingFen) {
   const pieceNames = [...new Set(variant.customPieces.map((piece) => piece.name.trim()).filter(Boolean))];
   const changedMovements = Object.entries(standardPieceMovements).filter(([piece, standardSides]) => (
     ['w', 'b'].some((color) => (
@@ -168,11 +250,12 @@ function publicRoomVariantLabel(variant) {
   if (pieceNames.length && hasCustomRules) details.push('custom rules');
   if (changedMovements) details.push(`${changedMovements} movement rule${changedMovements === 1 ? '' : 's'} changed`);
   if (variant.noDraws) details.push('no draws');
+  if (initialFen !== standardStartingFen) details.push('custom starting position');
   return details.join(' · ');
 }
 
 function configureRoomChess(room) {
-  room.chess = new Chess();
+  room.chess = new Chess(room.initialFen);
   room.drawOfferBy = null;
   room.customMovementBySquare = new Map();
   room.customPieceBySquare = new Map();
@@ -182,8 +265,13 @@ function configureRoomChess(room) {
       const square = `${String.fromCharCode(97 + file)}${rank}`;
       const piece = room.chess.get(square);
       if (!piece || piece.type === 'k') continue;
-      const customDefinition = room.variant.customPieces.find((candidate) => (
-        candidate.replaces === piece.type
+      const explicitDefinition = room.variant.customPieces.find((candidate) => (
+        candidate.id === room.initialPieceIds?.[square]
+        && (candidate.color === 'both' || candidate.color === piece.color)
+        && (candidate.studio || candidate.replaces === piece.type)
+      ));
+      const customDefinition = explicitDefinition ?? room.variant.customPieces.find((candidate) => (
+        !candidate.directOnly && candidate.replaces === piece.type
         && (candidate.color === 'both' || candidate.color === piece.color)
       ));
       if (customDefinition?.studio) {
@@ -205,9 +293,74 @@ function configureRoomChess(room) {
   }
 }
 
+function roomPatternAttacks(room, from, to, color, pattern) {
+  const fileOf = (square) => square.charCodeAt(0) - 97;
+  const rankOf = (square) => Number(square[1]);
+  const dx = fileOf(to) - fileOf(from);
+  const dy = rankOf(to) - rankOf(from);
+  const absX = Math.abs(dx);
+  const absY = Math.abs(dy);
+  if (pattern === 'p') return absX === 1 && dy === (color === 'w' ? 1 : -1);
+  if (pattern === 'n') return (absX === 1 && absY === 2) || (absX === 2 && absY === 1);
+  if (pattern === 'k') return Math.max(absX, absY) === 1;
+  const diagonal = absX === absY && absX > 0;
+  const straight = (dx === 0) !== (dy === 0);
+  if (pattern === 'b' && !diagonal) return false;
+  if (pattern === 'r' && !straight) return false;
+  if (pattern === 'q' && !diagonal && !straight) return false;
+  if (!['q', 'r', 'b'].includes(pattern)) return false;
+  const stepX = Math.sign(dx);
+  const stepY = Math.sign(dy);
+  let file = fileOf(from) + stepX;
+  let rank = rankOf(from) + stepY;
+  while (file !== fileOf(to) || rank !== rankOf(to)) {
+    if (room.chess.get(`${String.fromCharCode(97 + file)}${rank}`)) return false;
+    file += stepX;
+    rank += stepY;
+  }
+  return true;
+}
+
+function roomSquareAttacked(room, square, attackerColor) {
+  if (room.chess.is_attacked(square, attackerColor)) return true;
+  const board = room.chess.board();
+  for (let rank = 0; rank < board.length; rank += 1) {
+    for (let file = 0; file < board[rank].length; file += 1) {
+      const piece = board[rank][file];
+      if (!piece || piece.color !== attackerColor) continue;
+      const from = `${String.fromCharCode(97 + file)}${8 - rank}`;
+      const id = room.customPieceBySquare.get(from);
+      const definition = room.variant.customPieces.find((candidate) => candidate.id === id);
+      if (definition?.studio) continue;
+      const patterns = definition?.movements ?? room.customMovementBySquare.get(from)?.movements ?? [piece.type];
+      if (patterns.some((pattern) => roomPatternAttacks(room, from, square, piece.color, pattern))) return true;
+    }
+  }
+  return false;
+}
+
+function roomIsInCheck(room, color) {
+  const board = room.chess.board();
+  const kingSquares = [];
+  for (let rank = 0; rank < board.length; rank += 1) {
+    for (let file = 0; file < board[rank].length; file += 1) {
+      if (board[rank][file]?.type === 'k' && board[rank][file].color === color) {
+        kingSquares.push(`${String.fromCharCode(97 + file)}${8 - rank}`);
+      }
+    }
+  }
+  return kingSquares.length === 0 || kingSquares.some((square) => roomSquareAttacked(
+    room,
+    square,
+    color === 'w' ? 'b' : 'w',
+  ));
+}
+
 function makeRoomMove(room, from, to, promotion) {
   const piece = room.chess.get(from);
-  if (!piece) return null;
+  if (!piece || room.chess.get(to)?.type === 'k') return null;
+  const movementSnapshot = new Map(room.customMovementBySquare);
+  const pieceSnapshot = new Map(room.customPieceBySquare);
   const customId = room.customPieceBySquare.get(from);
   const customDefinition = room.variant.customPieces.find((candidate) => candidate.id === customId);
   const identity = room.customMovementBySquare.get(from);
@@ -271,20 +424,82 @@ function makeRoomMove(room, from, to, promotion) {
     room.customPieceBySquare.delete(rookFrom);
     if (rookId) room.customPieceBySquare.set(rookTo, rookId);
   }
+  if (roomIsInCheck(room, piece.color)) {
+    room.chess.undo();
+    room.customMovementBySquare = movementSnapshot;
+    room.customPieceBySquare = pieceSnapshot;
+    return null;
+  }
   return move;
 }
 
 function isRoomGameOver(room) {
-  return room.chess.in_checkmate() || room.chess.in_stalemate()
-    || (!room.variant.noDraws && room.chess.game_over());
+  return roomIsCheckmate(room) || roomIsStalemate(room)
+    || (!room.variant.noDraws && (
+      Number(room.chess.fen().split(' ')[4]) >= 100
+      || room.chess.in_threefold_repetition()
+      || (!roomHasCustomMaterial(room) && room.chess.insufficient_material())
+    ));
+}
+
+function roomHasCustomMaterial(room) {
+  return room.customMovementBySquare.size > 0 || room.customPieceBySquare.size > 0;
+}
+
+function roomHasLegalMove(room) {
+  const board = room.chess.board();
+  for (let rank = 0; rank < board.length; rank += 1) {
+    for (let file = 0; file < board[rank].length; file += 1) {
+      const piece = board[rank][file];
+      if (!piece || piece.color !== room.chess.turn()) continue;
+      const from = `${String.fromCharCode(97 + file)}${8 - rank}`;
+      const originalPiece = piece;
+      const customId = room.customPieceBySquare.get(from);
+      const definition = room.variant.customPieces.find((candidate) => candidate.id === customId);
+      const patterns = definition?.studio
+        ? [piece.type]
+        : definition?.movements ?? room.customMovementBySquare.get(from)?.movements ?? [piece.type];
+      for (const pattern of patterns) {
+        if (pattern !== originalPiece.type) {
+          room.chess.remove(from);
+          room.chess.put({ type: pattern, color: originalPiece.color }, from);
+        }
+        const candidates = room.chess.moves({ square: from, verbose: true });
+        if (pattern !== originalPiece.type) {
+          room.chess.remove(from);
+          room.chess.put(originalPiece, from);
+        }
+        for (const candidate of candidates) {
+          if (room.chess.get(candidate.to)?.type === 'k') continue;
+          const movementSnapshot = new Map(room.customMovementBySquare);
+          const pieceSnapshot = new Map(room.customPieceBySquare);
+          const played = makeRoomMove(room, candidate.from, candidate.to, candidate.promotion);
+          if (!played) continue;
+          room.chess.undo();
+          room.customMovementBySquare = movementSnapshot;
+          room.customPieceBySquare = pieceSnapshot;
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function roomIsCheckmate(room) {
+  return roomIsInCheck(room, room.chess.turn()) && !roomHasLegalMove(room);
+}
+
+function roomIsStalemate(room) {
+  return !roomIsInCheck(room, room.chess.turn()) && !roomHasLegalMove(room);
 }
 
 function roomTermination(room) {
-  if (room.chess.in_checkmate()) return 'checkmate';
-  if (room.chess.in_stalemate()) return 'stalemate';
+  if (roomIsCheckmate(room)) return 'checkmate';
+  if (roomIsStalemate(room)) return 'stalemate';
   if (room.chess.in_threefold_repetition()) return 'threefold';
   if (Number(room.chess.fen().split(' ')[4]) >= 100) return 'fiftyMove';
-  if (room.chess.insufficient_material()) return 'insufficient';
+  if (!roomHasCustomMaterial(room) && room.chess.insufficient_material()) return 'insufficient';
   return 'draw';
 }
 
@@ -298,17 +513,25 @@ function pgnWithVariantMetadata(room) {
         JSON.stringify(variant.pieceMovements[piece][color]) !== JSON.stringify(standardSides[color])
       ))
     ));
-  if (!isCustomVariant) return pgn;
-  const header = `[OpenboardVariant "${encodeURIComponent(JSON.stringify(variant))}"]`;
+  const headers = [];
+  if (isCustomVariant) {
+    headers.push(`[OpenboardVariant "${encodeURIComponent(JSON.stringify(variant))}"]`);
+  }
+  if (Object.keys(room.initialPieceIds).length) {
+    headers.push(`[OpenboardPieceIds "${encodeURIComponent(JSON.stringify(room.initialPieceIds))}"]`);
+  }
+  if (!headers.length) return pgn;
   const separator = pgn.search(/\r?\n\r?\n/);
-  if (separator < 0) return `${header}\n\n${pgn}`;
+  if (separator < 0) return `${headers.join('\n')}\n\n${pgn}`;
   const headerEnd = pgn.indexOf('\n', separator) < 0 ? pgn.length : separator;
-  return `${pgn.slice(0, headerEnd)}\n${header}${pgn.slice(headerEnd)}`;
+  return `${pgn.slice(0, headerEnd)}\n${headers.join('\n')}${pgn.slice(headerEnd)}`;
 }
 
 function roomPosition(room) {
   return {
     gameId: room.gameId,
+    initialFen: room.initialFen,
+    initialPieceIds: room.initialPieceIds,
     fen: room.chess.fen(),
     pgn: room.chess.pgn(),
     moves: room.chess.history({ verbose: true }).map(({ from, to, promotion }) => ({
@@ -922,7 +1145,7 @@ function getPublicRooms(accountId) {
         code: room.code,
         name: room.lobbyName,
         host: room.players.w.name,
-        variantLabel: publicRoomVariantLabel(room.variant),
+        variantLabel: publicRoomVariantLabel(room.variant, room.initialFen),
         ...(room.players.w.countryCode ? { hostCountryCode: room.players.w.countryCode } : {}),
         hostOnline,
         locked: Boolean(room.passwordHash),
@@ -1087,6 +1310,50 @@ async function handleMessage(socket, player, rawMessage) {
     return;
   }
 
+  if (message.type === 'update-room-position') {
+    const room = player.room;
+    if (!room || player.role !== 'player' || player.color !== 'w'
+      || room.players.w.accountId !== player.identity.id) {
+      send(socket, { type: 'error', message: 'Only the lobby host can update its starting position.' });
+      return;
+    }
+    if (room.players.b.accountId || room.players.b.socket?.readyState === WebSocket.OPEN
+      || room.chess.history().length > 0) {
+      send(socket, { type: 'error', message: 'The starting position can only be changed before another player joins.' });
+      return;
+    }
+    const initialFen = normalizeStartingFen(message.initialFen);
+    if (!initialFen) {
+      send(socket, { type: 'error', message: 'The custom starting position is invalid. Add at least one king per side and correct any castling or en passant settings.' });
+      return;
+    }
+    const initialPieceIds = normalizeStartingPieceIds(message.initialPieceIds, initialFen, room.variant);
+    if (!initialPieceIds) {
+      send(socket, { type: 'error', message: 'The custom piece identities do not match the lobby position or its custom rules.' });
+      return;
+    }
+    room.initialFen = initialFen;
+    room.initialPieceIds = initialPieceIds;
+    configureRoomChess(room);
+    room.expiresAt = Date.now() + roomLifetimeMs;
+    send(socket, { type: 'room-position-updated', ...roomPosition(room) });
+    broadcastSpectators(room, {
+      type: 'spectator-start',
+      code: room.code,
+      players: { w: room.players.w.name, b: room.players.b.name },
+      playerProfiles: roomPlayerProfiles(room),
+      playerCountries: {
+        w: room.players.w.countryCode || null,
+        b: room.players.b.countryCode || null,
+      },
+      ...roomPosition(room),
+      waiting: true,
+      spectators: room.spectators.size,
+      spectatorChat: room.spectatorChat,
+    });
+    return;
+  }
+
   if (message.type === 'create-room' || message.type === 'create-public-room') {
     const existingRoom = [...rooms.values()].find((room) => (
       [room.players.w, room.players.b].some((roomPlayer) => (
@@ -1116,6 +1383,16 @@ async function handleMessage(socket, player, rawMessage) {
       send(socket, { type: 'error', message: 'Online custom rules must use an 8×8 board and valid piece movement settings.' });
       return;
     }
+    const initialFen = normalizeStartingFen(message.initialFen);
+    if (!initialFen) {
+      send(socket, { type: 'error', message: 'The custom starting position is invalid. Add at least one king per side and correct any castling or en passant settings.' });
+      return;
+    }
+    const initialPieceIds = normalizeStartingPieceIds(message.initialPieceIds, initialFen, variant);
+    if (!initialPieceIds) {
+      send(socket, { type: 'error', message: 'The custom piece identities do not match the lobby position or its custom rules.' });
+      return;
+    }
     if (player.room) leaveRoom(player, 'replaced');
     const code = generateRoomCode();
     const passwordSalt = roomPassword ? crypto.randomBytes(16) : null;
@@ -1127,6 +1404,8 @@ async function handleMessage(socket, player, rawMessage) {
       passwordHash: passwordSalt ? hashRoomPassword(roomPassword, passwordSalt) : null,
       gameId: crypto.randomUUID(),
       variant,
+      initialFen,
+      initialPieceIds,
       chess: null,
       customMovementBySquare: new Map(),
       customPieceBySquare: new Map(),
@@ -1169,6 +1448,8 @@ async function handleMessage(socket, player, rawMessage) {
       lobbyName: room.lobbyName,
       locked: Boolean(room.passwordHash),
       variant: room.variant,
+      initialFen: room.initialFen,
+      initialPieceIds: room.initialPieceIds,
       playerChat: room.playerChat,
       spectatorChat: room.spectatorChat,
     });
@@ -1627,7 +1908,7 @@ async function handleMessage(socket, player, rawMessage) {
     if (isRoomGameOver(room)) {
       room.gameEnded = true;
       room.termination = roomTermination(room);
-      const whiteScore = room.chess.in_checkmate() || (room.chess.in_stalemate() && room.variant.noDraws)
+      const whiteScore = roomIsCheckmate(room) || (roomIsStalemate(room) && room.variant.noDraws)
         ? room.chess.turn() === 'w' ? 0 : 1
         : 0.5;
       room.resultWhiteScore = whiteScore;

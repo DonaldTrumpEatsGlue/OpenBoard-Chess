@@ -15,6 +15,62 @@ export function patchChessSource(source) {
   );
   patched = replaceOnce(
     patched,
+    `    if (tokens[2].indexOf('q') > -1) {
+      castling.b |= BITS.QSIDE_CASTLE
+    }
+
+`,
+    `    if (tokens[2].indexOf('q') > -1) {
+      castling.b |= BITS.QSIDE_CASTLE
+    }
+    if (castling.w && board[SQUARES.e1] && board[SQUARES.e1].type === KING
+      && board[SQUARES.e1].color === WHITE) kings.w = SQUARES.e1
+    if (castling.b && board[SQUARES.e8] && board[SQUARES.e8].type === KING
+      && board[SQUARES.e8].color === BLACK) kings.b = SQUARES.e8
+
+`,
+    'castling king selection with multiple kings',
+  );
+  patched = replaceOnce(
+    patched,
+    `    /* don't let the user place more than one king */
+    if (
+      piece.type == KING &&
+      !(kings[piece.color] == EMPTY || kings[piece.color] == sq)
+    ) {
+      return false
+    }
+
+`,
+    `    /* Track one king for the base rules engine; the app validates every king. */
+`,
+    'multiple royal kings',
+  );
+  patched = replaceOnce(
+    patched,
+    `    if (piece && piece.type === KING) {
+      kings[piece.color] = EMPTY
+    }
+`,
+    `    if (piece && piece.type === KING && kings[piece.color] === SQUARES[square]) {
+      kings[piece.color] = EMPTY
+      for (var king_square = SQUARES.a8; king_square <= SQUARES.h1; king_square++) {
+        if (king_square & 0x88) {
+          king_square += 7
+          continue
+        }
+        if (board[king_square] && board[king_square].type === KING
+          && board[king_square].color === piece.color) {
+          kings[piece.color] = king_square
+          break
+        }
+      }
+    }
+`,
+    'multiple royal king removal',
+  );
+  patched = replaceOnce(
+    patched,
     '  function generate_moves(options) {\n',
     `  function custom_vector_mode(definition, vector) {
     return vector.mode || definition.captureMode || 'both'
@@ -117,6 +173,12 @@ export function patchChessSource(source) {
     }
 `,
     'custom attack detection',
+  );
+  patched = replaceOnce(
+    patched,
+    '      if (board[i] == null || board[i].color !== color) continue\n',
+    '      if (board[i] == null || board[i].color !== color || custom_movements[i]) continue\n',
+    'custom attacks replace native attacks',
   );
   patched = replaceOnce(
     patched,

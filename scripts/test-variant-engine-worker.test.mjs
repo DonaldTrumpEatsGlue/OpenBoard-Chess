@@ -29,11 +29,11 @@ try {
     customPieces: [],
   };
 
-  function runWorker(data) {
+  function runWorker(data, ChessImplementation = Chess) {
     const messages = [];
     const self = { postMessage: (message) => messages.push(message) };
     const context = {
-      Chess,
+      Chess: ChessImplementation,
       performance,
       self,
       importScripts: () => {},
@@ -42,6 +42,27 @@ try {
     self.onmessage({ data });
     return messages;
   }
+
+  test('searches and returns a legal move from a standard chess position', () => {
+    const messages = runWorker({
+      command: 'search',
+      id: 'standard-position-test',
+      fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+      customRules,
+      customMovementBySquare: [],
+      customPieceBySquare: [],
+      bot: { depth: 2, thinkMs: 500, maxNodes: 5000 },
+    });
+
+    const result = messages.find((message) => message.type === 'bestmove');
+    assert(result, `Worker returned no best move: ${JSON.stringify(messages)}`);
+    const game = new Chess();
+    assert.ok(game.move({
+      from: result.move.slice(0, 2),
+      to: result.move.slice(2, 4),
+      ...(result.move.length > 4 ? { promotion: result.move[4] } : {}),
+    }), `${result.move} should be legal in the standard starting position`);
+  });
 
   test('searches and returns a legal move for a studio custom piece', () => {
     const studioMovement = {
@@ -53,7 +74,7 @@ try {
       promotion: false,
       vectors: [{ dx: 1, dy: 2 }],
     };
-    const definition = { id: 'studio-leaper', replaces: 'r', color: 'w', studio: studioMovement };
+    const definition = { id: 'studio-leaper', replaces: 'n', color: 'w', studio: studioMovement };
     const messages = runWorker({
       command: 'search',
       id: 'studio-test',
@@ -73,6 +94,36 @@ try {
     game.setCustomMovement('a1', studioMovement);
     const legalMoves = game.moves({ square: 'a1', verbose: true }).map((move) => `${move.from}${move.to}`);
     assert(legalMoves.includes(result.move), `${result.move} should be legal for the custom piece`);
+  });
+
+  test('does not apply standard insufficient-material checks to a live Studio piece', () => {
+    class ChessWithoutStandardMaterialCheck extends Chess {
+      insufficient_material() {
+        throw new Error('Standard insufficient-material check should be skipped for custom pieces.');
+      }
+    }
+    const studioMovement = {
+      movementType: 'leap',
+      captureMode: 'both',
+      range: 1,
+      mirror: false,
+      jump: true,
+      promotion: false,
+      vectors: [{ dx: 1, dy: 2 }],
+    };
+    const definition = { id: 'studio-star', replaces: 'b', color: 'w', studio: studioMovement };
+    const messages = runWorker({
+      command: 'search',
+      id: 'studio-insufficient-material-test',
+      fen: '8/7k/8/8/3B4/8/8/K7 w - - 0 1',
+      customRules: { ...customRules, customPieces: [definition] },
+      customMovementBySquare: [],
+      customPieceBySquare: [['d4', definition.id]],
+      bot: { depth: 1, thinkMs: 500, maxNodes: 5000 },
+    }, ChessWithoutStandardMaterialCheck);
+
+    const result = messages.find((message) => message.type === 'bestmove');
+    assert(result, `Worker returned no best move: ${JSON.stringify(messages)}`);
   });
 
   test('reports an actionable error for an invalid position', () => {
