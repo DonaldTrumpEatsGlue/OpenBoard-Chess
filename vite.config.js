@@ -87,7 +87,7 @@ function stockfishFiles() {
         mkdir(resolve('dist/pieces'), { recursive: true }),
       ]);
       await Promise.all([
-        ...['main.js', 'variant-engine-worker.js', 'large-board-chess.js', 'piece-theme.js', 'piece-studio.js', 'sound-manifest.js', 'game-insights.js', 'learning-content.js', 'academy-content.js', 'profile-utils.js'].map((fileName) => copyFile(
+        ...['main.js', 'variant-engine-worker.js', 'large-board-chess.js', 'piece-theme.js', 'piece-studio.js', 'sound-manifest.js', 'game-insights.js', 'learning-content.js', 'academy-content.js', 'profile-utils.js', 'premove-moves.js'].map((fileName) => copyFile(
           resolve(sourceScripts, fileName),
           resolve(outputScripts, fileName),
         )),
